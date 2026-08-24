@@ -1,0 +1,139 @@
+version: 2
+
+models:
+  - name: mart_sepa_fundamental_eval
+    description: "8 core fundamental conditions as boolean columns with pass_count summary"
+    tests:
+      - elementary.volume_anomalies:
+          timestamp_column: eval_date
+          config:
+            # First runs need history; warn until Elementary has enough samples
+            severity: warn
+      - elementary.freshness_anomalies:
+          timestamp_column: eval_date
+          config:
+            severity: warn
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+          - unique
+      - name: eval_date
+        tests:
+          - not_null
+      - name: pass_count
+        description: "Number of conditions passed (0-8)"
+        tests:
+          - elementary.column_anomalies:
+              timestamp_column: eval_date
+              column_anomalies:
+                - null_count
+                - zero_count
+              config:
+                severity: warn
+      - name: insufficient_data
+        description: "True if no YoY base data available"
+
+  - name: mart_sepa_fundamental_ext
+    description: "25 extended fundamental conditions across 7 groups"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+          - unique
+
+  - name: mart_sepa_technical_eval
+    description: "11 core technical conditions as boolean columns with pass_count summary"
+    tests:
+      - elementary.volume_anomalies:
+          timestamp_column: eval_date
+          config:
+            severity: warn
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+          - unique
+      - name: eval_date
+        tests:
+          - not_null
+      - name: pass_count
+        description: "Number of conditions passed (0-11)"
+
+  - name: mart_sepa_tier_momentum
+    description: "Tier 2 momentum indicators: RSI, MACD, ROC, RS vs SPY (10 indicators)"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+          - unique
+      - name: momentum_score
+        description: "Normalized momentum score (0-1)"
+
+  - name: mart_sepa_tier_structure
+    description: "Tier 3 structure diagnostics: BB squeeze, ADX, Aroon, OBV, volatility contraction"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+          - unique
+      - name: structure_score
+        description: "Normalized structure score (0-1)"
+
+  - name: mart_sepa_tier_sentiment
+    description: "Tier 4 short interest and volume sentiment signals"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+          - unique
+      - name: sentiment_score
+        description: "Normalized sentiment score (0-1)"
+
+  - name: mart_sepa_composite_score
+    description: "Weighted composite of fundamental + technical + momentum + structure + sentiment"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+          - unique
+      - name: composite_score
+        description: "Weighted composite score (0-1)"
+
+  - name: mart_sepa_screening_ranked
+    description: "Composite scores ranked: overall_rank, percentile, decile"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+          - unique
+      - name: overall_rank
+        tests:
+          - not_null
+      - name: decile
+        description: "Decile bucket 1 (best) to 10"
+
+  - name: mart_sepa_criteria_stats
+    description: "Pre-aggregated per-condition pass/fail statistics (domain + stats jsonb)"
+    columns:
+      - name: domain
+        description: "'fundamental' or 'technical'"
+        tests:
+          - not_null
+      - name: stats
+        description: "jsonb object with per-condition pass/fail counters"
+        tests:
+          - not_null
+
+  - name: mart_sepa_screener_wide
+    description: "Single wide table for all screener queries — fundamental + technical + tiers + universe"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+          - unique
+      - name: overall_rank
+        tests:
+          - not_null
+      - name: composite_score
+        description: "Overall composite score"

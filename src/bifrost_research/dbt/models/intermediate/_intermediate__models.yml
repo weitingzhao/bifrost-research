@@ -1,0 +1,66 @@
+version: 2
+
+models:
+  - name: dim_universe
+    description: "US common stock universe (type=CS, market=stocks, active=true, USD)"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+          - unique
+      - name: included
+        description: "Always true — filter applied at source"
+
+  - name: dim_trading_calendar
+    description: "Calendar of all dates with is_trading_day boolean (excludes weekends + holidays)"
+    columns:
+      - name: trade_date
+        tests:
+          - not_null
+          - unique
+      - name: is_trading_day
+        description: "True if the date is a trading day"
+
+  - name: int_stock_daily_enriched
+    description: "Daily bars enriched with moving averages, ATR, 52-week range, ROC, and return metrics"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+      - name: trade_date
+        tests:
+          - not_null
+      - name: sma_50
+        description: "50-day simple moving average"
+      - name: sma_200
+        description: "200-day simple moving average"
+      - name: atr_14
+        description: "14-day average true range"
+      - name: return_252d
+        description: "252 trading day return (for CRS)"
+
+  - name: int_stock_crs
+    description: "Composite Relative Strength — 252d return percentile rank within universe"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+      - name: trade_date
+        tests:
+          - not_null
+      - name: crs_percentile
+        description: "Percentile rank 0-100 based on 252d return"
+
+  - name: int_financials_yoy
+    description: "Quarterly and annual YoY growth rates for fundamental evaluation"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+          - unique
+      - name: eps_g0
+        description: "Latest quarter EPS YoY growth"
+      - name: rev_g0
+        description: "Latest quarter Revenue YoY growth"
+      - name: eps_fy_g0
+        description: "Latest fiscal year EPS YoY growth"

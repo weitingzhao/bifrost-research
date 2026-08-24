@@ -1,0 +1,143 @@
+# Minimal Dagster webserver / daemon stubs for research NS.
+# Primary local path remains: `make dagster-dev` (dagster UI on :3000).
+# Production deploy blockers: see CLAUDE.md § Dagster / Wave 5.1.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dagster-workspace
+  namespace: research
+  labels:
+    app.kubernetes.io/part-of: bifrost-research
+    bifrost.research/role: orchestration
+data:
+  workspace.yaml: |
+    load_from:
+      - python_module:
+          module_name: bifrost_research.orchestration.definitions
+          attribute: defs
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dagster-webserver
+  namespace: research
+  labels:
+    app.kubernetes.io/name: dagster-webserver
+    app.kubernetes.io/part-of: bifrost-research
+    bifrost.research/role: orchestration
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dagster-webserver
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dagster-webserver
+        bifrost.research/role: orchestration
+    spec:
+      containers:
+        - name: webserver
+          image: 192.168.10.73:30500/bifrost-research:0.5.0-dagster
+          imagePullPolicy: IfNotPresent
+          command: ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "/opt/dagster/workspace.yaml"]
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - secretRef:
+                name: bifrost-research-secrets
+                optional: true
+          env:
+            - name: ANALYTICS_PG_HOST
+              value: "bifrost-postgres-rw.data.svc.cluster.local"
+            - name: ANALYTICS_PG_PORT
+              value: "5432"
+            - name: ANALYTICS_PG_DATABASE
+              value: "bifrost_golden_source"
+            - name: ANALYTICS_PG_USER
+              value: "analytics_writer"
+          volumeMounts:
+            - name: workspace
+              mountPath: /opt/dagster
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      volumes:
+        - name: workspace
+          configMap:
+            name: dagster-workspace
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dagster-webserver
+  namespace: research
+  labels:
+    app.kubernetes.io/name: dagster-webserver
+    bifrost.research/role: orchestration
+spec:
+  selector:
+    app.kubernetes.io/name: dagster-webserver
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dagster-daemon
+  namespace: research
+  labels:
+    app.kubernetes.io/name: dagster-daemon
+    app.kubernetes.io/part-of: bifrost-research
+    bifrost.research/role: orchestration
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dagster-daemon
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dagster-daemon
+        bifrost.research/role: orchestration
+    spec:
+      containers:
+        - name: daemon
+          image: 192.168.10.73:30500/bifrost-research:0.5.0-dagster
+          imagePullPolicy: IfNotPresent
+          command: ["dagster-daemon", "run", "-w", "/opt/dagster/workspace.yaml"]
+          envFrom:
+            - secretRef:
+                name: bifrost-research-secrets
+                optional: true
+          env:
+            - name: ANALYTICS_PG_HOST
+              value: "bifrost-postgres-rw.data.svc.cluster.local"
+            - name: ANALYTICS_PG_PORT
+              value: "5432"
+            - name: ANALYTICS_PG_DATABASE
+              value: "bifrost_golden_source"
+            - name: ANALYTICS_PG_USER
+              value: "analytics_writer"
+          volumeMounts:
+            - name: workspace
+              mountPath: /opt/dagster
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      volumes:
+        - name: workspace
+          configMap:
+            name: dagster-workspace

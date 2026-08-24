@@ -1,0 +1,91 @@
+version: 2
+
+models:
+  - name: stg_income_stmt
+    description: "Quarterly and annual income statement data extracted from stock_financials jsonb"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+      - name: period_date
+        tests:
+          - not_null
+      - name: period_type
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["quarterly", "annual"]
+      - name: revenue
+        description: "Total revenues"
+      - name: eps
+        description: "Basic earnings per share"
+      - name: net_income
+        description: "Net income"
+
+  - name: stg_balance_sheet
+    description: "Balance sheet data extracted from stock_financials jsonb"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+      - name: period_date
+        tests:
+          - not_null
+      - name: total_assets
+        description: "Total assets"
+      - name: total_equity
+        description: "Total shareholders equity"
+
+  - name: stg_cash_flow
+    description: "Cash flow statement data extracted from stock_financials jsonb"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+      - name: period_date
+        tests:
+          - not_null
+      - name: operating_cf
+        description: "Operating cash flow"
+      - name: free_cash_flow
+        description: "Free cash flow (OCF - CapEx)"
+
+  - name: stg_ratios
+    description: "Financial ratios extracted from stock_financials jsonb"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+      - name: period_date
+        tests:
+          - not_null
+      - name: roe
+        description: "Return on equity"
+      - name: profit_margin
+        description: "Net profit margin"
+
+  - name: stg_short_interest
+    description: "Short interest data (shares short, days to cover, % float)"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+      - name: period_date
+        tests:
+          - not_null
+      - name: shares_short
+        description: "Total shares sold short"
+      - name: short_pct_float
+        description: "Short interest as percentage of float"
+
+  - name: stg_short_volume
+    description: "Daily short volume data"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+      - name: period_date
+        tests:
+          - not_null
+      - name: short_volume_ratio
+        description: "Short volume / total volume ratio"

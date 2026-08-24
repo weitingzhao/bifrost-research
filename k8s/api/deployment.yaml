@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: research-api
+  namespace: research
+  labels:
+    app.kubernetes.io/name: research-api
+    app.kubernetes.io/part-of: bifrost-research
+    bifrost.research/role: api
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: research-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: research-api
+        app.kubernetes.io/part-of: bifrost-research
+        bifrost.research/role: api
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: api
+          image: 192.168.10.73:30500/bifrost-research:0.5.7
+          imagePullPolicy: Always
+          args: ["python", "scripts/run_api.py"]
+          envFrom:
+            - secretRef:
+                name: bifrost-research-secrets
+                optional: true
+          env:
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "8795"
+            - name: ANALYTICS_PG_HOST
+              value: "bifrost-postgres-rw.data.svc.cluster.local"
+            - name: ANALYTICS_PG_PORT
+              value: "5432"
+            - name: ANALYTICS_PG_DATABASE
+              value: "bifrost_golden_source"
+            - name: ANALYTICS_PG_USER
+              value: "analytics_writer"
+            - name: ELEMENTARY_REPORT_PATH
+              value: "/report/elementary_report.html"
+          ports:
+            - name: http
+              containerPort: 8795
+          volumeMounts:
+            - name: report-volume
+              mountPath: /report
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 2
+      volumes:
+        - name: report-volume
+          persistentVolumeClaim:
+            claimName: analytics-report-pvc

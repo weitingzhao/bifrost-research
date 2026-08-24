@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bifrost-analytics-config
+  namespace: research
+  labels:
+    app: bifrost-analytics
+data:
+  ANALYTICS_PG_HOST: "bifrost-postgres-rw.data.svc.cluster.local"
+  ANALYTICS_PG_PORT: "5432"
+  ANALYTICS_PG_USER: "analytics_writer"
+  ANALYTICS_PG_DATABASE: "bifrost_golden_source"
+# Secrets (ANALYTICS_PG_PASSWORD) are created out-of-band — never commit passwords.
+# kubectl -n research create secret generic bifrost-research-secrets \
+#   --from-literal=ANALYTICS_PG_PASSWORD=...
+# kubectl -n research create secret generic bifrost-analytics-secrets \
+#   --from-literal=ANALYTICS_PG_PASSWORD=...

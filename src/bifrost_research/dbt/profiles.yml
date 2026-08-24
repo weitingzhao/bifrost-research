@@ -1,0 +1,48 @@
+bifrost_research:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('ANALYTICS_PG_HOST', '192.168.10.73') }}"
+      port: "{{ env_var('ANALYTICS_PG_PORT', '30432') | int }}"
+      user: "{{ env_var('ANALYTICS_PG_USER', 'analytics_writer') }}"
+      password: "{{ env_var('ANALYTICS_PG_PASSWORD') }}"
+      dbname: "{{ env_var('ANALYTICS_PG_DATABASE', 'bifrost_golden_source') }}"
+      schema: dw_stock
+      threads: 4
+      keepalives_idle: 0
+    prod:
+      type: postgres
+      host: "{{ env_var('ANALYTICS_PG_HOST', '192.168.10.73') }}"
+      port: "{{ env_var('ANALYTICS_PG_PORT', '30432') | int }}"
+      user: "{{ env_var('ANALYTICS_PG_USER', 'analytics_writer') }}"
+      password: "{{ env_var('ANALYTICS_PG_PASSWORD') }}"
+      dbname: "{{ env_var('ANALYTICS_PG_DATABASE', 'bifrost_golden_source') }}"
+      schema: dw_stock
+      threads: 4
+      keepalives_idle: 0
+
+# Elementary CLI (edr) profile — reads analytics_elementary metadata tables
+elementary:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('ANALYTICS_PG_HOST', '192.168.10.73') }}"
+      port: "{{ env_var('ANALYTICS_PG_PORT', '30432') | int }}"
+      user: "{{ env_var('ANALYTICS_PG_USER', 'analytics_writer') }}"
+      password: "{{ env_var('ANALYTICS_PG_PASSWORD') }}"
+      dbname: "{{ env_var('ANALYTICS_PG_DATABASE', 'bifrost_golden_source') }}"
+      schema: ops_dbt
+      threads: 4
+      keepalives_idle: 0
+    prod:
+      type: postgres
+      host: "{{ env_var('ANALYTICS_PG_HOST', '192.168.10.73') }}"
+      port: "{{ env_var('ANALYTICS_PG_PORT', '30432') | int }}"
+      user: "{{ env_var('ANALYTICS_PG_USER', 'analytics_writer') }}"
+      password: "{{ env_var('ANALYTICS_PG_PASSWORD') }}"
+      dbname: "{{ env_var('ANALYTICS_PG_DATABASE', 'bifrost_golden_source') }}"
+      schema: ops_dbt
+      threads: 4
+      keepalives_idle: 0

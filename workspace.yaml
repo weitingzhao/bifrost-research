@@ -1,0 +1,6 @@
+# Dagster workspace — local `dagster dev` / webserver load path.
+# Requires: pip install -e ".[orchestration]"
+load_from:
+  - python_module:
+      module_name: bifrost_research.orchestration.definitions
+      attribute: defs

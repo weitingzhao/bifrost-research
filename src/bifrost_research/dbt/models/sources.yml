@@ -1,0 +1,80 @@
+version: 2
+
+sources:
+  - name: market
+    database: bifrost_golden_source
+    schema: raw_market
+    description: "Plugin Golden Source — public market data ingested by Market Data Plugin"
+    tables:
+      - name: stock_daily
+        description: "OHLCV daily bars for US equities"
+        columns:
+          - name: symbol
+            description: "Ticker symbol"
+            tests:
+              - not_null
+          - name: bar_date
+            description: "Trading date"
+            tests:
+              - not_null
+          - name: close
+            description: "Closing price"
+          - name: volume
+            description: "Daily volume"
+
+      - name: stock_financials
+        description: "Financial statements and metrics as jsonb blobs (6 report_types)"
+        columns:
+          - name: symbol
+            tests:
+              - not_null
+          - name: report_type
+            description: "One of: income_statement, balance_sheet, cash_flow_statement, ratios, short_interest, short_volume"
+            tests:
+              - not_null
+              - accepted_values:
+                  values:
+                    - income_statement
+                    - balance_sheet
+                    - cash_flow_statement
+                    - ratios
+                    - short_interest
+                    - short_volume
+          - name: period_date
+            tests:
+              - not_null
+          - name: data
+            description: "jsonb blob with report-specific fields"
+
+      - name: stock_snapshot
+        description: "Intraday snapshot (latest session prices)"
+        columns:
+          - name: symbol
+            tests:
+              - not_null
+          - name: session_date
+            tests:
+              - not_null
+
+      - name: ticker
+        description: "Security master — ticker metadata for universe definition"
+        columns:
+          - name: symbol
+            tests:
+              - not_null
+              - unique
+          - name: type
+            description: "Security type (CS = common stock)"
+          - name: market
+            description: "Market segment (stocks, otc, etc.)"
+          - name: active
+            description: "Whether the ticker is currently active"
+
+      - name: us_market_holiday
+        description: "US market holidays and early-close dates"
+        columns:
+          - name: date
+            tests:
+              - not_null
+          - name: status
+            description: "closed or early-close"

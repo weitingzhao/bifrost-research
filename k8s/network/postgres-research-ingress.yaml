@@ -1,0 +1,24 @@
+# Allow research NS workloads to reach CNPG (data NS).
+# Companion to data/postgres-trade-ingress — keep both in sync when editing allow-list.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-research-ingress
+  namespace: data
+  labels:
+    app.kubernetes.io/component: postgres
+    bifrost.io/domain: olap
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: bifrost-postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: research
+      ports:
+        - protocol: TCP
+          port: 5432
