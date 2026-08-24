@@ -30,7 +30,7 @@ spec:
               done
               exit 1
         - name: ensure-partitions
-          image: 192.168.10.73:30500/bifrost-research:0.8.0
+          image: 192.168.10.73:30500/bifrost-research:0.8.1
           imagePullPolicy: Always
           command:
             - python
@@ -57,7 +57,7 @@ spec:
               value: "analytics_writer"
       containers:
         - name: max-pain
-          image: 192.168.10.73:30500/bifrost-research:0.8.0
+          image: 192.168.10.73:30500/bifrost-research:0.8.1
           imagePullPolicy: Always
           args:
             - python
@@ -92,7 +92,7 @@ spec:
               cpu: "2"
               memory: 2Gi
         - name: atm-iv-pcr
-          image: 192.168.10.73:30500/bifrost-research:0.8.0
+          image: 192.168.10.73:30500/bifrost-research:0.8.1
           imagePullPolicy: Always
           args:
             - python
@@ -127,7 +127,7 @@ spec:
               cpu: "2"
               memory: 2Gi
         - name: iv-percentile
-          image: 192.168.10.73:30500/bifrost-research:0.8.0
+          image: 192.168.10.73:30500/bifrost-research:0.8.1
           imagePullPolicy: Always
           args:
             - python

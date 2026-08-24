@@ -14,5 +14,4 @@ select
     (data -> 'costs_and_expenses' ->> 'value')::numeric as cost_of_revenue,
     (data -> 'operating_expenses' ->> 'value')::numeric as operating_expenses,
     fetched_at
-from {{ source('market', 'stock_financials') }}
-where report_type = 'income_statement'
+from {{ source('market', 'income_statement') }}

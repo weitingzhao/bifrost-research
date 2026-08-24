@@ -15,5 +15,4 @@ select
     (data -> 'fixed_assets' ->> 'value')::numeric as fixed_assets,
     (data -> 'equity_attributable_to_parent' ->> 'value')::numeric as equity_to_parent,
     fetched_at
-from {{ source('market', 'stock_financials') }}
-where report_type = 'balance_sheet'
+from {{ source('market', 'balance_sheet') }}

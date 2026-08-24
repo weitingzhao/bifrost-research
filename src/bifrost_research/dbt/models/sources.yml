@@ -22,8 +22,61 @@ sources:
           - name: volume
             description: "Daily volume"
 
+      - name: income_statement
+        description: "Income statement jsonb rows (Wave 8 split from stock_financials)"
+        columns:
+          - name: symbol
+            tests:
+              - not_null
+          - name: period_date
+            tests:
+              - not_null
+          - name: data
+            description: "jsonb blob with report-specific fields"
+
+      - name: balance_sheet
+        description: "Balance sheet jsonb rows"
+        columns:
+          - name: symbol
+            tests:
+              - not_null
+          - name: period_date
+            tests:
+              - not_null
+
+      - name: cash_flow
+        description: "Cash flow statement jsonb rows"
+        columns:
+          - name: symbol
+            tests:
+              - not_null
+          - name: period_date
+            tests:
+              - not_null
+
+      - name: ratios
+        description: "Financial ratios jsonb rows (often source-void)"
+        columns:
+          - name: symbol
+            tests:
+              - not_null
+
+      - name: short_interest
+        description: "Short interest jsonb rows"
+        columns:
+          - name: symbol
+            tests:
+              - not_null
+
+      - name: short_volume
+        description: "Short volume jsonb rows"
+        columns:
+          - name: symbol
+            tests:
+              - not_null
+
       - name: stock_financials
-        description: "Financial statements and metrics as jsonb blobs (6 report_types)"
+        description: "Compat view UNION over split financials tables (Wave 8)"
         columns:
           - name: symbol
             tests:

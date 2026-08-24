@@ -43,7 +43,7 @@ spec:
                   exit 1
           containers:
             - name: compute
-              image: 192.168.10.73:30500/bifrost-research:0.8.0
+              image: 192.168.10.73:30500/bifrost-research:0.8.1
               imagePullPolicy: Always
               args:
                 - python
@@ -118,7 +118,7 @@ spec:
                   exit 1
           containers:
             - name: compute
-              image: 192.168.10.73:30500/bifrost-research:0.8.0
+              image: 192.168.10.73:30500/bifrost-research:0.8.1
               imagePullPolicy: Always
               args:
                 - python
@@ -193,7 +193,7 @@ spec:
                   exit 1
           containers:
             - name: compute
-              image: 192.168.10.73:30500/bifrost-research:0.8.0
+              image: 192.168.10.73:30500/bifrost-research:0.8.1
               imagePullPolicy: Always
               args:
                 - python
@@ -268,7 +268,7 @@ spec:
                   exit 1
           containers:
             - name: compute
-              image: 192.168.10.73:30500/bifrost-research:0.8.0
+              image: 192.168.10.73:30500/bifrost-research:0.8.1
               imagePullPolicy: Always
               args:
                 - python
@@ -343,7 +343,7 @@ spec:
                   exit 1
           containers:
             - name: compute
-              image: 192.168.10.73:30500/bifrost-research:0.8.0
+              image: 192.168.10.73:30500/bifrost-research:0.8.1
               imagePullPolicy: Always
               args:
                 - python
@@ -418,7 +418,7 @@ spec:
                   exit 1
           containers:
             - name: compute
-              image: 192.168.10.73:30500/bifrost-research:0.8.0
+              image: 192.168.10.73:30500/bifrost-research:0.8.1
               imagePullPolicy: Always
               args:
                 - python

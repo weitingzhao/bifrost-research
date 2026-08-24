@@ -11,5 +11,4 @@ select
     (data -> 'net_cash_flow_from_financing_activities' ->> 'value')::numeric as financing_cf,
     (data -> 'net_cash_flow' ->> 'value')::numeric as net_cash_flow,
     fetched_at
-from {{ source('market', 'stock_financials') }}
-where report_type = 'cash_flow_statement'
+from {{ source('market', 'cash_flow') }}

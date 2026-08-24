@@ -39,7 +39,7 @@ spec:
                   exit 1
           containers:
             - name: max-pain
-              image: 192.168.10.73:30500/bifrost-research:0.8.0
+              image: 192.168.10.73:30500/bifrost-research:0.8.1
               imagePullPolicy: Always
               args:
                 - python
@@ -72,7 +72,7 @@ spec:
                   cpu: "1"
                   memory: 1Gi
             - name: atm-iv-pcr
-              image: 192.168.10.73:30500/bifrost-research:0.8.0
+              image: 192.168.10.73:30500/bifrost-research:0.8.1
               imagePullPolicy: Always
               args:
                 - python
@@ -105,7 +105,7 @@ spec:
                   cpu: "1"
                   memory: 1Gi
             - name: iv-percentile
-              image: 192.168.10.73:30500/bifrost-research:0.8.0
+              image: 192.168.10.73:30500/bifrost-research:0.8.1
               imagePullPolicy: Always
               args:
                 - python

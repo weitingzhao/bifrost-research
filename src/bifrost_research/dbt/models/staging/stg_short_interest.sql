@@ -7,5 +7,4 @@ select
     (data ->> 'daysToCover')::numeric as days_to_cover,
     (data ->> 'shortPercentOfFloat')::numeric as short_pct_float,
     fetched_at
-from {{ source('market', 'stock_financials') }}
-where report_type = 'short_interest'
+from {{ source('market', 'short_interest') }}
