@@ -15,7 +15,7 @@
   with the fresh slice before window functions, so sequences stay contiguous.
 */
 
-{% set lookback_days = 210 %}
+{% set lookback_days = 60 %}
 
 with fresh as (
     select
