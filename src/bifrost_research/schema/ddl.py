@@ -97,6 +97,10 @@ def apply_all_ddl(conn: _Connection) -> None:
     apply_research_ddl(conn)
 
 
+# Legacy Makefile / import alias (market_analytics → features_daily).
+apply_market_analytics_ddl = apply_features_daily_ddl
+
+
 def _create_features_daily_tables(cur: _Cursor) -> None:
     cur.execute(
         """
