@@ -1,29 +1,28 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: research-max-pain
+  name: research-vol-weekly-backfill
   namespace: research
   labels:
-    app.kubernetes.io/name: research-max-pain
+    app.kubernetes.io/name: research-vol-weekly-backfill
     app.kubernetes.io/part-of: bifrost-research
-    bifrost.research/slot: max-pain
+    bifrost.research/slot: vol-weekly-backfill
 spec:
-  schedule: "45 22 * * *"
+  schedule: "0 22 * * 0"
   timeZone: UTC
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      backoffLimit: 3
+      backoffLimit: 2
       template:
         metadata:
           labels:
-            app.kubernetes.io/name: research-max-pain
-            bifrost.research/slot: max-pain
+            app.kubernetes.io/name: research-vol-weekly-backfill
+            bifrost.research/slot: vol-weekly-backfill
         spec:
           restartPolicy: Never
-
           initContainers:
             - name: wait-pg
               image: busybox:1.36
@@ -39,7 +38,7 @@ spec:
                   done
                   exit 1
           containers:
-            - name: compute
+            - name: max-pain
               image: 192.168.10.73:30500/bifrost-research:0.8.0
               imagePullPolicy: Always
               args:
@@ -49,7 +48,7 @@ spec:
                 - --slot
                 - max-pain
                 - --lookback-days
-                - "30"
+                - "90"
               envFrom:
                 - secretRef:
                     name: bifrost-research-secrets
@@ -67,54 +66,12 @@ spec:
                   value: "SPY,QQQ,IWM,SPX,NVDA,AAPL,META,GOOG,AMZN,MSFT,TSLA,PLTR,MU,MRVL,ANET,CAVA,CBRS,DAVE,DDOG,ECHO,HIMS,NBIS,NNE,RKLB,SATS,SPCX"
               resources:
                 requests:
-                  cpu: 50m
-                  memory: 128Mi
-                limits:
-                  cpu: 500m
+                  cpu: 200m
                   memory: 512Mi
----
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: research-atm-iv-pcr
-  namespace: research
-  labels:
-    app.kubernetes.io/name: research-atm-iv-pcr
-    app.kubernetes.io/part-of: bifrost-research
-    bifrost.research/slot: atm-iv-pcr
-spec:
-  schedule: "0 23 * * *"
-  timeZone: UTC
-  concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
-  jobTemplate:
-    spec:
-      backoffLimit: 3
-      template:
-        metadata:
-          labels:
-            app.kubernetes.io/name: research-atm-iv-pcr
-            bifrost.research/slot: atm-iv-pcr
-        spec:
-          restartPolicy: Never
-
-          initContainers:
-            - name: wait-pg
-              image: busybox:1.36
-              command:
-                - sh
-                - -c
-                - |
-                  for i in $(seq 1 60); do
-                    if nc -z -w 2 bifrost-postgres-rw.data.svc.cluster.local 5432; then
-                      echo ready; exit 0
-                    fi
-                    echo "wait $i"; sleep 2
-                  done
-                  exit 1
-          containers:
-            - name: compute
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+            - name: atm-iv-pcr
               image: 192.168.10.73:30500/bifrost-research:0.8.0
               imagePullPolicy: Always
               args:
@@ -124,7 +81,7 @@ spec:
                 - --slot
                 - atm-iv-pcr
                 - --lookback-days
-                - "30"
+                - "90"
               envFrom:
                 - secretRef:
                     name: bifrost-research-secrets
@@ -142,54 +99,12 @@ spec:
                   value: "SPY,QQQ,IWM,SPX,NVDA,AAPL,META,GOOG,AMZN,MSFT,TSLA,PLTR,MU,MRVL,ANET,CAVA,CBRS,DAVE,DDOG,ECHO,HIMS,NBIS,NNE,RKLB,SATS,SPCX"
               resources:
                 requests:
-                  cpu: 50m
-                  memory: 128Mi
-                limits:
-                  cpu: 500m
+                  cpu: 200m
                   memory: 512Mi
----
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: research-iv-percentile
-  namespace: research
-  labels:
-    app.kubernetes.io/name: research-iv-percentile
-    app.kubernetes.io/part-of: bifrost-research
-    bifrost.research/slot: iv-percentile
-spec:
-  schedule: "15 23 * * *"
-  timeZone: UTC
-  concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
-  jobTemplate:
-    spec:
-      backoffLimit: 3
-      template:
-        metadata:
-          labels:
-            app.kubernetes.io/name: research-iv-percentile
-            bifrost.research/slot: iv-percentile
-        spec:
-          restartPolicy: Never
-
-          initContainers:
-            - name: wait-pg
-              image: busybox:1.36
-              command:
-                - sh
-                - -c
-                - |
-                  for i in $(seq 1 60); do
-                    if nc -z -w 2 bifrost-postgres-rw.data.svc.cluster.local 5432; then
-                      echo ready; exit 0
-                    fi
-                    echo "wait $i"; sleep 2
-                  done
-                  exit 1
-          containers:
-            - name: compute
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+            - name: iv-percentile
               image: 192.168.10.73:30500/bifrost-research:0.8.0
               imagePullPolicy: Always
               args:
@@ -199,7 +114,7 @@ spec:
                 - --slot
                 - iv-percentile
                 - --lookback-days
-                - "30"
+                - "90"
               envFrom:
                 - secretRef:
                     name: bifrost-research-secrets
@@ -217,8 +132,8 @@ spec:
                   value: "SPY,QQQ,IWM,SPX,NVDA,AAPL,META,GOOG,AMZN,MSFT,TSLA,PLTR,MU,MRVL,ANET,CAVA,CBRS,DAVE,DDOG,ECHO,HIMS,NBIS,NNE,RKLB,SATS,SPCX"
               resources:
                 requests:
-                  cpu: 50m
-                  memory: 128Mi
-                limits:
-                  cpu: 500m
+                  cpu: 200m
                   memory: 512Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi

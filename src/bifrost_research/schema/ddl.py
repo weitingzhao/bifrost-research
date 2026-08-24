@@ -63,10 +63,28 @@ def _drop_legacy_bare_schemas(cur: _Cursor) -> None:
             cur.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
 
 
+def _grant_features_schema_privileges(cur: _Cursor) -> None:
+    """Best-effort GRANT on features schema (roles may not exist in dev)."""
+    grants = [
+        f"GRANT USAGE ON SCHEMA {SCHEMA_FEATURES} TO bifrost, analytics_writer",
+        f"GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA {SCHEMA_FEATURES} TO bifrost, analytics_writer",
+        f"""
+        ALTER DEFAULT PRIVILEGES IN SCHEMA {SCHEMA_FEATURES}
+          GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON TABLES TO bifrost, analytics_writer
+        """,
+    ]
+    for sql in grants:
+        try:
+            cur.execute(sql)
+        except Exception:
+            pass
+
+
 def apply_features_ddl(conn: _Connection) -> None:
     """Create features schema + all Feature Store tables (idempotent)."""
     with conn.cursor() as cur:
         cur.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_FEATURES}")
+        _grant_features_schema_privileges(cur)
         _create_option_metric_partitioned_tables(cur)
         _create_research_tables(cur)
         _drop_legacy_bare_schemas(cur)
