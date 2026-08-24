@@ -1,6 +1,6 @@
 """Momentum Radar engine — multi-timeframe momentum scoring (Wave 3.1).
 
-Writes ``features_signals.momentum_score_daily``.
+Writes ``features.stock_signal_momentum_daily``.
 """
 
 from __future__ import annotations

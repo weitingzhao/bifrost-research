@@ -1,7 +1,7 @@
 """File-based Event Radar ingest (Owner decision A).
 
 Reads unstructured news files from ``EVENT_RADAR_INPUT_DIR``, runs the
-5-step pipeline, upserts ``features_signals.event_radar``, and optionally archives
+5-step pipeline, upserts ``features.event_signal_radar_daily``, and optionally archives
 processed files so they are not reprocessed.
 
 Aligned with Research-workspace offline convention:

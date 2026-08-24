@@ -1,4 +1,4 @@
-"""IV Percentile / Rank daily: features_daily.atm_iv_daily → iv_percentile_daily.
+"""IV Percentile / Rank daily: features.option_metric_atm_iv_daily → iv_percentile_daily.
 
 Current IV for a symbol+trade_date = **median** of ``atm_iv`` across expiries that day
 (documented choice: median is robust when near-term expiries are noisy or sparse).
@@ -90,7 +90,7 @@ def fetch_atm_iv_rows(
             cur.execute(
                 """
                 SELECT symbol, trade_date, expiry, atm_iv
-                FROM features_daily.atm_iv_daily
+                FROM features.option_metric_atm_iv_daily
                 WHERE trade_date >= %s AND trade_date <= %s
                   AND symbol = ANY(%s)
                 ORDER BY symbol, trade_date, expiry
@@ -101,7 +101,7 @@ def fetch_atm_iv_rows(
             cur.execute(
                 """
                 SELECT symbol, trade_date, expiry, atm_iv
-                FROM features_daily.atm_iv_daily
+                FROM features.option_metric_atm_iv_daily
                 WHERE trade_date >= %s AND trade_date <= %s
                 ORDER BY symbol, trade_date, expiry
                 """,
@@ -202,7 +202,7 @@ def compute_iv_percentile_for_date(
 
     n = batch_upsert(
         conn,
-        "features_daily.iv_percentile_daily",
+        "features.option_metric_iv_percentile_daily",
         _COLS,
         upsert_rows,
         conflict_keys=("symbol", "trade_date"),

@@ -1,4 +1,4 @@
-"""ATM IV daily compute: market.v_option_snapshot_with_stock → features_daily.atm_iv_daily.
+"""ATM IV daily compute: market.v_option_snapshot_with_stock → features.option_metric_atm_iv_daily.
 
 Algorithm independently reimplemented from bifrost_api.research.iv_atm
 (no bifrost-core / trade-api pip dependency).
@@ -244,7 +244,7 @@ def compute_atm_iv_for_date(
 
     n = batch_upsert(
         conn,
-        "features_daily.atm_iv_daily",
+        "features.option_metric_atm_iv_daily",
         _COLS,
         upsert_rows,
         conflict_keys=("symbol", "trade_date", "expiry"),

@@ -40,7 +40,7 @@ spec:
                   exit 1
           containers:
             - name: dbt-runner
-              image: 192.168.10.73:30500/bifrost-research:0.5.7
+              image: 192.168.10.73:30500/bifrost-research:0.7.0
               imagePullPolicy: Always
               workingDir: /app/src/bifrost_research/dbt
               command: ["bash", "-lc"]
@@ -52,6 +52,8 @@ spec:
                   rm -f target/partial_parse.msgpack
                   dbt run --no-partial-parse --target "${DBT_TARGET:-dev}" --profiles-dir .
                   dbt test --no-partial-parse --target "${DBT_TARGET:-dev}" --profiles-dir . || echo "tests non-blocking"
+                  echo "=== SEPA projection (mart_sepa_feature_daily → features.stock_signal_sepa_daily) ==="
+                  python -c "from bifrost_research.db.conn import connect; from bifrost_research.orchestration.sepa_projection import run_sepa_projection; c=connect(); print(run_sepa_projection(c)); c.close()"
               envFrom:
                 - configMapRef:
                     name: bifrost-analytics-config

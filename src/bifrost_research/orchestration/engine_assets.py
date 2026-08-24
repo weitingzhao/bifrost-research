@@ -47,7 +47,7 @@ def _metadata(result: dict[str, Any]) -> dict[str, Any]:
     key=AssetKey(["engines", "volatility"]),
     deps=[_MARKET],
     group_name="python_analytics",
-    description="Volatility engines (max pain / ATM IV / PCR / IV percentile) → features_daily.*",
+    description="Volatility engines (max pain / ATM IV / PCR / IV percentile) → features.option_metric_*_daily",
 )
 def volatility(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_volatility()
@@ -59,7 +59,7 @@ def volatility(context: AssetExecutionContext) -> MaterializeResult:
     key=AssetKey(["engines", "momentum"]),
     deps=[_MARKET],
     group_name="python_analytics",
-    description="Momentum Radar → features_signals.momentum_score_daily",
+    description="Momentum Radar → features.stock_signal_momentum_daily",
 )
 def momentum(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_momentum()
@@ -71,7 +71,7 @@ def momentum(context: AssetExecutionContext) -> MaterializeResult:
     key=AssetKey(["engines", "gex"]),
     deps=[_MARKET],
     group_name="python_analytics",
-    description="GEX Engine → features_option.gex_daily / gex_levels_daily",
+    description="GEX Engine → features.option_metric_gex_daily / option_metric_gex_levels_daily",
 )
 def gex(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_gex()
@@ -83,7 +83,7 @@ def gex(context: AssetExecutionContext) -> MaterializeResult:
     key=AssetKey(["engines", "surface"]),
     deps=[_MARKET],
     group_name="python_analytics",
-    description="IV Surface / vol cone → features_option.iv_surface_daily",
+    description="IV Surface / vol cone → features.option_surface_iv_daily",
 )
 def surface(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_surface()
@@ -95,7 +95,7 @@ def surface(context: AssetExecutionContext) -> MaterializeResult:
     key=AssetKey(["engines", "flow"]),
     deps=[_MARKET],
     group_name="python_analytics",
-    description="Order Flow / sentiment → features_option.order_sentiment_daily",
+    description="Order Flow / sentiment → features.option_flow_sentiment_daily",
 )
 def flow(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_flow()
@@ -112,7 +112,7 @@ def flow(context: AssetExecutionContext) -> MaterializeResult:
         AssetKey(["engines", "surface"]),
     ],
     group_name="python_analytics",
-    description="Market terrain / regime → features_forecasts.market_terrain_daily",
+    description="Market terrain / regime → features.stock_forecast_terrain_daily",
 )
 def terrain(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_terrain()
@@ -124,7 +124,7 @@ def terrain(context: AssetExecutionContext) -> MaterializeResult:
     key=AssetKey(["engines", "forecast"]),
     deps=[AssetKey(["engines", "terrain"])],
     group_name="ai_forecast",
-    description="AI intraday playbook / path calls → features_forecasts.forecast_session / forecast_hourly",
+    description="AI intraday playbook / path calls → features.stock_forecast_session / stock_forecast_hourly",
 )
 def forecast(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_forecast()
@@ -136,7 +136,7 @@ def forecast(context: AssetExecutionContext) -> MaterializeResult:
     key=AssetKey(["engines", "event_radar"]),
     deps=[_MARKET],
     group_name="ai_forecast",
-    description="Event Radar 5-step pipeline → features_signals.event_radar",
+    description="Event Radar 5-step pipeline → features.event_signal_radar_daily",
 )
 def event_radar(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_event_radar()
@@ -148,7 +148,7 @@ def event_radar(context: AssetExecutionContext) -> MaterializeResult:
     key=AssetKey(["engines", "backtest"]),
     deps=[AssetKey(["engines", "forecast"])],
     group_name="ai_forecast",
-    description="Forecast settlement / accuracy → features_backtests.forecast_settlement / backtest_results",
+    description="Forecast settlement / accuracy → features.stock_backtest_settlement / stock_backtest_results_period",
 )
 def backtest(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_backtest()

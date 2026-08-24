@@ -1,12 +1,12 @@
 """IV Surface / smile / vol-cone analysis (Wave 3.3).
 
-Extends engines/volatility. Writes ``features_option.iv_surface_daily``.
+Extends engines/volatility. Writes ``features.option_surface_iv_daily``.
 
 Fits:
   - Polynomial smile on moneyness (degree 2 default; pure Python)
   - Lightweight SVI grid search (no scipy) when enough points
 
-Vol cone: historical ATM IV percentile bands from features_daily.atm_iv_daily.
+Vol cone: historical ATM IV percentile bands from features.option_metric_atm_iv_daily.
 """
 
 from __future__ import annotations
@@ -453,7 +453,7 @@ def fetch_spot_fallback(
             cur.execute(
                 """
                 SELECT max_pain_strike
-                FROM features_daily.max_pain_daily
+                FROM features.option_metric_max_pain_daily
                 WHERE UPPER(TRIM(symbol)) = %s AND trade_date = %s
                 ORDER BY expiry ASC
                 LIMIT 1
@@ -494,7 +494,7 @@ def fetch_atm_iv_history(
         cur.execute(
             """
             SELECT trade_date, atm_iv
-            FROM features_daily.atm_iv_daily
+            FROM features.option_metric_atm_iv_daily
             WHERE UPPER(TRIM(symbol)) = %s
               AND trade_date >= %s AND trade_date <= %s
             """,
@@ -562,7 +562,7 @@ def compute_iv_surface_for_symbol(
     if rows:
         batch_upsert(
             conn,
-            "features_option.iv_surface_daily",
+            "features.option_surface_iv_daily",
             _COLS,
             rows,
             conflict_keys=("symbol", "trade_date", "expiry"),

@@ -1,4 +1,4 @@
-"""Put/Call Ratio daily: OI + volume → features_daily.pcr_daily.
+"""Put/Call Ratio daily: OI + volume → features.option_metric_pcr_daily.
 
 Independently reimplemented (no bifrost-core / trade-api pip dependency).
 
@@ -195,7 +195,7 @@ def compute_pcr_for_date(
 
     n = batch_upsert(
         conn,
-        "features_daily.pcr_daily",
+        "features.option_metric_pcr_daily",
         _COLS,
         upsert_rows,
         conflict_keys=("symbol", "trade_date"),

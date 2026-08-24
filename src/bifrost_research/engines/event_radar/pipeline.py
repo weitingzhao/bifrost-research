@@ -1,7 +1,7 @@
 """Event Radar pipeline — 5-step scaffold aligned with Research-workspace workflow.
 
 Steps: parse → clean/dedupe → tag → export → self-check
-Maps unstructured financial text → features_signals.event_radar.
+Maps unstructured financial text → features.event_signal_radar_daily.
 
 D10 BLOCKED — advisory structured events only.
 """
@@ -392,7 +392,7 @@ def step_tag(raw_events: Sequence[RawEvent]) -> list[TaggedEvent]:
 
 
 def step_export(tagged: Sequence[TaggedEvent]) -> list[dict[str, Any]]:
-    """04 export — structured rows for API / features_signals.event_radar."""
+    """04 export — structured rows for API / features.event_signal_radar_daily."""
     rows: list[dict[str, Any]] = []
     for t in tagged:
         if t.dropped:
@@ -489,7 +489,7 @@ def upsert_events(conn: Any, result: PipelineResult) -> int:
         return 0
     return batch_upsert(
         conn,
-        "features_signals.event_radar",
+        "features.event_signal_radar_daily",
         _COLS,
         rows,
         conflict_keys=("event_id",),

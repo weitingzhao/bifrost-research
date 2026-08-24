@@ -137,3 +137,22 @@ models:
           - not_null
       - name: composite_score
         description: "Overall composite score"
+
+  - name: mart_sepa_feature_daily
+    description: "Projection mart for features.stock_signal_sepa_daily (dbt-owned SEPA scores)"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+      - name: trade_date
+        tests:
+          - not_null
+      - name: sepa_score
+        description: "Composite SEPA score 0-100"
+        tests:
+          - not_null
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - symbol
+            - trade_date

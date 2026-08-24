@@ -96,7 +96,7 @@ def terrain_intraday(
         if resolved is None:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT MAX(trade_date) FROM features_forecasts.terrain_intraday WHERE symbol = %s",
+                    "SELECT MAX(trade_date) FROM features.stock_forecast_terrain_intraday WHERE symbol = %s",
                     (sym,),
                 )
                 row = cur.fetchone()
@@ -114,7 +114,7 @@ def terrain_intraday(
 
         sql = f"""
             SELECT {', '.join(cols)}
-            FROM features_forecasts.terrain_intraday
+            FROM features.stock_forecast_terrain_intraday
             WHERE symbol = %s AND trade_date = %s
             ORDER BY asof_ts ASC
         """
@@ -156,7 +156,7 @@ def gex_intraday(
         if resolved is None:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT MAX(trade_date) FROM features_option.gex_intraday WHERE symbol = %s",
+                    "SELECT MAX(trade_date) FROM features.option_metric_gex_intraday WHERE symbol = %s",
                     (sym,),
                 )
                 row = cur.fetchone()
@@ -174,7 +174,7 @@ def gex_intraday(
 
         sql = f"""
             SELECT {', '.join(cols)}
-            FROM features_option.gex_intraday
+            FROM features.option_metric_gex_intraday
             WHERE symbol = %s AND trade_date = %s
             ORDER BY asof_ts ASC
         """
@@ -248,7 +248,7 @@ def get_terrain(
         if resolved is None:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT MAX(trade_date) FROM features_forecasts.market_terrain_daily WHERE symbol = %s",
+                    "SELECT MAX(trade_date) FROM features.stock_forecast_terrain_daily WHERE symbol = %s",
                     (sym,),
                 )
                 row = cur.fetchone()
@@ -261,7 +261,7 @@ def get_terrain(
             params.append(resolved)
         sql = f"""
             SELECT {', '.join(cols)}
-            FROM features_forecasts.market_terrain_daily
+            FROM features.stock_forecast_terrain_daily
             WHERE {' AND '.join(clauses)}
             LIMIT 1
         """
@@ -348,7 +348,7 @@ def list_forecast_sessions(
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = f"""
             SELECT {', '.join(cols)}
-            FROM features_forecasts.forecast_session
+            FROM features.stock_forecast_session
             {where}
             ORDER BY trade_date DESC, computed_at DESC
             LIMIT %s
@@ -400,7 +400,7 @@ def get_forecast_session(session_id: str) -> dict[str, Any]:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                f"SELECT {', '.join(session_cols)} FROM features_forecasts.forecast_session WHERE session_id = %s",
+                f"SELECT {', '.join(session_cols)} FROM features.stock_forecast_session WHERE session_id = %s",
                 (session_id,),
             )
             raw = cur.fetchone()
@@ -410,7 +410,7 @@ def get_forecast_session(session_id: str) -> dict[str, Any]:
             cur.execute(
                 f"""
                 SELECT {', '.join(hourly_cols)}
-                FROM features_forecasts.forecast_hourly
+                FROM features.stock_forecast_hourly
                 WHERE session_id = %s
                 ORDER BY hour_et ASC
                 """,
@@ -446,7 +446,7 @@ def list_forecast_hourly(
             cur.execute(
                 f"""
                 SELECT {', '.join(cols)}
-                FROM features_forecasts.forecast_hourly
+                FROM features.stock_forecast_hourly
                 WHERE session_id = %s
                 ORDER BY hour_et ASC
                 """,
@@ -518,7 +518,7 @@ def list_event_radar(
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = f"""
             SELECT {', '.join(cols)}
-            FROM features_signals.event_radar
+            FROM features.event_signal_radar_daily
             {where}
             ORDER BY collected_at DESC NULLS LAST, importance DESC NULLS LAST
             LIMIT %s
@@ -564,7 +564,7 @@ def list_event_batches(
                     COUNT(*) FILTER (WHERE dropped IS DISTINCT FROM true) AS kept_count,
                     COUNT(*) FILTER (WHERE dropped = true) AS dropped_count,
                     COUNT(*) AS total_count
-                FROM features_signals.event_radar
+                FROM features.event_signal_radar_daily
                 WHERE batch_id IS NOT NULL
                 GROUP BY batch_id
                 ORDER BY MIN(collected_at) DESC NULLS LAST
@@ -594,7 +594,7 @@ def get_event_batch(batch_id: str) -> dict[str, Any]:
             cur.execute(
                 f"""
                 SELECT {', '.join(event_cols)}
-                FROM features_signals.event_radar
+                FROM features.event_signal_radar_daily
                 WHERE batch_id = %s
                 ORDER BY importance DESC NULLS LAST
                 """,
@@ -621,7 +621,7 @@ def event_themes() -> dict[str, Any]:
                     COUNT(*) AS count,
                     ROUND(AVG(direction)::numeric, 2) AS direction_avg,
                     ROUND(AVG(sentiment)::numeric, 2) AS sentiment_avg
-                FROM features_signals.event_radar
+                FROM features.event_signal_radar_daily
                 WHERE dropped IS DISTINCT FROM true
                   AND theme IS NOT NULL AND theme != ''
                 GROUP BY theme
@@ -652,7 +652,7 @@ def event_calendar(
             cur.execute(
                 f"""
                 SELECT {', '.join(cols)}
-                FROM features_signals.event_radar
+                FROM features.event_signal_radar_daily
                 WHERE dropped IS DISTINCT FROM true
                   AND time_code = 2
                 ORDER BY event_date ASC NULLS LAST, importance DESC NULLS LAST
@@ -776,7 +776,7 @@ def get_forecast_settlement(
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = f"""
             SELECT {', '.join(cols)}
-            FROM features_backtests.forecast_settlement
+            FROM features.stock_backtest_settlement
             {where}
             ORDER BY trade_date DESC, computed_at DESC
             LIMIT %s
@@ -832,7 +832,7 @@ def forecast_backtest(
                     ROUND(AVG(CASE WHEN path_hit THEN 1.0 ELSE 0.0 END)::numeric, 4) AS path_hit_rate,
                     ROUND(AVG(ABS(close_miss_pct))::numeric, 6) AS avg_close_miss_pct,
                     PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ABS(close_miss_pct)) AS median_close_miss_pct
-                FROM features_backtests.forecast_settlement
+                FROM features.stock_backtest_settlement
                 {where}
                 """,
                 tuple(params),
@@ -893,7 +893,7 @@ def get_settlement_summary(
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = f"""
             SELECT {', '.join(cols)}
-            FROM features_backtests.forecast_settlement
+            FROM features.stock_backtest_settlement
             {where}
             ORDER BY trade_date DESC
             LIMIT %s

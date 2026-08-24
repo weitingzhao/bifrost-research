@@ -89,7 +89,7 @@ def momentum_radar(
         if resolved is None and sym:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT MAX(trade_date) FROM features_signals.momentum_score_daily WHERE symbol = %s",
+                    "SELECT MAX(trade_date) FROM features.stock_signal_momentum_daily WHERE symbol = %s",
                     (sym,),
                 )
                 row = cur.fetchone()
@@ -109,7 +109,7 @@ def momentum_radar(
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = f"""
             SELECT {', '.join(cols)}
-            FROM features_signals.momentum_score_daily
+            FROM features.stock_signal_momentum_daily
             {where}
             ORDER BY score DESC NULLS LAST, symbol ASC
             LIMIT %s
@@ -165,7 +165,7 @@ def gex_levels(
         if resolved is None:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT MAX(trade_date) FROM features_option.gex_levels_daily WHERE symbol = %s",
+                    "SELECT MAX(trade_date) FROM features.option_metric_gex_levels_daily WHERE symbol = %s",
                     (sym,),
                 )
                 row = cur.fetchone()
@@ -181,7 +181,7 @@ def gex_levels(
             params.append(expiry)
         sql = f"""
             SELECT {', '.join(cols)}
-            FROM features_option.gex_levels_daily
+            FROM features.option_metric_gex_levels_daily
             WHERE {' AND '.join(clauses)}
             ORDER BY expiry ASC
             LIMIT 200
@@ -233,7 +233,7 @@ def gex_distribution(
         if resolved is None:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT MAX(trade_date) FROM features_option.gex_daily WHERE symbol = %s",
+                    "SELECT MAX(trade_date) FROM features.option_metric_gex_daily WHERE symbol = %s",
                     (sym,),
                 )
                 row = cur.fetchone()
@@ -249,7 +249,7 @@ def gex_distribution(
             params.append(expiry)
         sql = f"""
             SELECT {', '.join(cols)}
-            FROM features_option.gex_daily
+            FROM features.option_metric_gex_daily
             WHERE {' AND '.join(clauses)}
             ORDER BY expiry ASC, strike ASC
             LIMIT 5000
@@ -303,7 +303,7 @@ def volatility_smile(
         if resolved is None:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT MAX(trade_date) FROM features_option.iv_surface_daily WHERE symbol = %s",
+                    "SELECT MAX(trade_date) FROM features.option_surface_iv_daily WHERE symbol = %s",
                     (sym,),
                 )
                 row = cur.fetchone()
@@ -319,7 +319,7 @@ def volatility_smile(
             params.append(expiry)
         sql = f"""
             SELECT {', '.join(cols)}
-            FROM features_option.iv_surface_daily
+            FROM features.option_surface_iv_daily
             WHERE {' AND '.join(clauses)}
             ORDER BY expiry ASC
             LIMIT 100
@@ -368,7 +368,7 @@ def volatility_surface(
         if resolved is None:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT MAX(trade_date) FROM features_option.iv_surface_daily WHERE symbol = %s",
+                    "SELECT MAX(trade_date) FROM features.option_surface_iv_daily WHERE symbol = %s",
                     (sym,),
                 )
                 row = cur.fetchone()
@@ -384,7 +384,7 @@ def volatility_surface(
             params.append(expiry)
         sql = f"""
             SELECT {', '.join(cols)}
-            FROM features_option.iv_surface_daily
+            FROM features.option_surface_iv_daily
             WHERE {' AND '.join(clauses)}
             ORDER BY expiry ASC
             LIMIT 100
@@ -460,7 +460,7 @@ def flow_sentiment(
         if resolved is None and sym:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT MAX(trade_date) FROM features_option.order_sentiment_daily WHERE symbol = %s",
+                    "SELECT MAX(trade_date) FROM features.option_flow_sentiment_daily WHERE symbol = %s",
                     (sym,),
                 )
                 row = cur.fetchone()
@@ -474,7 +474,7 @@ def flow_sentiment(
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = f"""
             SELECT {', '.join(cols)}
-            FROM features_option.order_sentiment_daily
+            FROM features.option_flow_sentiment_daily
             {where}
             ORDER BY trade_date DESC, sentiment_score DESC NULLS LAST
             LIMIT %s
@@ -527,7 +527,7 @@ def flow_multi_leg(
         if resolved is None:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT MAX(trade_date) FROM features_option.multi_leg_trades WHERE symbol = %s",
+                    "SELECT MAX(trade_date) FROM features.option_flow_multi_leg_daily WHERE symbol = %s",
                     (sym,),
                 )
                 row = cur.fetchone()
@@ -540,7 +540,7 @@ def flow_multi_leg(
             params.append(resolved)
         sql = f"""
             SELECT {', '.join(cols)}
-            FROM features_option.multi_leg_trades
+            FROM features.option_flow_multi_leg_daily
             WHERE {' AND '.join(clauses)}
             ORDER BY total_notional DESC NULLS LAST
             LIMIT 200
@@ -565,10 +565,10 @@ def flow_multi_leg(
 
 
 # ---------------------------------------------------------------------------
-# SEPA fusion (Wave B)
+# SEPA fusion (Wave B) — dashboard read = dw_stock; model read = features
 # ---------------------------------------------------------------------------
 
-_SEPA_COLS = (
+_SEPA_MODEL_COLS = (
     "symbol",
     "trade_date",
     "fundamental_score",
@@ -592,25 +592,40 @@ _SEPA_COLS = (
     "fund_pass_count",
     "tech_pass_count",
     "factors_json",
+    "asof_ts",
     "computed_at",
+)
+
+_SEPA_DASHBOARD_COLS = (
+    "symbol",
+    "trade_date",
+    "overall_rank",
+    "decile",
+    "percentile",
+    "composite_score",
+    "fund_pass_count",
+    "tech_pass_count",
+    "combined_pass_count",
+    "momentum_score",
+    "structure_score",
+    "sentiment_score",
+    "latest_close",
+    "sma_50",
+    "sma_150",
+    "sma_200",
+    "company_name",
+    "primary_exchange",
 )
 
 
 @router.get("/sepa/daily")
 def sepa_daily(
     symbol: str | None = Query(None, description="Filter by underlying symbol"),
-    trade_date: date | None = Query(None, description="Trade date (default: latest)"),
-    stage: str | None = Query(None, description="Filter STAGE_1/2A/2B/2C/3/4"),
-    path_filter: str | None = Query(None, alias="path", description="Filter SETUP/PIVOT/EXTENDED/WATCH/AVOID"),
-    grade: str | None = Query(None, description="Filter grade A+/A/B/C/D"),
-    min_score: float | None = Query(None, ge=0, le=100, description="Minimum SEPA composite"),
+    trade_date: date | None = Query(None, description="Eval date (default: latest)"),
+    min_score: float | None = Query(None, ge=0, le=100, description="Minimum composite (0-100 scale)"),
     limit: int = Query(200, ge=1, le=1000),
 ) -> dict[str, Any]:
-    """Return SEPA fusion scores from ``features_signals.sepa_score_daily``.
-
-    Sorted by composite ``sepa_score DESC``. Latest trade_date auto-selected when
-    not provided.
-    """
+    """SEPA dashboard read — ``dw_stock.mart_sepa_screener_wide`` (canonical human read)."""
     conn = _connect_or_503()
     try:
         clauses: list[str] = []
@@ -622,7 +637,144 @@ def sepa_daily(
         resolved = trade_date
         if resolved is None:
             with conn.cursor() as cur:
-                cur.execute("SELECT MAX(trade_date) FROM features_signals.sepa_score_daily")
+                cur.execute("SELECT MAX(eval_date) FROM dw_stock.mart_sepa_screener_wide")
+                row = cur.fetchone()
+            if row is not None:
+                resolved = _as_date(
+                    row[0] if not isinstance(row, Mapping) else next(iter(row.values()), None)
+                )
+        if resolved is not None:
+            clauses.append("eval_date = %s")
+            params.append(resolved)
+        if min_score is not None:
+            clauses.append("composite_score * 100 >= %s")
+            params.append(float(min_score))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = f"""
+            SELECT
+                symbol,
+                eval_date AS trade_date,
+                overall_rank,
+                decile,
+                percentile,
+                composite_score,
+                fund_pass_count,
+                tech_pass_count,
+                combined_pass_count,
+                momentum_score,
+                structure_score,
+                sentiment_score,
+                latest_close,
+                sma_50,
+                sma_150,
+                sma_200,
+                company_name,
+                primary_exchange
+            FROM dw_stock.mart_sepa_screener_wide
+            {where}
+            ORDER BY composite_score DESC NULLS LAST, overall_rank ASC NULLS LAST, symbol ASC
+            LIMIT %s
+        """
+        params.append(limit)
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            raw = cur.fetchall() or []
+        rows = [_row_dict(r, _SEPA_DASHBOARD_COLS) for r in raw]
+    finally:
+        conn.close()
+
+    return {
+        "rows": rows,
+        "count": len(rows),
+        "symbol": sym,
+        "trade_date": resolved.isoformat() if resolved else None,
+        "read_path": "dw_stock.mart_sepa_screener_wide",
+        "filters": {"min_score": min_score},
+    }
+
+
+@router.get("/sepa/candidates")
+def sepa_candidates(
+    trade_date: date | None = Query(None),
+    top: int = Query(30, ge=1, le=100),
+) -> dict[str, Any]:
+    """SEPA dashboard short-list — top-N by ``overall_rank`` from screener wide mart."""
+    conn = _connect_or_503()
+    try:
+        resolved = trade_date
+        if resolved is None:
+            with conn.cursor() as cur:
+                cur.execute("SELECT MAX(eval_date) FROM dw_stock.mart_sepa_screener_wide")
+                row = cur.fetchone()
+            if row is not None:
+                resolved = _as_date(
+                    row[0] if not isinstance(row, Mapping) else next(iter(row.values()), None)
+                )
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    symbol,
+                    eval_date AS trade_date,
+                    overall_rank,
+                    decile,
+                    percentile,
+                    composite_score,
+                    fund_pass_count,
+                    tech_pass_count,
+                    combined_pass_count,
+                    momentum_score,
+                    structure_score,
+                    sentiment_score,
+                    latest_close,
+                    sma_50,
+                    sma_150,
+                    sma_200,
+                    company_name,
+                    primary_exchange
+                FROM dw_stock.mart_sepa_screener_wide
+                WHERE eval_date = %s
+                ORDER BY overall_rank ASC NULLS LAST, composite_score DESC NULLS LAST
+                LIMIT %s
+                """,
+                (resolved, top),
+            )
+            raw = cur.fetchall() or []
+        rows = [_row_dict(r, _SEPA_DASHBOARD_COLS) for r in raw]
+    finally:
+        conn.close()
+
+    return {
+        "trade_date": resolved.isoformat() if resolved else None,
+        "candidates": rows,
+        "count": len(rows),
+        "read_path": "dw_stock.mart_sepa_screener_wide",
+    }
+
+
+@router.get("/sepa/model/daily")
+def sepa_model_daily(
+    symbol: str | None = Query(None, description="Filter by underlying symbol"),
+    trade_date: date | None = Query(None, description="Trade date (default: latest)"),
+    stage: str | None = Query(None, description="Filter STAGE_1/2A/2B/2C/3/4"),
+    path_filter: str | None = Query(None, alias="path", description="Filter SETUP/PIVOT/EXTENDED/WATCH/AVOID"),
+    grade: str | None = Query(None, description="Filter grade A+/A/B/C/D"),
+    min_score: float | None = Query(None, ge=0, le=100, description="Minimum SEPA composite"),
+    limit: int = Query(200, ge=1, le=1000),
+) -> dict[str, Any]:
+    """Model read — ``features.stock_signal_sepa_daily`` (projection from dbt mart)."""
+    conn = _connect_or_503()
+    try:
+        clauses: list[str] = []
+        params: list[Any] = []
+        sym = str(symbol).strip().upper() if symbol else None
+        if sym:
+            clauses.append("symbol = %s")
+            params.append(sym)
+        resolved = trade_date
+        if resolved is None:
+            with conn.cursor() as cur:
+                cur.execute("SELECT MAX(trade_date) FROM features.stock_signal_sepa_daily")
                 row = cur.fetchone()
             if row is not None:
                 resolved = _as_date(
@@ -645,8 +797,8 @@ def sepa_daily(
             params.append(float(min_score))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = f"""
-            SELECT {', '.join(_SEPA_COLS)}
-            FROM features_signals.sepa_score_daily
+            SELECT {', '.join(_SEPA_MODEL_COLS)}
+            FROM features.stock_signal_sepa_daily
             {where}
             ORDER BY sepa_score DESC NULLS LAST, symbol ASC
             LIMIT %s
@@ -655,7 +807,7 @@ def sepa_daily(
         with conn.cursor() as cur:
             cur.execute(sql, tuple(params))
             raw = cur.fetchall() or []
-        rows = [_row_dict(r, _SEPA_COLS) for r in raw]
+        rows = [_row_dict(r, _SEPA_MODEL_COLS) for r in raw]
     finally:
         conn.close()
 
@@ -664,6 +816,7 @@ def sepa_daily(
         "count": len(rows),
         "symbol": sym,
         "trade_date": resolved.isoformat() if resolved else None,
+        "read_path": "features.stock_signal_sepa_daily",
         "filters": {
             "stage": stage,
             "path": path_filter,
@@ -673,18 +826,18 @@ def sepa_daily(
     }
 
 
-@router.get("/sepa/candidates")
-def sepa_candidates(
+@router.get("/sepa/model/candidates")
+def sepa_model_candidates(
     trade_date: date | None = Query(None),
     top: int = Query(30, ge=1, le=100),
 ) -> dict[str, Any]:
-    """SEPA daily candidate short-list: top-N by composite in SETUP/PIVOT paths."""
+    """Model short-list — top SETUP/PIVOT from Feature Store projection."""
     conn = _connect_or_503()
     try:
         resolved = trade_date
         if resolved is None:
             with conn.cursor() as cur:
-                cur.execute("SELECT MAX(trade_date) FROM features_signals.sepa_score_daily")
+                cur.execute("SELECT MAX(trade_date) FROM features.stock_signal_sepa_daily")
                 row = cur.fetchone()
             if row is not None:
                 resolved = _as_date(
@@ -693,8 +846,8 @@ def sepa_candidates(
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                SELECT {', '.join(_SEPA_COLS)}
-                FROM features_signals.sepa_score_daily
+                SELECT {', '.join(_SEPA_MODEL_COLS)}
+                FROM features.stock_signal_sepa_daily
                 WHERE trade_date = %s
                   AND path IN ('SETUP', 'PIVOT')
                 ORDER BY sepa_score DESC NULLS LAST
@@ -703,7 +856,7 @@ def sepa_candidates(
                 (resolved, top),
             )
             raw = cur.fetchall() or []
-        rows = [_row_dict(r, _SEPA_COLS) for r in raw]
+        rows = [_row_dict(r, _SEPA_MODEL_COLS) for r in raw]
     finally:
         conn.close()
 
@@ -711,4 +864,5 @@ def sepa_candidates(
         "trade_date": resolved.isoformat() if resolved else None,
         "candidates": rows,
         "count": len(rows),
+        "read_path": "features.stock_signal_sepa_daily",
     }

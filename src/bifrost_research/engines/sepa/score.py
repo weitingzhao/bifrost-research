@@ -485,7 +485,7 @@ def fetch_momentum_score(conn: Any, symbol: str, *, as_of: date) -> float | None
             cur.execute(
                 """
                 SELECT score
-                FROM features_signals.momentum_score_daily
+                FROM features.stock_signal_momentum_daily
                 WHERE symbol = %s AND trade_date <= %s
                 ORDER BY trade_date DESC
                 LIMIT 1
@@ -527,7 +527,7 @@ def fetch_options_context(
         for query, key_map in (
             (
                 """
-                SELECT iv_percentile_1y FROM features_daily.iv_percentile_daily
+                SELECT iv_percentile_1y FROM features.option_metric_iv_percentile_daily
                 WHERE symbol = %s AND trade_date <= %s
                 ORDER BY trade_date DESC LIMIT 1
                 """,
@@ -535,7 +535,7 @@ def fetch_options_context(
             ),
             (
                 """
-                SELECT pcr_oi FROM features_daily.pcr_daily
+                SELECT pcr_oi FROM features.option_metric_pcr_daily
                 WHERE symbol = %s AND trade_date <= %s
                 ORDER BY trade_date DESC LIMIT 1
                 """,
@@ -544,7 +544,7 @@ def fetch_options_context(
             (
                 """
                 SELECT spot, zero_gamma, major_call_wall, major_put_wall
-                FROM features_option.gex_levels_daily
+                FROM features.option_metric_gex_levels_daily
                 WHERE symbol = %s AND trade_date <= %s
                 ORDER BY trade_date DESC, expiry ASC LIMIT 1
                 """,
@@ -584,88 +584,18 @@ def fetch_options_context(
 def compute_sepa_for_symbol(
     conn: Any, *, symbol: str, trade_date: date
 ) -> dict[str, Any] | None:
-    """Compute + upsert one symbol's SEPA score. Returns result dict."""
-    bars = fetch_daily_bars(conn, symbol, as_of=trade_date)
-    if len(bars) < 50:
+    """Projection from dbt mart (single symbol). Returns summary or None if mart empty."""
+    from bifrost_research.orchestration.sepa_projection import run_sepa_projection
+
+    result = run_sepa_projection(
+        conn, trade_date=trade_date, symbols=[symbol.strip().upper()]
+    )
+    if result.get("rows_written", 0) == 0:
         return None
-
-    trend = compute_trend_template(bars)
-    fund_row = fetch_fundamental_eval(conn, symbol, as_of=trade_date)
-    fund = _fundamental_score_from_eval(fund_row)
-    momentum = fetch_momentum_score(conn, symbol, as_of=trade_date)
-    momentum_val = momentum if momentum is not None else 50.0
-    opts_ctx = fetch_options_context(conn, symbol, as_of=trade_date)
-    structure = _structure_score(**opts_ctx)
-    fused = fuse_sepa(
-        trend=trend,
-        fundamental=fund,
-        momentum_score=momentum_val,
-        structure=structure,
-    )
-
-    now = datetime.now(timezone.utc)
-    row_values = (
-        symbol.strip().upper(),
-        trade_date,
-        fund["fundamental_score"],
-        trend["trend_template_score"],
-        momentum_val,
-        structure["structure_score"],
-        fused["sepa_score"],
-        fused["grade"],
-        fused["stage"],
-        fused["path"],
-        bool(trend["trend_template_pass"]),
-        bool(fund["fundamental_pass"]),
-        trend["latest_close"],
-        trend["sma_50"],
-        trend["sma_150"],
-        trend["sma_200"],
-        trend["high_52w"],
-        trend["low_52w"],
-        opts_ctx.get("iv_percentile"),
-        opts_ctx.get("pcr_oi"),
-        int(fund["fund_pass_count"]),
-        int(trend["trend_template_pass_count"]),
-        {
-            "trend": {
-                "criteria": trend["criteria"],
-                "pass_count": trend["trend_template_pass_count"],
-            },
-            "fundamental": {
-                "criteria": fund["criteria"],
-                "insufficient": fund["insufficient"],
-            },
-            "momentum": {
-                "score": momentum_val,
-                "source": (
-                    "features_signals.momentum_score_daily"
-                    if momentum is not None
-                    else "neutral_fallback"
-                ),
-            },
-            "structure": structure,
-            "weights": fused["weights"],
-        },
-        now,
-    )
-    batch_upsert(
-        conn,
-        "features_signals.sepa_score_daily",
-        _COLS,
-        [row_values],
-        conflict_keys=("symbol", "trade_date"),
-        update_cols=[c for c in _COLS if c not in ("symbol", "trade_date")],
-        set_fetched_at=False,
-    )
     return {
         "symbol": symbol.strip().upper(),
         "trade_date": trade_date.isoformat(),
-        "fundamental_score": fund["fundamental_score"],
-        "trend_template_score": trend["trend_template_score"],
-        "momentum_score": momentum_val,
-        "structure_score": structure["structure_score"],
-        **fused,
+        **result,
     }
 
 
@@ -675,17 +605,9 @@ def compute_sepa_for_date(
     trade_date: date,
     symbols: Sequence[str],
 ) -> dict[str, Any]:
-    written = 0
-    skipped = 0
-    for sym in symbols:
-        out = compute_sepa_for_symbol(conn, symbol=sym, trade_date=trade_date)
-        if out is None:
-            skipped += 1
-        else:
-            written += 1
-    return {
-        "trade_date": trade_date.isoformat(),
-        "symbols": len(symbols),
-        "rows_written": written,
-        "skipped": skipped,
-    }
+    """Projection from dbt mart for all symbols (legacy CronJob entrypoint)."""
+    from bifrost_research.orchestration.sepa_projection import run_sepa_projection
+
+    if symbols:
+        return run_sepa_projection(conn, trade_date=trade_date, symbols=symbols)
+    return run_sepa_projection(conn, trade_date=trade_date)

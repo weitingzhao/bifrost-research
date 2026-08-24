@@ -173,7 +173,7 @@ def test_compute_atm_iv_upsert() -> None:
     assert row[5] == 100.0
     assert row[6] == "snapshot"
     insert_sql = next(s[0] for s in conn.statements if "INSERT INTO" in s[0])
-    assert "features_daily.atm_iv_daily" in insert_sql
+    assert "features.option_metric_atm_iv_daily" in insert_sql
     assert "DO UPDATE" in insert_sql
 
 

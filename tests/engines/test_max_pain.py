@@ -201,7 +201,7 @@ def test_compute_max_pain_for_date_upserts() -> None:
     assert row[5] > 0  # total_pain_at_strike
     # DO UPDATE path (recompute refreshes), not DO NOTHING
     insert_sql = next(s[0] for s in conn.statements if "INSERT INTO" in s[0])
-    assert "features_daily.max_pain_daily" in insert_sql
+    assert "features.option_metric_max_pain_daily" in insert_sql
     assert "DO UPDATE" in insert_sql
     assert "fetched_at" not in insert_sql
 

@@ -1,6 +1,6 @@
 """Order Flow engine — sentiment + multi-leg scaffolding (Wave 3.4).
 
-Writes ``features_option.order_sentiment_daily`` and ``features_option.multi_leg_trades``.
+Writes ``features.option_flow_sentiment_daily`` and ``features.option_flow_multi_leg_daily``.
 
 ## Data-source dependency
 
@@ -448,7 +448,7 @@ def compute_order_flow_for_symbol(
 
     batch_upsert(
         conn,
-        "features_option.order_sentiment_daily",
+        "features.option_flow_sentiment_daily",
         _SENTIMENT_COLS,
         [
             (
@@ -508,7 +508,7 @@ def compute_order_flow_for_symbol(
         ]
         batch_upsert(
             conn,
-            "features_option.multi_leg_trades",
+            "features.option_flow_multi_leg_daily",
             _MULTI_LEG_COLS,
             ml_rows,
             conflict_keys=("symbol", "trade_date", "cluster_id"),

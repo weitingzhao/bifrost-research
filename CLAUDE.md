@@ -21,8 +21,8 @@
 | 项 | 说明 |
 |----|------|
 | 包名 | `bifrost_research` |
-| 输入 | `market.*`（Plugin 写入，本域只读） |
-| 输出 | `dw_stock.*`（dbt）· `features_daily.*` / `features_option.*` / `features_signals.*` / `features_forecasts.*` / `features_backtests.*`（Python engines） |
+| 输入 | `raw_market.*`（Plugin 写入，本域只读） |
+| 输出 | `dw_stock.*`（dbt 人读）· `features.*`（Feature Store，19 表四段命名，Python engines 写） |
 | dbt | `src/bifrost_research/dbt/` — SEPA 宽表管线（原 bifrost-analytics） |
 | Engines | `src/bifrost_research/engines/` — volatility · momentum · gex · flow（W3）· **forecast / event_radar / backtest（W4）** |
 | API | `src/bifrost_research/api/` — Research API `:8795`（SEPA + options + `/research/*` W3–W4 + elementary） |
@@ -30,12 +30,13 @@
 | K8s | namespace `research`（`k8s/api/`；`k8s/engines/` CronJobs；`k8s/orchestration/` Dagster stub replicas:0） |
 | D10 | **BLOCKED** — 不写交易执行路径 |
 
-### Wave 2–4 所有权
+### Wave 2–4 所有权（Wave 6.4+ 统一 `features.*`）
 
-- **`features_daily.*` / `features_option.*`**：volatility engines（IV / PCR / Max Pain / GEX / surface / flow）
-- **`features_signals.*`**：momentum / sepa_score / event_radar
-- **`features_forecasts.*`**：market_terrain / terrain_intraday / forecast_session / forecast_hourly
-- **`features_backtests.*`**：forecast_settlement / backtest_results
+- **`features.option_metric_*`**：volatility（IV / PCR / Max Pain / GEX）
+- **`features.option_surface_*` / `features.option_flow_*`**：IV surface / order flow
+- **`features.stock_signal_*`**：momentum / SEPA projection / event_radar
+- **`features.stock_forecast_*`**：terrain / forecast session / hourly
+- **`features.stock_backtest_*`**：settlement / results
 - CronJobs：`k8s/engines/cronjob-volatility.yaml` + `k8s/engines/cronjob-engines.yaml` + `k8s/engines/cronjob-intraday.yaml` + **`cronjob-event-radar.yaml`**（W3–W4 + news ingest；镜像 tag `0.5.7`）
 - LLM：`engines/forecast/llm.py` 可插拔（OpenAI/Anthropic/Ollama）；默认 **heuristic** 离线可测
 
@@ -55,11 +56,11 @@ Plugin market ingest (external) → dbt (dw_stock.*) → Python analytics → AI
 | Extra | `pip install -e ".[orchestration]"`（dagster + dagster-dbt + dagster-webserver） |
 | 本地 UI | `make dagster-dev` → http://127.0.0.1:3000 |
 | K8s | `k8s/orchestration/dagster.yaml` — webserver/daemon **replicas: 0** stub |
-| 版本 | **`0.5.7`** — Golden Source `features_*` schema rename + Waves 1–5 |
+| 版本 | **`0.7.0`** — Feature Store `features.*` unify + SEPA projection (Waves 6.4–6.6) |
 
 **Runtime Ignition 2026-08-21 DONE**：`research` NS + `research-api:8795` + dbt/volatility/engines/intraday CronJobs 已在 k3s 出数；platform-api `/api/v1/research/status` reachable。Dagster 仍 `replicas: 0`。
 
-**Event Radar news ingest (decision A) DONE**：Research-workspace `事件雷达工作流/input/` → Cron `research-engines-event-radar` → `features_signals.event_radar`。文档：`docs/EVENT_RADAR_INGEST.md`。Remaining follow-on：`plugin-options-tape`。
+**Event Radar news ingest (decision A) DONE**：Research-workspace `事件雷达工作流/input/` → Cron `research-engines-event-radar` → `features.event_signal_radar_daily`。文档：`docs/EVENT_RADAR_INGEST.md`。
 
 **Wave 5 foundation（已到位）**：Dagster 为 **optional** extra（`[orchestration]`）+ K8s stub（replicas:0）；Ops Console 侧 Research / 管线治理 catalog 已接通。生产启用仍见下方 blockers。
 
@@ -71,20 +72,20 @@ Plugin market ingest (external) → dbt (dw_stock.*) → Python analytics → AI
 4. Secret / PG 凭证、daemon + webserver 联调；replicas 仍为 0
 5. CronJob → Dagster schedules 迁移与 Owner 验收
 
-### SEPA canonical read path (Wave 6.3)
+### SEPA 数据流 (Wave 6.5+)
 
 | Layer | Schema / tables | Role |
 |-------|-----------------|------|
-| **Canonical read (external APIs, Trade, Console)** | `dw_stock.mart_sepa_*` | dbt SEPA four-phase wide tables — **Owner decision: single read contract** |
-| Engine output (internal) | `features_signals.sepa_score_daily` | Python momentum/SEPA engine materialization; not the canonical consumer surface |
-| Retired | `public.research_sepa_fundamentals_cache` | Removed from Trade DB (P8/P9) |
+| **业务 owner（dbt）** | `dw_stock.mart_sepa_*` | SEPA 四阶段宽表 — **人读 / dashboard / screener** |
+| **投影 mart** | `dw_stock.mart_sepa_feature_daily` | dbt 稳定列子集 → projection task 输入 |
+| **Feature Store** | `features.stock_signal_sepa_daily` | **模型 / backtest 读**（`asof_ts` PIT） |
+| Research API | `/research/sepa/*` → `mart_sepa_screener_wide` | 人读 |
+| Research API | `/research/sepa/model/*` → `features.stock_signal_sepa_daily` | 模型读 |
 
-Research API still reads `features_signals.sepa_score_daily` today. **Wave 6.5 (planned):** switch Research API SEPA routes to `dw_stock.mart_sepa_*` only; deprecate duplicate read path.
-
-Dagster dependency chain (canonical names):
+Dagster dependency chain:
 
 ```
-Plugin ingest → raw_market.* → dbt (dw_stock.*) → Python engines (features_*) → AI forecast
+Plugin ingest → raw_market.* → dbt (dw_stock.*) → projection → features.* → AI forecast
 ```
 
 ### 目录结构
@@ -94,7 +95,7 @@ src/bifrost_research/
   dbt/              # dbt-core SEPA analytics
   engines/          # volatility / momentum / gex / flow / forecast / event_radar / backtest
   api/              # FastAPI Research API — :8795
-  schema/           # features_daily / features_option / features_signals / features_forecasts / features_backtests DDL
+  schema/           # features.* Feature Store DDL
   db/               # Golden Source 连接 / upsert / calendar
   scheduler/        # CronJob entrypoints (volatility + engines)
   orchestration/    # Dagster Definitions + dagster-dbt + engine assets (Wave 5.1)

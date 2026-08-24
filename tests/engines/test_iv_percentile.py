@@ -23,7 +23,7 @@ class _FakeCursor:
     def execute(self, query: str, params: Any = None) -> None:
         self.parent.statements.append((query, params))
         q = query.lower()
-        if "from features_daily.atm_iv_daily" in q:
+        if "from features.option_metric_atm_iv_daily" in q:
             from_d = params[0] if params else None
             to_d = params[1] if params and len(params) > 1 else None
             underlyings = set(params[2]) if params and len(params) > 2 else None
@@ -141,7 +141,7 @@ def test_compute_iv_percentile_upsert() -> None:
     assert row[4] == 100.0  # rank
     assert row[5] == 5  # lookback_days
     insert_sql = next(s[0] for s in conn.statements if "INSERT INTO" in s[0])
-    assert "features_daily.iv_percentile_daily" in insert_sql
+    assert "features.option_metric_iv_percentile_daily" in insert_sql
     assert "DO UPDATE" in insert_sql
 
 

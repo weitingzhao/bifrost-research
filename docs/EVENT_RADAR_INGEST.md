@@ -1,7 +1,7 @@
 # Event Radar news ingest — Owner decision A
 
 **Operate Queue**: `research-radar-news-source` (`1b9258ea-ff4d-4bad-b4ea-9cd2ff2fb382`)  
-**Decision**: **A** — Research-workspace input directory → Cron → Event Radar pipeline → `features_signals.event_radar`  
+**Decision**: **A** — Research-workspace input directory → Cron → Event Radar pipeline → `features.event_signal_radar_daily`  
 **Constraints**: D10 BLOCKED · D13 OLAP-only (no Trade DB / no live trading)
 
 ## Path convention
@@ -23,7 +23,7 @@ Owner drops raw news into input/
         │
         ▼
 python -m bifrost_research.scheduler.event_radar
-        │  read files → run_pipeline → upsert features_signals.event_radar
+        │  read files → run_pipeline → upsert features.event_signal_radar_daily
         ▼
 archive/YYYYMMDDTHHMMSSZ_<filename>   (EVENT_RADAR_ARCHIVE=1)
         │

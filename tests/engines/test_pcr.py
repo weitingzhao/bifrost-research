@@ -132,7 +132,7 @@ def test_compute_pcr_fixture() -> None:
     assert row[6] == 80
     assert row[7] == 40
     insert_sql = next(s[0] for s in conn.statements if "INSERT INTO" in s[0])
-    assert "features_daily.pcr_daily" in insert_sql
+    assert "features.option_metric_pcr_daily" in insert_sql
     assert "DO UPDATE" in insert_sql
 
 

@@ -1,4 +1,4 @@
-"""Max Pain daily compute: market.option_open_interest → features_daily.max_pain_daily.
+"""Max Pain daily compute: market.option_open_interest → features.option_metric_max_pain_daily.
 
 Algorithm independently reimplemented from bifrost_core.monitor.reader.max_pain_math
 (D7=A — no bifrost-core pip dependency).
@@ -199,7 +199,7 @@ def compute_max_pain_for_date(
 
     n = batch_upsert(
         conn,
-        "features_daily.max_pain_daily",
+        "features.option_metric_max_pain_daily",
         _COLS,
         upsert_rows,
         conflict_keys=("symbol", "trade_date", "expiry"),

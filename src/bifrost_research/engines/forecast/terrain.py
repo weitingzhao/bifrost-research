@@ -4,7 +4,7 @@ Scores Pin / Trend Release / Vol Squeeze / Tail Risk, Expected Close,
 Gamma Zone, and regime classification (crash-risk / range / trending).
 
 Inputs are injectable dicts so unit tests never need live DB. When wired to
-scheduler, signals come from features_option.gex_* + momentum + iv_surface / iv_percentile.
+scheduler, signals come from features.option_metric_gex_* + momentum + iv_surface / iv_percentile.
 
 D10 BLOCKED — advisory only.
 """
@@ -430,7 +430,7 @@ def upsert_terrain_intraday(conn: Any, rows: Sequence[TerrainIntraday]) -> int:
         return 0
     return batch_upsert(
         conn,
-        "features_forecasts.terrain_intraday",
+        "features.stock_forecast_terrain_intraday",
         _INTRADAY_COLS,
         [r.to_row() for r in rows],
         conflict_keys=("symbol", "trade_date", "asof_ts"),
@@ -443,7 +443,7 @@ def upsert_market_terrain(conn: Any, rows: Sequence[MarketTerrain]) -> int:
         return 0
     return batch_upsert(
         conn,
-        "features_forecasts.market_terrain_daily",
+        "features.stock_forecast_terrain_daily",
         _COLS,
         [r.to_row() for r in rows],
         conflict_keys=("symbol", "trade_date"),
@@ -467,7 +467,7 @@ def load_upstream_signals(
         cur.execute(
             """
             SELECT zero_gamma, major_call_wall, major_put_wall, total_net_gex, spot
-            FROM features_option.gex_levels_daily
+            FROM features.option_metric_gex_levels_daily
             WHERE symbol = %s AND trade_date = %s
             ORDER BY expiry ASC
             LIMIT 1
@@ -492,7 +492,7 @@ def load_upstream_signals(
         cur.execute(
             """
             SELECT score, path, crash
-            FROM features_signals.momentum_score_daily
+            FROM features.stock_signal_momentum_daily
             WHERE symbol = %s AND trade_date = %s
             LIMIT 1
             """,
@@ -508,7 +508,7 @@ def load_upstream_signals(
         cur.execute(
             """
             SELECT iv_percentile_1y, iv_rank_1y
-            FROM features_daily.iv_percentile_daily
+            FROM features.option_metric_iv_percentile_daily
             WHERE symbol = %s AND trade_date = %s
             LIMIT 1
             """,

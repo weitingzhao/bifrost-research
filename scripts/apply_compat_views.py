@@ -16,28 +16,28 @@ MAPPINGS: list[tuple[str, str, set[str] | None]] = [
     ("market", "raw_market", None),
     ("brokerage", "raw_broker", None),
     ("analytics", "dw_stock", None),
-    ("market_analytics", "features_daily", None),
+    ("market_analytics", "features", None),
     ("analytics_elementary", "ops_dbt", None),
     ("data_ops", "ops_jobs", {"job_ingest", "ingest_freshness"}),
     ("flex_ops", "ops_jobs", {"job_flex_ingest", "flex_ingest_freshness"}),
 ]
 
 RESEARCH_VIEWS: list[tuple[str, str]] = [
-    ("gex_daily", "features_option.gex_daily"),
-    ("gex_levels_daily", "features_option.gex_levels_daily"),
-    ("gex_intraday", "features_option.gex_intraday"),
-    ("iv_surface_daily", "features_option.iv_surface_daily"),
-    ("order_sentiment_daily", "features_option.order_sentiment_daily"),
-    ("multi_leg_trades", "features_option.multi_leg_trades"),
-    ("momentum_score_daily", "features_signals.momentum_score_daily"),
-    ("sepa_score_daily", "features_signals.sepa_score_daily"),
-    ("event_radar", "features_signals.event_radar"),
-    ("market_terrain_daily", "features_forecasts.market_terrain_daily"),
-    ("terrain_intraday", "features_forecasts.terrain_intraday"),
-    ("forecast_session", "features_forecasts.forecast_session"),
-    ("forecast_hourly", "features_forecasts.forecast_hourly"),
-    ("forecast_settlement", "features_backtests.forecast_settlement"),
-    ("backtest_results", "features_backtests.backtest_results"),
+    ("gex_daily", "features.option_metric_gex_daily"),
+    ("gex_levels_daily", "features.option_metric_gex_levels_daily"),
+    ("gex_intraday", "features.option_metric_gex_intraday"),
+    ("iv_surface_daily", "features.option_surface_iv_daily"),
+    ("order_sentiment_daily", "features.option_flow_sentiment_daily"),
+    ("multi_leg_trades", "features.option_flow_multi_leg_daily"),
+    ("momentum_score_daily", "features.stock_signal_momentum_daily"),
+    ("sepa_score_daily", "features.stock_signal_sepa_daily"),
+    ("event_radar", "features.event_signal_radar_daily"),
+    ("market_terrain_daily", "features.stock_forecast_terrain_daily"),
+    ("terrain_intraday", "features.stock_forecast_terrain_intraday"),
+    ("forecast_session", "features.stock_forecast_session"),
+    ("forecast_hourly", "features.stock_forecast_hourly"),
+    ("forecast_settlement", "features.stock_backtest_settlement"),
+    ("backtest_results", "features.stock_backtest_results_period"),
 ]
 
 SEPA_ALIASES: list[tuple[str, str]] = [
@@ -85,7 +85,7 @@ def main() -> int:
     print(
         "apply_compat_views is DEPRECATED and REFUSED after Golden Source pipeline cleanup.\n"
         "Do not run — it recreates legacy schema namespaces (market/analytics/research/...).\n"
-        "Canonical names: raw_market, dw_stock, features_*.",
+        "Canonical names: raw_market, dw_stock, features.*.",
         file=sys.stderr,
     )
     return 1

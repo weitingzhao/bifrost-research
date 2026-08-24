@@ -1,6 +1,6 @@
 """Options analytics routes — ``/analytics/options/*``.
 
-Persisted reads from ``features_daily.*``; live max-pain via
+Persisted reads from ``features.option_metric_*``; live max-pain via
 ``bifrost_research.engines.volatility``.
 """
 
@@ -109,7 +109,7 @@ def query_max_pain(
     _apply_date_filters(
         clauses,
         params,
-        table="features_daily.max_pain_daily",
+        table="features.option_metric_max_pain_daily",
         symbol_col="symbol",
         sym=sym,
         trade_date=trade_date,
@@ -124,7 +124,7 @@ def query_max_pain(
     sql = f"""
         SELECT symbol, trade_date, expiry, max_pain_strike,
                total_oi, total_pain_at_strike, computed_at
-        FROM features_daily.max_pain_daily
+        FROM features.option_metric_max_pain_daily
         {where}
         ORDER BY trade_date DESC, symbol ASC, expiry ASC
         LIMIT 500
@@ -159,7 +159,7 @@ def query_atm_iv(
     _apply_date_filters(
         clauses,
         params,
-        table="features_daily.atm_iv_daily",
+        table="features.option_metric_atm_iv_daily",
         symbol_col="symbol",
         sym=sym,
         trade_date=trade_date,
@@ -174,7 +174,7 @@ def query_atm_iv(
     sql = f"""
         SELECT symbol, trade_date, expiry, atm_strike, atm_iv,
                underlying_price, iv_source, computed_at
-        FROM features_daily.atm_iv_daily
+        FROM features.option_metric_atm_iv_daily
         {where}
         ORDER BY trade_date DESC, symbol ASC, expiry ASC
         LIMIT 500
@@ -209,7 +209,7 @@ def query_pcr(
     _apply_date_filters(
         clauses,
         params,
-        table="features_daily.pcr_daily",
+        table="features.option_metric_pcr_daily",
         symbol_col="symbol",
         sym=sym,
         trade_date=trade_date,
@@ -221,7 +221,7 @@ def query_pcr(
         SELECT symbol, trade_date, pcr_oi, pcr_volume,
                total_put_oi, total_call_oi,
                total_put_volume, total_call_volume, computed_at
-        FROM features_daily.pcr_daily
+        FROM features.option_metric_pcr_daily
         {where}
         ORDER BY trade_date DESC, symbol ASC
         LIMIT 500
@@ -254,7 +254,7 @@ def query_iv_percentile(
     _apply_date_filters(
         clauses,
         params,
-        table="features_daily.iv_percentile_daily",
+        table="features.option_metric_iv_percentile_daily",
         symbol_col="symbol",
         sym=sym,
         trade_date=trade_date,
@@ -265,7 +265,7 @@ def query_iv_percentile(
     sql = f"""
         SELECT symbol, trade_date, iv_current, iv_percentile_1y,
                iv_rank_1y, lookback_days, computed_at
-        FROM features_daily.iv_percentile_daily
+        FROM features.option_metric_iv_percentile_daily
         {where}
         ORDER BY trade_date DESC, symbol ASC
         LIMIT 500
@@ -636,5 +636,5 @@ def atm_iv_term(
         "trade_date": td,
         "term": term_sorted,
         "count": len(term_sorted),
-        "source": "features_daily.atm_iv_daily",
+        "source": "features.option_metric_atm_iv_daily",
     }

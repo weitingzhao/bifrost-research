@@ -1,4 +1,4 @@
-.PHONY: install-dev install-orchestration dbt-deps dbt-run dbt-test dbt-docs dbt-clean dbt-parse lint test build-image build-image-dagster run-api db-init-analytics db-init-research dagster-dev dagster-defs event-radar-ingest
+.PHONY: install-dev install-orchestration dbt-deps dbt-run dbt-test dbt-docs dbt-clean dbt-parse lint test build-image build-image-dagster run-api db-init-analytics db-init-research db-migrate-6-4 db-migrate-6-6 dagster-dev dagster-defs event-radar-ingest
 
 DBT_DIR := src/bifrost_research/dbt
 DBT_PROFILES := $(DBT_DIR)
@@ -13,7 +13,7 @@ dbt-deps:
 	cd $(DBT_DIR) && dbt deps --profiles-dir .
 
 dbt-run:
-	cd $(DBT_DIR) && dbt run --profiles-dir .
+	cd $(DBT_DIR) && $(if $(wildcard .venv/bin/dbt),.venv/bin/dbt,dbt) run --profiles-dir .
 
 dbt-test:
 	cd $(DBT_DIR) && dbt test --profiles-dir .
@@ -49,7 +49,17 @@ db-init-analytics:
 	python -c "from bifrost_research.db.conn import connect; from bifrost_research.schema.ddl import apply_market_analytics_ddl, ensure_month_partitions; c=connect(); apply_market_analytics_ddl(c); ensure_month_partitions(c); c.close(); print('market_analytics DDL applied')"
 
 db-init-research:
-	python -c "from bifrost_research.db.conn import connect; from bifrost_research.schema.ddl import apply_all_ddl, ensure_month_partitions; c=connect(); apply_all_ddl(c); ensure_month_partitions(c); c.close(); print('market_analytics + research DDL applied')"
+	python -c "from bifrost_research.db.conn import connect; from bifrost_research.schema.ddl import apply_all_ddl, ensure_month_partitions; c=connect(); apply_all_ddl(c); ensure_month_partitions(c); c.close(); print('features Feature Store DDL applied')"
+
+db-migrate-6-4:
+	python scripts/apply_wave_6_4_migration.py
+
+db-migrate-6-6:
+	python scripts/apply_wave_6_6_migration.py
+
+# CNPG postgres superuser — run via kubectl exec (see scripts/wave_6_4_superuser_fixup.sql)
+db-migrate-6-4-superuser:
+	@echo "Apply on CNPG primary: cat scripts/wave_6_4_superuser_fixup.sql | kubectl -n data exec -i \$$(kubectl get cluster bifrost-postgres -n data -o jsonpath='{.status.currentPrimary}') -- psql -U postgres -d bifrost_golden_source -v ON_ERROR_STOP=1"
 
 # Owner decision A — file ingest (see docs/EVENT_RADAR_INGEST.md)
 # EVENT_RADAR_INPUT_DIR defaults to Research-workspace offline input when unset locally.
@@ -58,12 +68,12 @@ event-radar-ingest:
 	EVENT_RADAR_INPUT_DIR="$(EVENT_RADAR_INPUT_DIR)" python -m bifrost_research.scheduler.event_radar
 
 build-image:
-	docker build --platform linux/amd64 --target base -t bifrost-research:0.5.7 -f Dockerfile .
+	docker build --platform linux/amd64 --target base -t bifrost-research:0.7.0 -f Dockerfile .
 	docker build --platform linux/amd64 --target base -t bifrost-research:latest -f Dockerfile .
-	docker tag bifrost-research:0.5.7 192.168.10.73:30500/bifrost-research:0.5.7
+	docker tag bifrost-research:0.7.0 192.168.10.73:30500/bifrost-research:0.7.0
 	docker tag bifrost-research:latest 192.168.10.73:30500/bifrost-research:latest
-	docker push 192.168.10.73:30500/bifrost-research:0.5.7
+	docker push 192.168.10.73:30500/bifrost-research:0.7.0
 	docker push 192.168.10.73:30500/bifrost-research:latest
 
 build-image-dagster:
-	docker build --platform linux/amd64 --target orchestration -t bifrost-research:0.5.7-dagster -f Dockerfile .
+	docker build --platform linux/amd64 --target orchestration -t bifrost-research:0.7.0-dagster -f Dockerfile .

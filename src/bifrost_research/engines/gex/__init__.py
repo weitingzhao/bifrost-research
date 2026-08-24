@@ -1,6 +1,6 @@
 """GEX (Gamma Exposure) engine (Wave 3.2).
 
-Writes ``features_option.gex_daily`` and ``features_option.gex_levels_daily``.
+Writes ``features.option_metric_gex_daily`` and ``features.option_metric_gex_levels_daily``.
 """
 
 from __future__ import annotations

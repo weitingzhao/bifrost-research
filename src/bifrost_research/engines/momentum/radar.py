@@ -405,7 +405,7 @@ def compute_momentum_for_symbol(
     )
     batch_upsert(
         conn,
-        "features_signals.momentum_score_daily",
+        "features.stock_signal_momentum_daily",
         _COLS,
         [row],
         conflict_keys=("symbol", "trade_date"),

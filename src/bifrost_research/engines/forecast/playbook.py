@@ -380,7 +380,7 @@ def upsert_forecast_session(conn: Any, session: ForecastSession) -> int:
     now = datetime.now(timezone.utc)
     batch_upsert(
         conn,
-        "features_forecasts.forecast_session",
+        "features.stock_forecast_session",
         _SESSION_COLS,
         [
             (
@@ -423,7 +423,7 @@ def upsert_forecast_session(conn: Any, session: ForecastSession) -> int:
     ]
     batch_upsert(
         conn,
-        "features_forecasts.forecast_hourly",
+        "features.stock_forecast_hourly",
         _HOURLY_COLS,
         hourly_rows,
         conflict_keys=("session_id", "hour_et"),

@@ -485,7 +485,7 @@ def compute_gex_for_symbol(
     if dist_rows:
         batch_upsert(
             conn,
-            "features_option.gex_daily",
+            "features.option_metric_gex_daily",
             _GEX_COLS,
             dist_rows,
             conflict_keys=("symbol", "trade_date", "expiry", "strike"),
@@ -505,7 +505,7 @@ def compute_gex_for_symbol(
     if level_rows:
         batch_upsert(
             conn,
-            "features_option.gex_levels_daily",
+            "features.option_metric_gex_levels_daily",
             _LEVELS_COLS,
             level_rows,
             conflict_keys=("symbol", "trade_date", "expiry"),
@@ -559,7 +559,7 @@ def compute_gex_intraday(
     asof_ts: datetime,
     expiry: date | None = None,
 ) -> dict[str, Any]:
-    """Compute intraday GEX snapshot and write to features_option.gex_intraday."""
+    """Compute intraday GEX snapshot and write to features.option_metric_gex_intraday."""
     spot = fetch_spot(conn, symbol, trade_date)
     if spot is None:
         return {"ok": False, "error": "No spot price", "symbol": symbol.strip().upper()}
@@ -591,7 +591,7 @@ def compute_gex_intraday(
 
     batch_upsert(
         conn,
-        "features_option.gex_intraday",
+        "features.option_metric_gex_intraday",
         _INTRADAY_COLS,
         [
             (

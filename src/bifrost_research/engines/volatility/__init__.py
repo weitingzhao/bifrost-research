@@ -1,6 +1,6 @@
 """Volatility engines — Max Pain, ATM IV, PCR, IV Percentile (Wave 2) + Surface (Wave 3).
 
-Ownership: Research OLAP domain writes ``features_daily.*`` and ``features_option.iv_surface_daily``.
+Ownership: Research OLAP domain writes ``features.option_metric_*`` and ``features.option_surface_iv_daily``.
 """
 
 from __future__ import annotations

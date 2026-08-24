@@ -271,7 +271,7 @@ def upsert_settlement(conn: Any, settlement: ForecastSettlement) -> int:
     now = datetime.now(timezone.utc)
     return batch_upsert(
         conn,
-        "features_backtests.forecast_settlement",
+        "features.stock_backtest_settlement",
         _SETTLEMENT_COLS,
         [
             (
@@ -300,7 +300,7 @@ def upsert_backtest_result(conn: Any, summary: BacktestSummary) -> int:
     now = datetime.now(timezone.utc)
     return batch_upsert(
         conn,
-        "features_backtests.backtest_results",
+        "features.stock_backtest_results_period",
         _BACKTEST_COLS,
         [
             (

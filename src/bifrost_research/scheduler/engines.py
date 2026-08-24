@@ -321,8 +321,8 @@ def run_settlement(
                 SELECT fs.session_id, fs.symbol, fs.trade_date,
                        fs.expected_close, fs.prob_rangy, fs.prob_bull,
                        fs.prob_bear, fs.prob_squeeze
-                FROM features_forecasts.forecast_session fs
-                LEFT JOIN features_backtests.forecast_settlement stl
+                FROM features.stock_forecast_session fs
+                LEFT JOIN features.stock_backtest_settlement stl
                     ON stl.session_id = fs.session_id
                 WHERE fs.trade_date = %s AND stl.settlement_id IS NULL
                 """,
@@ -346,7 +346,7 @@ def run_settlement(
                 cur.execute(
                     """
                     SELECT hour_et, path_call, level_low, level_high, level_target
-                    FROM features_forecasts.forecast_hourly
+                    FROM features.stock_forecast_hourly
                     WHERE session_id = %s ORDER BY hour_et
                     """,
                     (sid,),
@@ -390,7 +390,7 @@ def run_sepa(
     trading_days: Sequence[date],
     symbols: Sequence[str],
 ) -> dict[str, Any]:
-    """SEPA fusion: Fund + Trend Template + Momentum + Options Structure → features_signals.sepa_score_daily."""
+    """SEPA fusion: Fund + Trend Template + Momentum + Options Structure → features.stock_signal_sepa_daily."""
     written = 0
     skipped = 0
     for td in trading_days:

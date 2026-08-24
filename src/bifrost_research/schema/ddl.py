@@ -1,7 +1,6 @@
-"""Idempotent DDL for features_daily.* and research.* (Research-owned).
+"""Idempotent DDL for features.* Feature Store tables (Research-owned).
 
-Plugin may keep a thin re-export / shim for ``db-init`` compatibility, but
-Research is the source of truth for these tables going forward.
+Wave 6.6: legacy ``features_*`` view schemas removed; canonical ``features`` only.
 """
 
 from __future__ import annotations
@@ -9,12 +8,9 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from bifrost_research.schema.schemas import (
-    SCHEMA_FEATURES_BACKTESTS,
-    SCHEMA_FEATURES_FORECASTS,
-    SCHEMA_FEATURES_OPTION,
-    SCHEMA_FEATURES_SIGNALS,
+    OPTION_METRIC_PARTITIONED_TABLES,
+    SCHEMA_FEATURES,
 )
-
 
 class _Cursor(Protocol):
     def execute(self, query: str, params: Any = None) -> Any: ...
@@ -28,83 +24,86 @@ class _Connection(Protocol):
     def rollback(self) -> None: ...
 
 
-MARKET_ANALYTICS_TABLES = (
-    "max_pain_daily",
-    "atm_iv_daily",
-    "pcr_daily",
-    "iv_percentile_daily",
-)
+# Legacy Makefile / import aliases
+MARKET_ANALYTICS_TABLES = OPTION_METRIC_PARTITIONED_TABLES
 
 RESEARCH_TABLES = (
-    "momentum_score_daily",
-    "gex_daily",
-    "gex_levels_daily",
-    "iv_surface_daily",
-    "order_sentiment_daily",
-    "multi_leg_trades",
-    # Wave 4 — AI Intelligence
-    "market_terrain_daily",
-    "forecast_session",
-    "forecast_hourly",
-    "event_radar",
-    "backtest_results",
-    "forecast_settlement",
-    # Wave 6 — Intraday (Product Parity)
-    "terrain_intraday",
-    "gex_intraday",
-    # Wave B — SEPA fusion (Fund + Trend Template + Momentum + Options Structure)
-    "sepa_score_daily",
+    "stock_signal_momentum_daily",
+    "option_metric_gex_daily",
+    "option_metric_gex_levels_daily",
+    "option_surface_iv_daily",
+    "option_flow_sentiment_daily",
+    "option_flow_multi_leg_daily",
+    "stock_forecast_terrain_daily",
+    "stock_forecast_session",
+    "stock_forecast_hourly",
+    "event_signal_radar_daily",
+    "stock_backtest_settlement",
+    "stock_backtest_results_period",
+    "stock_forecast_terrain_intraday",
+    "option_metric_gex_intraday",
+    "stock_signal_sepa_daily",
+)
+
+# Retired bare + prefixed legacy view schema names — cleaned on db-init.
+LEGACY_BARE_FEATURE_SCHEMAS = ("signals", "forecasts", "backtests")
+LEGACY_FEATURE_VIEW_SCHEMAS = (
+    "features_daily",
+    "features_option",
+    "features_signals",
+    "features_forecasts",
+    "features_backtests",
 )
 
 
-# Retired Golden Source schema names — must not be recreated by DDL or compat scripts.
-LEGACY_FEATURE_SCHEMAS = ("signals", "forecasts", "backtests")
-
-
-def _drop_legacy_feature_schemas(cur: _Cursor) -> None:
-    """Drop retired bare schema names if they reappear (empty or stale compat)."""
-    for schema in LEGACY_FEATURE_SCHEMAS:
+def _drop_legacy_bare_schemas(cur: _Cursor) -> None:
+    for schema in LEGACY_BARE_FEATURE_SCHEMAS:
         cur.execute("SELECT 1 FROM pg_namespace WHERE nspname = %s", (schema,))
         if cur.fetchone():
             cur.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
 
 
-def apply_features_daily_ddl(conn: _Connection) -> None:
-    """Create features_daily schema + four daily tables (idempotent)."""
+def apply_features_ddl(conn: _Connection) -> None:
+    """Create features schema + all Feature Store tables (idempotent)."""
     with conn.cursor() as cur:
-        cur.execute("CREATE SCHEMA IF NOT EXISTS features_daily")
-        _create_features_daily_tables(cur)
+        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_FEATURES}")
+        _create_option_metric_partitioned_tables(cur)
+        _create_research_tables(cur)
+        _drop_legacy_bare_schemas(cur)
+    conn.commit()
+
+
+def apply_features_daily_ddl(conn: _Connection) -> None:
+    """Legacy wrapper — partitioned option metrics + compat views."""
+    with conn.cursor() as cur:
+        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_FEATURES}")
+        _create_option_metric_partitioned_tables(cur)
     conn.commit()
 
 
 def apply_research_ddl(conn: _Connection) -> None:
-    """Create research schema + Wave 3–4 engine tables (idempotent)."""
+    """Legacy wrapper — non-partitioned feature tables + compat views."""
     with conn.cursor() as cur:
-        cur.execute(
-            f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_FEATURES_OPTION}; "
-            f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_FEATURES_SIGNALS}; "
-            f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_FEATURES_FORECASTS}; "
-            f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_FEATURES_BACKTESTS}"
-        )
+        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_FEATURES}")
         _create_research_tables(cur)
-        _drop_legacy_feature_schemas(cur)
+        _drop_legacy_bare_schemas(cur)
     conn.commit()
 
 
 def apply_all_ddl(conn: _Connection) -> None:
-    """Apply features_daily + research DDL."""
-    apply_features_daily_ddl(conn)
-    apply_research_ddl(conn)
+    """Apply full Feature Store DDL and drop retired legacy view schemas."""
+    apply_features_ddl(conn)
+    drop_legacy_feature_schemas(conn)
 
 
-# Legacy Makefile / import alias (market_analytics → features_daily).
+# Legacy Makefile / import alias (market_analytics → features option metrics).
 apply_market_analytics_ddl = apply_features_daily_ddl
 
 
-def _create_features_daily_tables(cur: _Cursor) -> None:
+def _create_option_metric_partitioned_tables(cur: _Cursor) -> None:
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_daily.max_pain_daily (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.option_metric_max_pain_daily (
             symbol                 text        NOT NULL,
             trade_date             date        NOT NULL,
             expiry                 date        NOT NULL,
@@ -117,14 +116,14 @@ def _create_features_daily_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS max_pain_daily_symbol_date
-        ON features_daily.max_pain_daily (symbol, trade_date DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS option_metric_max_pain_daily_symbol_date
+        ON {SCHEMA_FEATURES}.option_metric_max_pain_daily (symbol, trade_date DESC)
         """
     )
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_daily.atm_iv_daily (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.option_metric_atm_iv_daily (
             symbol             text        NOT NULL,
             trade_date         date        NOT NULL,
             expiry             date        NOT NULL,
@@ -138,14 +137,14 @@ def _create_features_daily_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS atm_iv_daily_symbol_date
-        ON features_daily.atm_iv_daily (symbol, trade_date DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS option_metric_atm_iv_daily_symbol_date
+        ON {SCHEMA_FEATURES}.option_metric_atm_iv_daily (symbol, trade_date DESC)
         """
     )
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_daily.pcr_daily (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.option_metric_pcr_daily (
             symbol              text        NOT NULL,
             trade_date          date        NOT NULL,
             pcr_oi              double precision,
@@ -160,14 +159,14 @@ def _create_features_daily_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS pcr_daily_symbol_date
-        ON features_daily.pcr_daily (symbol, trade_date DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS option_metric_pcr_daily_symbol_date
+        ON {SCHEMA_FEATURES}.option_metric_pcr_daily (symbol, trade_date DESC)
         """
     )
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_daily.iv_percentile_daily (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.option_metric_iv_percentile_daily (
             symbol               text        NOT NULL,
             trade_date           date        NOT NULL,
             iv_current           double precision,
@@ -180,18 +179,18 @@ def _create_features_daily_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS iv_percentile_daily_symbol_date
-        ON features_daily.iv_percentile_daily (symbol, trade_date DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS option_metric_iv_percentile_daily_symbol_date
+        ON {SCHEMA_FEATURES}.option_metric_iv_percentile_daily (symbol, trade_date DESC)
         """
     )
 
 
 def _create_research_tables(cur: _Cursor) -> None:
-    # --- Momentum Radar ---
+  # --- Momentum Radar ---
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_signals.momentum_score_daily (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.stock_signal_momentum_daily (
             symbol         text        NOT NULL,
             trade_date     date        NOT NULL,
             score          double precision,
@@ -213,16 +212,16 @@ def _create_research_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS momentum_score_daily_date_score
-        ON features_signals.momentum_score_daily (trade_date DESC, score DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_signal_momentum_daily_date_score
+        ON {SCHEMA_FEATURES}.stock_signal_momentum_daily (trade_date DESC, score DESC)
         """
     )
 
     # --- GEX distribution ---
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_option.gex_daily (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.option_metric_gex_daily (
             symbol         text        NOT NULL,
             trade_date     date        NOT NULL,
             expiry         date        NOT NULL,
@@ -241,16 +240,16 @@ def _create_research_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS gex_daily_symbol_date
-        ON features_option.gex_daily (symbol, trade_date DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS option_metric_gex_daily_symbol_date
+        ON {SCHEMA_FEATURES}.option_metric_gex_daily (symbol, trade_date DESC)
         """
     )
 
     # --- GEX levels ---
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_option.gex_levels_daily (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.option_metric_gex_levels_daily (
             symbol            text        NOT NULL,
             trade_date        date        NOT NULL,
             expiry            date        NOT NULL,
@@ -267,16 +266,16 @@ def _create_research_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS gex_levels_daily_symbol_date
-        ON features_option.gex_levels_daily (symbol, trade_date DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS option_metric_gex_levels_daily_symbol_date
+        ON {SCHEMA_FEATURES}.option_metric_gex_levels_daily (symbol, trade_date DESC)
         """
     )
 
     # --- IV surface ---
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_option.iv_surface_daily (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.option_surface_iv_daily (
             symbol           text        NOT NULL,
             trade_date       date        NOT NULL,
             expiry           date        NOT NULL,
@@ -293,16 +292,16 @@ def _create_research_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS iv_surface_daily_symbol_date
-        ON features_option.iv_surface_daily (symbol, trade_date DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS option_surface_iv_daily_symbol_date
+        ON {SCHEMA_FEATURES}.option_surface_iv_daily (symbol, trade_date DESC)
         """
     )
 
     # --- Order sentiment ---
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_option.order_sentiment_daily (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.option_flow_sentiment_daily (
             symbol                  text        NOT NULL,
             trade_date              date        NOT NULL,
             call_notional           double precision,
@@ -324,16 +323,16 @@ def _create_research_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS order_sentiment_daily_date
-        ON features_option.order_sentiment_daily (trade_date DESC, sentiment_score DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS option_flow_sentiment_daily_date
+        ON {SCHEMA_FEATURES}.option_flow_sentiment_daily (trade_date DESC, sentiment_score DESC)
         """
     )
 
     # --- Multi-leg scaffolding ---
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_option.multi_leg_trades (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.option_flow_multi_leg_daily (
             symbol           text        NOT NULL,
             trade_date       date        NOT NULL,
             cluster_id       text        NOT NULL,
@@ -349,16 +348,16 @@ def _create_research_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS multi_leg_trades_symbol_date
-        ON features_option.multi_leg_trades (symbol, trade_date DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS option_flow_multi_leg_daily_symbol_date
+        ON {SCHEMA_FEATURES}.option_flow_multi_leg_daily (symbol, trade_date DESC)
         """
     )
 
-    # --- Wave 4.1 Market Terrain ---
+    # --- Market Terrain ---
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_forecasts.market_terrain_daily (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.stock_forecast_terrain_daily (
             symbol            text        NOT NULL,
             trade_date        date        NOT NULL,
             pin_score         double precision,
@@ -377,16 +376,16 @@ def _create_research_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS market_terrain_daily_date_regime
-        ON features_forecasts.market_terrain_daily (trade_date DESC, regime)
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_forecast_terrain_daily_date_regime
+        ON {SCHEMA_FEATURES}.stock_forecast_terrain_daily (trade_date DESC, regime)
         """
     )
 
-    # --- Wave 4.2 Forecast session ---
+    # --- Forecast session ---
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_forecasts.forecast_session (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.stock_forecast_session (
             session_id        text        NOT NULL,
             symbol            text        NOT NULL,
             trade_date        date        NOT NULL,
@@ -408,15 +407,15 @@ def _create_research_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS forecast_session_symbol_date
-        ON features_forecasts.forecast_session (symbol, trade_date DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_forecast_session_symbol_date
+        ON {SCHEMA_FEATURES}.stock_forecast_session (symbol, trade_date DESC)
         """
     )
 
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_forecasts.forecast_hourly (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.stock_forecast_hourly (
             session_id        text        NOT NULL,
             symbol            text        NOT NULL,
             trade_date        date        NOT NULL,
@@ -433,16 +432,16 @@ def _create_research_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS forecast_hourly_symbol_date
-        ON features_forecasts.forecast_hourly (symbol, trade_date DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_forecast_hourly_symbol_date
+        ON {SCHEMA_FEATURES}.stock_forecast_hourly (symbol, trade_date DESC)
         """
     )
 
-    # --- Wave 4.3 Event Radar ---
+    # --- Event Radar ---
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_signals.event_radar (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.event_signal_radar_daily (
             event_id              text        NOT NULL,
             batch_id              text,
             collected_at          date,
@@ -476,22 +475,22 @@ def _create_research_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS event_radar_batch_collected
-        ON features_signals.event_radar (batch_id, collected_at DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS event_signal_radar_daily_batch_collected
+        ON {SCHEMA_FEATURES}.event_signal_radar_daily (batch_id, collected_at DESC)
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS event_radar_importance
-        ON features_signals.event_radar (collected_at DESC, importance DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS event_signal_radar_daily_importance
+        ON {SCHEMA_FEATURES}.event_signal_radar_daily (collected_at DESC, importance DESC)
         """
     )
 
-    # --- Wave 4.4 Backtest / Settlement ---
+    # --- Backtest / Settlement ---
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_backtests.forecast_settlement (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.stock_backtest_settlement (
             settlement_id     text        NOT NULL,
             session_id        text        NOT NULL,
             symbol            text        NOT NULL,
@@ -511,21 +510,21 @@ def _create_research_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS forecast_settlement_session
-        ON features_backtests.forecast_settlement (session_id)
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_backtest_settlement_session
+        ON {SCHEMA_FEATURES}.stock_backtest_settlement (session_id)
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS forecast_settlement_symbol_date
-        ON features_backtests.forecast_settlement (symbol, trade_date DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_backtest_settlement_symbol_date
+        ON {SCHEMA_FEATURES}.stock_backtest_settlement (symbol, trade_date DESC)
         """
     )
 
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_backtests.backtest_results (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.stock_backtest_results_period (
             result_id               text        NOT NULL,
             symbol                  text        NOT NULL,
             period_start            date,
@@ -541,16 +540,16 @@ def _create_research_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS backtest_results_symbol_period
-        ON features_backtests.backtest_results (symbol, period_end DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_backtest_results_period_symbol_period
+        ON {SCHEMA_FEATURES}.stock_backtest_results_period (symbol, period_end DESC)
         """
     )
 
-    # --- Wave 6: Intraday Terrain ---
+    # --- Intraday Terrain ---
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_forecasts.terrain_intraday (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.stock_forecast_terrain_intraday (
             symbol          text        NOT NULL,
             trade_date      date        NOT NULL,
             asof_ts         timestamptz NOT NULL,
@@ -574,16 +573,16 @@ def _create_research_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS terrain_intraday_symbol_date
-        ON features_forecasts.terrain_intraday (symbol, trade_date DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_forecast_terrain_intraday_symbol_date
+        ON {SCHEMA_FEATURES}.stock_forecast_terrain_intraday (symbol, trade_date DESC)
         """
     )
 
-    # --- Wave 6: Intraday GEX ---
+    # --- Intraday GEX ---
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_option.gex_intraday (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.option_metric_gex_intraday (
             symbol            text        NOT NULL,
             trade_date        date        NOT NULL,
             asof_ts           timestamptz NOT NULL,
@@ -599,33 +598,28 @@ def _create_research_tables(cur: _Cursor) -> None:
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS gex_intraday_symbol_date
-        ON features_option.gex_intraday (symbol, trade_date DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS option_metric_gex_intraday_symbol_date
+        ON {SCHEMA_FEATURES}.option_metric_gex_intraday (symbol, trade_date DESC)
         """
     )
 
-
-    # --- Wave B: SEPA fusion (Fund + Trend Template + Momentum + Options Structure) ---
+    # --- SEPA projection target (dbt owns logic; Python projection writes here) ---
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS features_signals.sepa_score_daily (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.stock_signal_sepa_daily (
             symbol                 text        NOT NULL,
             trade_date             date        NOT NULL,
-            -- Sub-scores 0-100
             fundamental_score      double precision,
             trend_template_score   double precision,
             momentum_score         double precision,
             structure_score        double precision,
-            -- Composite 0-100
             sepa_score             double precision,
             grade                  text,
             stage                  text,
             path                   text,
-            -- Flags
             trend_template_pass    boolean,
             fundamental_pass       boolean,
-            -- Reference snapshot
             latest_close           double precision,
             sma_50                 double precision,
             sma_150                double precision,
@@ -634,25 +628,32 @@ def _create_research_tables(cur: _Cursor) -> None:
             low_52w                double precision,
             iv_percentile          double precision,
             pcr_oi                 double precision,
-            -- Sub-source counts (audit)
             fund_pass_count        integer,
             tech_pass_count        integer,
             factors_json           jsonb,
+            asof_ts                timestamptz,
             computed_at            timestamptz NOT NULL DEFAULT now(),
             PRIMARY KEY (symbol, trade_date)
         )
         """
     )
     cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS sepa_score_daily_date_score
-        ON features_signals.sepa_score_daily (trade_date DESC, sepa_score DESC)
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_signal_sepa_daily_date_score
+        ON {SCHEMA_FEATURES}.stock_signal_sepa_daily (trade_date DESC, sepa_score DESC)
         """
     )
     cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_signal_sepa_daily_stage_date
+        ON {SCHEMA_FEATURES}.stock_signal_sepa_daily (stage, trade_date DESC)
         """
-        CREATE INDEX IF NOT EXISTS sepa_score_daily_stage_date
-        ON features_signals.sepa_score_daily (stage, trade_date DESC)
+    )
+    # Idempotent column add for existing deployments
+    cur.execute(
+        f"""
+        ALTER TABLE {SCHEMA_FEATURES}.stock_signal_sepa_daily
+        ADD COLUMN IF NOT EXISTS asof_ts timestamptz
         """
     )
 
@@ -663,15 +664,26 @@ def ensure_month_partitions(
     months_back: int = 12,
     months_forward: int = 4,
 ) -> None:
-    """Best-effort partition extend via data_ops helper when present."""
+    """Best-effort partition extend via ops_jobs helper when present."""
     with conn.cursor() as cur:
-        for table in MARKET_ANALYTICS_TABLES:
+        for table in OPTION_METRIC_PARTITIONED_TABLES:
             try:
                 cur.execute(
                     "SELECT ops_jobs.ensure_month_partitions(%s, %s, %s, %s)",
-                    ("features_daily", table, months_back, months_forward),
+                    (SCHEMA_FEATURES, table, months_back, months_forward),
                 )
             except Exception:
                 conn.rollback()
                 return
     conn.commit()
+
+
+def drop_legacy_feature_schemas(conn: _Connection) -> None:
+    """Wave 6.6 — drop legacy features_* view schemas (best-effort per schema)."""
+    with conn.cursor() as cur:
+        for legacy_schema in LEGACY_FEATURE_VIEW_SCHEMAS:
+            try:
+                cur.execute(f"DROP SCHEMA IF EXISTS {legacy_schema} CASCADE")
+                conn.commit()
+            except Exception:
+                conn.rollback()
