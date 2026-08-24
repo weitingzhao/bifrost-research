@@ -29,6 +29,32 @@ spec:
                 echo "wait $i"; sleep 2
               done
               exit 1
+        - name: ensure-partitions
+          image: 192.168.10.73:30500/bifrost-research:0.8.0
+          imagePullPolicy: Always
+          command:
+            - python
+            - -c
+            - |
+              from bifrost_research.db.conn import connect
+              from bifrost_research.schema.ddl import ensure_month_partitions
+              conn = connect()
+              ensure_month_partitions(conn, months_back=24, months_forward=4)
+              conn.close()
+              print("ensure_month_partitions ok")
+          envFrom:
+            - secretRef:
+                name: bifrost-research-secrets
+                optional: true
+          env:
+            - name: ANALYTICS_PG_HOST
+              value: "bifrost-postgres-rw.data.svc.cluster.local"
+            - name: ANALYTICS_PG_PORT
+              value: "5432"
+            - name: ANALYTICS_PG_DATABASE
+              value: "bifrost_golden_source"
+            - name: ANALYTICS_PG_USER
+              value: "analytics_writer"
       containers:
         - name: max-pain
           image: 192.168.10.73:30500/bifrost-research:0.8.0
