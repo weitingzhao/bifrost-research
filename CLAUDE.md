@@ -44,7 +44,7 @@
 依赖链（文档化）：
 
 ```
-Plugin market ingest (external) → dbt (analytics.*) → Python analytics → AI forecast
+Plugin market ingest (external) → dbt (dw_stock.*) → Python analytics → AI forecast
 ```
 
 | 项 | 说明 |
@@ -71,6 +71,22 @@ Plugin market ingest (external) → dbt (analytics.*) → Python analytics → A
 4. Secret / PG 凭证、daemon + webserver 联调；replicas 仍为 0
 5. CronJob → Dagster schedules 迁移与 Owner 验收
 
+### SEPA canonical read path (Wave 6.3)
+
+| Layer | Schema / tables | Role |
+|-------|-----------------|------|
+| **Canonical read (external APIs, Trade, Console)** | `dw_stock.mart_sepa_*` | dbt SEPA four-phase wide tables — **Owner decision: single read contract** |
+| Engine output (internal) | `features_signals.sepa_score_daily` | Python momentum/SEPA engine materialization; not the canonical consumer surface |
+| Retired | `public.research_sepa_fundamentals_cache` | Removed from Trade DB (P8/P9) |
+
+Research API still reads `features_signals.sepa_score_daily` today. **Wave 6.5 (planned):** switch Research API SEPA routes to `dw_stock.mart_sepa_*` only; deprecate duplicate read path.
+
+Dagster dependency chain (canonical names):
+
+```
+Plugin ingest → raw_market.* → dbt (dw_stock.*) → Python engines (features_*) → AI forecast
+```
+
 ### 目录结构
 
 ```
@@ -87,7 +103,7 @@ src/bifrost_research/
 ### Golden Source 纪律
 
 - 单一 DB 实例：`bifrost_golden_source`（CNPG LAN NodePort `192.168.10.73:30432`）
-- **只读** `market.*`（由 Market Data Plugin 写入）
+- **只读** `raw_market.*`（由 Market Data Plugin 写入）
 - **可写** `dw_stock.*` / `features_*` / `ops_dbt.*`（canonical Golden Source pipeline schemas）
 - **禁止**写入 Trade DB（`bifrost_dev` / `bifrost_stg` / `bifrost_prod`）
 - **禁止**触发交易执行（daemon control、`ib:operator:cmd`、live place_order）
@@ -98,8 +114,8 @@ src/bifrost_research/
 make install-dev              # pip install -e ".[dev]"
 make install-orchestration    # + dagster / dagster-dbt / webserver
 make run-api                  # Research API :8795
-make db-init-analytics        # apply market_analytics DDL
-make db-init-research         # apply market_analytics + research DDL
+make db-init-analytics        # apply features_daily DDL (legacy make name)
+make db-init-research         # apply features_* + research DDL
 make dbt-run                  # dbt run（需 ANALYTICS_PG_*）
 make dbt-test                 # dbt test
 make dbt-parse                # 生成 target/manifest.json（供 dagster-dbt）
