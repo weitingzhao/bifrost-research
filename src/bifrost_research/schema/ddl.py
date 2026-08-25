@@ -596,6 +596,12 @@ def _create_research_tables(cur: _Cursor) -> None:
         ON {SCHEMA_FEATURES}.stock_forecast_terrain_intraday (symbol, trade_date DESC)
         """
     )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS ix_terrain_intraday_pit
+        ON {SCHEMA_FEATURES}.stock_forecast_terrain_intraday (symbol, trade_date, asof_ts DESC)
+        """
+    )
 
     # --- Intraday GEX ---
     cur.execute(
@@ -619,6 +625,12 @@ def _create_research_tables(cur: _Cursor) -> None:
         f"""
         CREATE INDEX IF NOT EXISTS option_metric_gex_intraday_symbol_date
         ON {SCHEMA_FEATURES}.option_metric_gex_intraday (symbol, trade_date DESC)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS ix_gex_intraday_pit
+        ON {SCHEMA_FEATURES}.option_metric_gex_intraday (symbol, trade_date, asof_ts DESC)
         """
     )
 
@@ -672,6 +684,12 @@ def _create_research_tables(cur: _Cursor) -> None:
         f"""
         ALTER TABLE {SCHEMA_FEATURES}.stock_signal_sepa_daily
         ADD COLUMN IF NOT EXISTS asof_ts timestamptz
+        """
+    )
+    cur.execute(
+        f"""
+        COMMENT ON COLUMN {SCHEMA_FEATURES}.stock_signal_sepa_daily.asof_ts IS
+        'Last projection timestamp (Wave 12). Daily UPSERT overwrite — NOT a historical PIT snapshot.'
         """
     )
 

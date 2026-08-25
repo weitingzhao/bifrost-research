@@ -131,3 +131,12 @@ sources:
               - not_null
           - name: status
             description: "closed or early-close"
+
+  - name: features
+    database: bifrost_golden_source
+    schema: features
+    description: "Research Feature Store — read-only for dbt SEPA options tier"
+    tables:
+      - name: option_metric_iv_percentile_daily
+      - name: option_metric_pcr_daily
+      - name: option_metric_gex_levels_daily

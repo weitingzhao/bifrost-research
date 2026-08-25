@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from bifrost_research.engines.sepa.score import (
+from bifrost_research.sepa_fusion import (
     DailyBar,
     FUND_CONDITION_COLUMNS,
     _classify_path,
@@ -222,7 +222,7 @@ def test_path_setup_or_pivot_on_healthy_uptrend() -> None:
 
 
 def test_fuse_weights_sum_to_one() -> None:
-    from bifrost_research.engines.sepa.score import WEIGHTS
+    from bifrost_research.sepa_fusion import WEIGHTS
 
     assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-9
 

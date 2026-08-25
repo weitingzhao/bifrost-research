@@ -78,7 +78,7 @@ Plugin market ingest (external) → dbt (dw_stock.*) → Python analytics → AI
 |-------|-----------------|------|
 | **业务 owner（dbt）** | `dw_stock.mart_sepa_*` | SEPA 四阶段宽表 — **人读 / dashboard / screener** |
 | **投影 mart** | `dw_stock.mart_sepa_feature_daily` | dbt 稳定列子集 → projection task 输入 |
-| **Feature Store** | `features.stock_signal_sepa_daily` | **模型 / backtest 读**（`asof_ts` PIT） |
+| **Feature Store** | `features.stock_signal_sepa_daily` | **模型 / backtest 读** — `asof_ts` = **last projection timestamp** (daily UPSERT; NOT historical PIT snapshot) |
 | Research API | `/research/sepa/*` → `mart_sepa_screener_wide` | 人读 |
 | Research API | `/research/sepa/model/*` → `features.stock_signal_sepa_daily` | 模型读 |
 
@@ -176,4 +176,4 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
-- 版本：`0.5.7`（Golden Source `features_*` schema rename + Waves 1–5）
+- 版本：`0.8.3`（Wave 13 mart_sepa_criteria_stats view + mart_sepa_tier_options sparse mart）

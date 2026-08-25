@@ -38,7 +38,6 @@ from bifrost_research.engines.backtest.settlement import (
 )
 from bifrost_research.engines.gex.exposure import compute_gex_for_symbol, compute_gex_intraday
 from bifrost_research.engines.momentum.radar import compute_momentum_for_date
-from bifrost_research.engines.sepa import compute_sepa_for_date
 from bifrost_research.engines.volatility.surface import compute_iv_surface_for_symbol
 
 logger = logging.getLogger(__name__)
@@ -55,7 +54,6 @@ SLOT_NAMES = (
     "terrain-intraday",
     "gex-intraday",
     "settlement",
-    "sepa",
 )
 
 
@@ -384,28 +382,6 @@ def run_settlement(
     }
 
 
-def run_sepa(
-    conn: Any,
-    *,
-    trading_days: Sequence[date],
-    symbols: Sequence[str],
-) -> dict[str, Any]:
-    """SEPA fusion: Fund + Trend Template + Momentum + Options Structure → features.stock_signal_sepa_daily."""
-    written = 0
-    skipped = 0
-    for td in trading_days:
-        result = compute_sepa_for_date(conn, trade_date=td, symbols=symbols)
-        written += int(result.get("rows_written") or 0)
-        skipped += int(result.get("skipped") or 0)
-    return {
-        "slot": "sepa",
-        "rows_written": written,
-        "skipped_short_history": skipped,
-        "symbols": len(symbols),
-        "trading_days": [d.isoformat() for d in trading_days],
-    }
-
-
 _SLOT_RUNNERS = {
     "momentum": run_momentum,
     "gex": run_gex,
@@ -416,7 +392,6 @@ _SLOT_RUNNERS = {
     "terrain-intraday": run_terrain_intraday,
     "gex-intraday": run_gex_intraday,
     "settlement": run_settlement,
-    "sepa": run_sepa,
 }
 
 

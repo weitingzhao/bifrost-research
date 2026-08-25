@@ -40,6 +40,8 @@ RESEARCH_VIEWS: list[tuple[str, str]] = [
     ("backtest_results", "features.stock_backtest_results_period"),
 ]
 
+# Wave 13: mart_sepa_criteria_stats is a dbt view (not a table). Pre-migration:
+# scripts/wave_13_criteria_stats_view.sql (DROP TABLE IF EXISTS ... CASCADE).
 SEPA_ALIASES: list[tuple[str, str]] = [
     ("sepa_criteria_stats", "dw_stock.mart_sepa_criteria_stats"),
     ("sepa_fundamental_eval", "dw_stock.mart_sepa_fundamental_eval"),

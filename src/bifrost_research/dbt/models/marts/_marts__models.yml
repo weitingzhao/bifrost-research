@@ -91,7 +91,7 @@ models:
         description: "Normalized sentiment score (0-1)"
 
   - name: mart_sepa_composite_score
-    description: "Weighted composite of fundamental + technical + momentum + structure + sentiment"
+    description: "Weighted composite 30F/35T/20M/15O (fundamental + technical + momentum + options structure)"
     columns:
       - name: symbol
         tests:
@@ -114,7 +114,7 @@ models:
         description: "Decile bucket 1 (best) to 10"
 
   - name: mart_sepa_criteria_stats
-    description: "Pre-aggregated per-condition pass/fail statistics (domain + stats jsonb)"
+    description: "Pre-aggregated per-condition pass/fail statistics (domain + stats jsonb); materialized as view (Wave 13)"
     columns:
       - name: domain
         description: "'fundamental' or 'technical'"
@@ -139,7 +139,7 @@ models:
         description: "Overall composite score"
 
   - name: mart_sepa_feature_daily
-    description: "Projection mart for features.stock_signal_sepa_daily (dbt-owned SEPA scores)"
+    description: "Projection mart for features.stock_signal_sepa_daily (dbt-owned; weights 30/35/20/15)"
     columns:
       - name: symbol
         tests:

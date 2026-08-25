@@ -28,6 +28,10 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA raw_market GRANT SELECT ON TABLES TO analytic
 
 -- Grant write access to dw_stock schema (dbt output)
 GRANT USAGE, CREATE ON SCHEMA dw_stock TO analytics_writer;
+GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA dw_stock TO analytics_writer;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA dw_stock TO analytics_writer;
+ALTER DEFAULT PRIVILEGES FOR ROLE bifrost IN SCHEMA dw_stock
+    GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON TABLES TO analytics_writer;
 
 -- Grant read access to dw_stock for consumers
 GRANT USAGE ON SCHEMA dw_stock TO analytics_reader;

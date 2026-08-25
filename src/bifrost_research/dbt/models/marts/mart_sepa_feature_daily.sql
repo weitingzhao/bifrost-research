@@ -1,7 +1,7 @@
 {{ config(materialized='table') }}
 
--- Thin projection mart: stable column subset for features.stock_signal_sepa_daily.
--- SEPA business logic owner = dbt (fund/tech/momentum/structure composite).
+-- Projection mart: stable column subset for features.stock_signal_sepa_daily.
+-- SEPA business logic owner = dbt (30F/35T/20M/15O composite).
 
 with base as (
     select
@@ -17,10 +17,13 @@ with base as (
         w.sma_150,
         w.sma_200,
         t.low_52w,
-        t.high_52w
+        t.high_52w,
+        o.iv_percentile,
+        o.pcr_oi
     from {{ ref('mart_sepa_screener_wide') }} w
     inner join {{ ref('mart_sepa_composite_score') }} c using (symbol)
     inner join {{ ref('mart_sepa_technical_eval') }} t using (symbol)
+    left join {{ ref('mart_sepa_tier_options') }} o using (symbol)
 )
 
 select
@@ -28,9 +31,9 @@ select
     trade_date,
     round(fund_pass_count * 100.0 / 8.0, 4) as fundamental_score,
     round(tech_pass_count * 100.0 / 11.0, 4) as trend_template_score,
-    round(coalesce(momentum_score, 0) * 100.0, 4) as momentum_score,
-    round(coalesce(structure_score, 0) * 100.0, 4) as structure_score,
-    round(composite_score * 100.0, 4) as sepa_score,
+    round(coalesce(momentum_score, 0)::numeric * 100.0, 4) as momentum_score,
+    round(coalesce(structure_score, 0)::numeric * 100.0, 4) as structure_score,
+    round(composite_score::numeric * 100.0, 4) as sepa_score,
     case
         when composite_score >= 0.85 then 'A+'
         when composite_score >= 0.75 then 'A'
@@ -58,13 +61,19 @@ select
     sma_200,
     high_52w,
     low_52w,
-    null::double precision as iv_percentile,
-    null::double precision as pcr_oi,
+    iv_percentile,
+    pcr_oi,
     fund_pass_count,
     tech_pass_count,
     jsonb_build_object(
         'composite_score', composite_score,
         'momentum_score', momentum_score,
-        'structure_score', structure_score
+        'structure_score', structure_score,
+        'weights', jsonb_build_object(
+            'fundamental', 0.30,
+            'trend_template', 0.35,
+            'momentum', 0.20,
+            'structure', 0.15
+        )
     ) as factors_json
 from base

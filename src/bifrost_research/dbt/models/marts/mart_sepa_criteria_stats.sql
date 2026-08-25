@@ -1,4 +1,4 @@
-{{ config(materialized='table') }}
+{{ config(materialized='view') }}
 
 /*
   Pre-aggregated per-condition pass/fail statistics.
