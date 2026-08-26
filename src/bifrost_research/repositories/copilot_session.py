@@ -36,6 +36,13 @@ _COLUMNS = (
     "updated_at",
     "expires_at",
     "status",
+    "pinned",
+)
+
+_SELECT_COLS = (
+    "id, owner_id, title, model, agent_trail, messages, "
+    "hypothesis_id, created_at, updated_at, expires_at, status, "
+    "COALESCE(pinned, false) AS pinned"
 )
 
 
@@ -56,8 +63,7 @@ def create_session(
             INSERT INTO {TABLE_RESEARCH_COPILOT_SESSION}
                 (id, owner_id, title, model, messages)
             VALUES (%s::uuid, %s, %s, %s, %s::jsonb)
-            RETURNING id, owner_id, title, model, agent_trail, messages,
-                      hypothesis_id, created_at, updated_at, expires_at, status
+            RETURNING {_SELECT_COLS}
             """,
             (sid, owner_id, title, model, json.dumps(msgs)),
         )
@@ -84,8 +90,7 @@ def append_message(
                     title = COALESCE(title, %s),
                     updated_at = now()
                 WHERE id = %s::uuid AND status = 'active'
-                RETURNING id, owner_id, title, model, agent_trail, messages,
-                          hypothesis_id, created_at, updated_at, expires_at, status
+                RETURNING {_SELECT_COLS}
                 """,
                 (
                     json.dumps([message]),
@@ -102,8 +107,7 @@ def append_message(
                     agent_trail = COALESCE(%s::jsonb, agent_trail),
                     updated_at = now()
                 WHERE id = %s::uuid AND status = 'active'
-                RETURNING id, owner_id, title, model, agent_trail, messages,
-                          hypothesis_id, created_at, updated_at, expires_at, status
+                RETURNING {_SELECT_COLS}
                 """,
                 (
                     json.dumps([message]),
@@ -122,8 +126,7 @@ def get_session(conn: _Connection, session_id: str) -> dict[str, Any] | None:
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT id, owner_id, title, model, agent_trail, messages,
-                   hypothesis_id, created_at, updated_at, expires_at, status
+            SELECT {_SELECT_COLS}
             FROM {TABLE_RESEARCH_COPILOT_SESSION}
             WHERE id = %s::uuid
             """,
@@ -144,11 +147,10 @@ def list_recent(
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT id, owner_id, title, model, agent_trail, messages,
-                   hypothesis_id, created_at, updated_at, expires_at, status
+            SELECT {_SELECT_COLS}
             FROM {TABLE_RESEARCH_COPILOT_SESSION}
             WHERE owner_id = %s AND status = 'active'
-            ORDER BY updated_at DESC
+            ORDER BY pinned DESC, updated_at DESC
             LIMIT %s
             """,
             (owner_id, limit),
@@ -164,10 +166,44 @@ def archive_session(conn: _Connection, session_id: str) -> dict[str, Any] | None
             UPDATE {TABLE_RESEARCH_COPILOT_SESSION}
             SET status = 'archived', updated_at = now()
             WHERE id = %s::uuid
-            RETURNING id, owner_id, title, model, agent_trail, messages,
-                      hypothesis_id, created_at, updated_at, expires_at, status
+            RETURNING {_SELECT_COLS}
             """,
             (session_id,),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    if not row:
+        return None
+    return _serialize(_row(row, _COLUMNS))
+
+
+def update_metadata(
+    conn: _Connection,
+    session_id: str,
+    *,
+    title: str | None = None,
+    pinned: bool | None = None,
+) -> dict[str, Any] | None:
+    """Update ``title`` and/or ``pinned`` for a session (best-effort, no-op if none).
+
+    Callers pass ``None`` to leave a field unchanged.  Empty title is treated as
+    "keep current title" — we never persist ``''`` because the FE would render
+    a blank row.
+    """
+    if title is None and pinned is None:
+        return get_session(conn, session_id)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE {TABLE_RESEARCH_COPILOT_SESSION}
+            SET title = CASE WHEN %s::text IS NOT NULL AND length(trim(%s::text)) > 0
+                             THEN %s::text ELSE title END,
+                pinned = COALESCE(%s::boolean, pinned),
+                updated_at = now()
+            WHERE id = %s::uuid AND status = 'active'
+            RETURNING {_SELECT_COLS}
+            """,
+            (title, title, title, pinned, session_id),
         )
         row = cur.fetchone()
     conn.commit()
@@ -205,4 +241,5 @@ __all__ = [
     "derive_title",
     "get_session",
     "list_recent",
+    "update_metadata",
 ]

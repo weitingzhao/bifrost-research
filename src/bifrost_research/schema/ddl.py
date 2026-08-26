@@ -280,6 +280,13 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         )
         """
     )
+    # Wave RS-UX5: pinned flag for sorting favorite sessions at the top.
+    cur.execute(
+        f"""
+        ALTER TABLE {SCHEMA_RESEARCH}.copilot_session
+        ADD COLUMN IF NOT EXISTS pinned boolean NOT NULL DEFAULT false
+        """
+    )
     cur.execute(
         f"""
         CREATE INDEX IF NOT EXISTS idx_copilot_session_owner

@@ -13,7 +13,11 @@ from agents.exceptions import (
     OutputGuardrailTripwireTriggered,
 )
 from agents.items import HandoffCallItem, ItemHelpers, ToolCallItem, ToolCallOutputItem
-from agents.stream_events import AgentUpdatedStreamEvent, RawResponsesStreamEvent, RunItemStreamEvent
+from agents.stream_events import (
+    AgentUpdatedStreamEvent,
+    RawResponsesStreamEvent,
+    RunItemStreamEvent,
+)
 
 from bifrost_research.copilot.agents.graph import triage_agent_with_mcp
 from bifrost_research.copilot.guardrails import (
@@ -115,7 +119,38 @@ def _extract_tool_call(item: ToolCallItem) -> tuple[str, str, dict[str, Any]]:
     return str(call_id), _canonical_tool_name(str(name)), args
 
 
+def _resolve_output_call_id(item: ToolCallOutputItem) -> str | None:
+    """Best-effort resolve the tool_call_id for a ToolCallOutputItem.
+
+    openai-agents SDK stores this on ``raw_item.call_id`` for the function-tool
+    path, but MCP hosted tools sometimes surface it under ``id`` / ``tool_call_id``
+    or as a plain dict.  The FE matches ``tool_result.id → tool_call.id`` — if the
+    resolved id is missing, the UI card stays PENDING forever.
+    """
+    raw = item.raw_item
+    for attr in ("call_id", "id", "tool_call_id"):
+        v = getattr(raw, attr, None)
+        if v:
+            return str(v)
+    if isinstance(raw, dict):
+        for key in ("call_id", "id", "tool_call_id"):
+            v = raw.get(key)
+            if v:
+                return str(v)
+    for attr in ("call_id", "id"):
+        v = getattr(item, attr, None)
+        if v:
+            return str(v)
+    return None
+
+
 def _extract_tool_result(item: ToolCallOutputItem) -> Any:
+    """Unwrap MCP tool output into a plain ``{ok, data|error, ...}`` envelope.
+
+    MCP servers return content parts like ``{"type": "text", "text": "<json>"}`` and
+    the SDK forwards that verbatim.  If we don't parse the inner JSON here, the FE
+    renders the raw envelope and cannot detect success/failure from ``ok``.
+    """
     output = item.output
     if isinstance(output, str):
         try:
@@ -123,7 +158,20 @@ def _extract_tool_result(item: ToolCallOutputItem) -> Any:
         except json.JSONDecodeError:
             return {"ok": True, "data": output}
     if isinstance(output, dict):
+        if output.get("type") == "text" and isinstance(output.get("text"), str):
+            try:
+                return json.loads(output["text"])
+            except json.JSONDecodeError:
+                return {"ok": True, "data": output["text"]}
         return output
+    if isinstance(output, list):
+        for part in output:
+            if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+                try:
+                    return json.loads(part["text"])
+                except json.JSONDecodeError:
+                    continue
+        return {"ok": True, "data": output}
     return {"ok": True, "data": str(output)}
 
 
@@ -242,18 +290,27 @@ async def stream_agent(
                             continue
 
                         if event.name == "tool_output" and isinstance(item, ToolCallOutputItem):
-                            raw = item.raw_item
-                            call_id = getattr(raw, "call_id", None) or getattr(raw, "id", None) or "tool"
-                            name = pending_calls.get(str(call_id), ("unknown", {}))[0]
+                            resolved = _resolve_output_call_id(item)
+                            # FIFO fallback — SDK emits tool_output events in call order.
+                            # Without this, if raw.call_id is missing we'd emit a fixed
+                            # sentinel id ("tool") that never matches any pending FE chip
+                            # and every tool card stays PENDING forever.
+                            if resolved is None or resolved not in pending_calls:
+                                resolved = next(iter(pending_calls), None) or "tool"
+                            name, _ = pending_calls.pop(resolved, ("unknown", {}))
                             result_payload = _extract_tool_result(item)
                             yield _sse(
                                 "tool_result",
                                 {
-                                    "id": str(call_id),
+                                    "id": resolved,
                                     "name": name,
                                     "result": result_payload,
                                     "session_id": session_id,
                                 },
+                            )
+                            trace_event(
+                                "tool_result",
+                                {"id": resolved, "name": name, "session_id": session_id},
                             )
                             continue
 
@@ -308,7 +365,7 @@ async def stream_agent(
                     "guardrail",
                     {"phase": "output", "code": D10_FREEZE_CODE, "session_id": session_id},
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 ok = False
                 logger.exception("copilot agent runtime error session=%s", session_id)
                 yield _sse("error", {"message": str(exc), "session_id": session_id})
@@ -316,7 +373,7 @@ async def stream_agent(
         yield _sse("error", {"message": str(exc), "session_id": session_id})
         yield _sse("done", {"session_id": session_id, "ok": False})
         return
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # Reached only when triage_agent_with_mcp.__aenter__() (i.e. MCPServerSse.connect())
         # fails or the agent graph build raises before the runtime loop starts.
         # The SDK's own MCP errors already read "Failed to connect to MCP server '<name>': ..."

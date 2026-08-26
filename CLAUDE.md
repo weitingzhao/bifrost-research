@@ -176,7 +176,8 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
-- 版本：`0.18.1`（Wave RS-F5.1 — 加 `trade.strategy.opportunities`；修正 `trade.strategy.instances` 路径 `/strategies/*`；portfolio agent instructions 强化多工具复合调用）
+- 版本：`0.18.2`（Wave RS-UX5 — 修复 tool_result `call_id` 匹配（PENDING 悬挂 root cause）+ MCP text envelope unwrap；`copilot_session.pinned` 列 + `update_metadata` + PATCH endpoint（rename/pin））
+- 历史：`0.18.1`（Wave RS-F5.1 — 加 `trade.strategy.opportunities`；修正 `trade.strategy.instances` 路径 `/strategies/*`；portfolio agent instructions 强化多工具复合调用）
 - 历史：`0.18.0`（Wave RS-F5 — `trade.*` read-only MCP tools + `portfolio` specialist agent；holdings-aware Copilot）
 - 历史：`0.17.2`（agent_runtime outer catch → 显示实际异常类名，不再无差别报 "MCP connect failed"）
 - 历史：`0.16.0`（Wave RS-E4 Copilot write tools + approval tokens + DiffApprovalCard；Cockpit E1–E4 complete）
