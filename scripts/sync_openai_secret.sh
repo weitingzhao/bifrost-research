@@ -13,6 +13,15 @@ NS="${RESEARCH_NS:-research}"
 SECRET="${RESEARCH_SECRET_NAME:-bifrost-research-secrets}"
 
 if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+  if [[ -f .env ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+  fi
+fi
+
+if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   echo "ERROR: OPENAI_API_KEY is not set." >&2
   echo "  export OPENAI_API_KEY='sk-...' && $0" >&2
   exit 1
