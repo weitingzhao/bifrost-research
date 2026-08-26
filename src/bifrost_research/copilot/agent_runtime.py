@@ -15,7 +15,7 @@ from agents.exceptions import (
 from agents.items import HandoffCallItem, ItemHelpers, ToolCallItem, ToolCallOutputItem
 from agents.stream_events import AgentUpdatedStreamEvent, RawResponsesStreamEvent, RunItemStreamEvent
 
-from bifrost_research.copilot.agents.graph import build_triage_agent
+from bifrost_research.copilot.agents.graph import triage_agent_with_mcp
 from bifrost_research.copilot.guardrails import (
     D10_FREEZE_CODE,
     D10_FREEZE_MESSAGE,
@@ -27,11 +27,31 @@ from bifrost_research.copilot.rate_limit import record_usage
 from bifrost_research.copilot.tracing import maybe_configure_otlp, trace_event
 from bifrost_research.copilot.write_gate import force_chat_dry_run
 from bifrost_research.db.conn import connect
+from bifrost_research.mcp.server import ALL_TOOL_NAMES
 from bifrost_research.repositories.ai_action_log import log_guardrail_rejection
 
 logger = logging.getLogger("bifrost.copilot.audit")
 
 maybe_configure_otlp()
+
+_KNOWN_TOOL_BY_SAFE = {n.replace(".", "_"): n for n in ALL_TOOL_NAMES}
+
+
+def _canonical_tool_name(name: str) -> str:
+    """Map SDK-prefixed / underscore tool names back to research.* MCP names for FE chips."""
+    raw = (name or "").strip()
+    if raw in ALL_TOOL_NAMES:
+        return raw
+    if raw in _KNOWN_TOOL_BY_SAFE:
+        return _KNOWN_TOOL_BY_SAFE[raw]
+    # mcp_<server>__research_hypothesis_list
+    if "__" in raw:
+        tail = raw.rsplit("__", 1)[-1]
+        if tail in _KNOWN_TOOL_BY_SAFE:
+            return _KNOWN_TOOL_BY_SAFE[tail]
+        if tail in ALL_TOOL_NAMES:
+            return tail
+    return raw
 
 
 def _audit_guardrail_best_effort(
@@ -92,7 +112,7 @@ def _extract_tool_call(item: ToolCallItem) -> tuple[str, str, dict[str, Any]]:
             args = json.loads(str(args_raw) or "{}")
         except json.JSONDecodeError:
             args = {}
-    return str(call_id), str(name), args
+    return str(call_id), _canonical_tool_name(str(name)), args
 
 
 def _extract_tool_result(item: ToolCallOutputItem) -> Any:
@@ -144,139 +164,162 @@ async def stream_agent(
         yield _sse("done", {"session_id": session_id, "ok": False})
         return
 
-    try:
-        agent = build_triage_agent(model_id)
-    except ModelConfigError as exc:
-        yield _sse("error", {"message": str(exc), "session_id": session_id})
-        yield _sse("done", {"session_id": session_id, "ok": False})
-        return
-
     current_agent = "triage"
     total_tokens = 0
     total_cost = 0.0
     ok = True
 
     try:
-        result = Runner.run_streamed(
-            agent,
-            input=_sdk_input(messages),
-            max_turns=max_turns,
-        )
+        async with triage_agent_with_mcp(model_id) as agent:
+            try:
+                result = Runner.run_streamed(
+                    agent,
+                    input=_sdk_input(messages),
+                    max_turns=max_turns,
+                )
 
-        pending_calls: dict[str, tuple[str, dict[str, Any]]] = {}
+                pending_calls: dict[str, tuple[str, dict[str, Any]]] = {}
 
-        async for event in result.stream_events():
-            if isinstance(event, AgentUpdatedStreamEvent):
-                prev = current_agent
-                current_agent = event.new_agent.name or "agent"
-                if prev != current_agent:
-                    yield _sse(
-                        "agent_handoff",
-                        {
-                            "from": prev,
-                            "to": current_agent,
-                            "reason": "agent_updated",
-                            "session_id": session_id,
-                        },
-                    )
-                    trace_event(
-                        "agent_handoff",
-                        {"from": prev, "to": current_agent, "session_id": session_id},
-                    )
-                continue
+                async for event in result.stream_events():
+                    if isinstance(event, AgentUpdatedStreamEvent):
+                        prev = current_agent
+                        current_agent = event.new_agent.name or "agent"
+                        if prev != current_agent:
+                            yield _sse(
+                                "agent_handoff",
+                                {
+                                    "from": prev,
+                                    "to": current_agent,
+                                    "reason": "agent_updated",
+                                    "session_id": session_id,
+                                },
+                            )
+                            trace_event(
+                                "agent_handoff",
+                                {"from": prev, "to": current_agent, "session_id": session_id},
+                            )
+                        continue
 
-            if isinstance(event, RawResponsesStreamEvent):
-                delta = _text_delta(event)
-                if delta:
-                    yield _sse("token", {"text": delta, "session_id": session_id})
-                continue
+                    if isinstance(event, RawResponsesStreamEvent):
+                        delta = _text_delta(event)
+                        if delta:
+                            yield _sse("token", {"text": delta, "session_id": session_id})
+                        continue
 
-            if isinstance(event, RunItemStreamEvent):
-                item = event.item
-                if event.name == "handoff_requested" and isinstance(item, HandoffCallItem):
-                    raw = item.raw_item
-                    target = getattr(raw, "name", None) or "specialist"
-                    yield _sse(
-                        "agent_handoff",
-                        {
-                            "from": current_agent,
-                            "to": str(target),
-                            "reason": "handoff_requested",
-                            "session_id": session_id,
-                        },
-                    )
-                    continue
+                    if isinstance(event, RunItemStreamEvent):
+                        item = event.item
+                        if event.name == "handoff_requested" and isinstance(item, HandoffCallItem):
+                            raw = item.raw_item
+                            target = getattr(raw, "name", None) or "specialist"
+                            yield _sse(
+                                "agent_handoff",
+                                {
+                                    "from": current_agent,
+                                    "to": str(target),
+                                    "reason": "handoff_requested",
+                                    "session_id": session_id,
+                                },
+                            )
+                            continue
 
-                if event.name == "tool_called" and isinstance(item, ToolCallItem):
-                    call_id, name, args = _extract_tool_call(item)
-                    display_args = force_chat_dry_run(name, args)
-                    pending_calls[call_id] = (name, display_args)
-                    yield _sse(
-                        "tool_call",
-                        {
-                            "id": call_id,
-                            "name": name,
-                            "arguments": display_args,
-                            "session_id": session_id,
-                        },
-                    )
-                    trace_event(
-                        "tool_call",
-                        {"id": call_id, "name": name, "session_id": session_id},
-                    )
-                    continue
+                        if event.name == "tool_called" and isinstance(item, ToolCallItem):
+                            call_id, name, args = _extract_tool_call(item)
+                            display_args = force_chat_dry_run(name, args)
+                            pending_calls[call_id] = (name, display_args)
+                            yield _sse(
+                                "tool_call",
+                                {
+                                    "id": call_id,
+                                    "name": name,
+                                    "arguments": display_args,
+                                    "session_id": session_id,
+                                },
+                            )
+                            trace_event(
+                                "tool_call",
+                                {"id": call_id, "name": name, "session_id": session_id},
+                            )
+                            continue
 
-                if event.name == "tool_output" and isinstance(item, ToolCallOutputItem):
-                    raw = item.raw_item
-                    call_id = getattr(raw, "call_id", None) or getattr(raw, "id", None) or "tool"
-                    name = pending_calls.get(str(call_id), ("unknown", {}))[0]
-                    result_payload = _extract_tool_result(item)
-                    yield _sse(
-                        "tool_result",
-                        {
-                            "id": str(call_id),
-                            "name": name,
-                            "result": result_payload,
-                            "session_id": session_id,
-                        },
-                    )
-                    continue
+                        if event.name == "tool_output" and isinstance(item, ToolCallOutputItem):
+                            raw = item.raw_item
+                            call_id = getattr(raw, "call_id", None) or getattr(raw, "id", None) or "tool"
+                            name = pending_calls.get(str(call_id), ("unknown", {}))[0]
+                            result_payload = _extract_tool_result(item)
+                            yield _sse(
+                                "tool_result",
+                                {
+                                    "id": str(call_id),
+                                    "name": name,
+                                    "result": result_payload,
+                                    "session_id": session_id,
+                                },
+                            )
+                            continue
 
-                if event.name == "message_output_created":
-                    text = ItemHelpers.extract_last_text([item]) or ItemHelpers.extract_last_content([item])
-                    if isinstance(text, str) and text.strip():
-                        yield _sse("token", {"text": text, "session_id": session_id})
+                        if event.name == "message_output_created":
+                            text = ItemHelpers.extract_last_text([item]) or ItemHelpers.extract_last_content(
+                                [item]
+                            )
+                            if isinstance(text, str) and text.strip():
+                                yield _sse("token", {"text": text, "session_id": session_id})
 
-        if result.run_loop_task is not None:
-            await result.run_loop_task
-        usage = result.context_wrapper.usage
-        in_tok = int(getattr(usage, "input_tokens", 0) or 0)
-        out_tok = int(getattr(usage, "output_tokens", 0) or 0)
-        total_tokens = in_tok + out_tok
-        total_cost = estimate_cost(model_id, in_tok, out_tok)
+                if result.run_loop_task is not None:
+                    await result.run_loop_task
+                usage = result.context_wrapper.usage
+                in_tok = int(getattr(usage, "input_tokens", 0) or 0)
+                out_tok = int(getattr(usage, "output_tokens", 0) or 0)
+                total_tokens = in_tok + out_tok
+                total_cost = estimate_cost(model_id, in_tok, out_tok)
 
-    except InputGuardrailTripwireTriggered:
-        ok = False
-        trace_event("guardrail", {"session_id": session_id, "phase": "input_sdk"})
-        _audit_guardrail_best_effort(session_id=session_id, model_id=model_id, phase="input_sdk")
-        yield _sse(
-            "error",
-            {"message": D10_FREEZE_MESSAGE, "code": D10_FREEZE_CODE, "session_id": session_id},
-        )
-        yield _sse("guardrail", {"phase": "input", "code": D10_FREEZE_CODE, "session_id": session_id})
-    except OutputGuardrailTripwireTriggered:
-        ok = False
-        trace_event("guardrail", {"session_id": session_id, "phase": "output_sdk"})
-        _audit_guardrail_best_effort(session_id=session_id, model_id=model_id, phase="output_sdk")
-        yield _sse(
-            "error",
-            {"message": D10_FREEZE_MESSAGE, "code": D10_FREEZE_CODE, "session_id": session_id},
-        )
-        yield _sse("guardrail", {"phase": "output", "code": D10_FREEZE_CODE, "session_id": session_id})
+            except InputGuardrailTripwireTriggered:
+                ok = False
+                trace_event("guardrail", {"session_id": session_id, "phase": "input_sdk"})
+                _audit_guardrail_best_effort(
+                    session_id=session_id, model_id=model_id, phase="input_sdk"
+                )
+                yield _sse(
+                    "error",
+                    {
+                        "message": D10_FREEZE_MESSAGE,
+                        "code": D10_FREEZE_CODE,
+                        "session_id": session_id,
+                    },
+                )
+                yield _sse(
+                    "guardrail",
+                    {"phase": "input", "code": D10_FREEZE_CODE, "session_id": session_id},
+                )
+            except OutputGuardrailTripwireTriggered:
+                ok = False
+                trace_event("guardrail", {"session_id": session_id, "phase": "output_sdk"})
+                _audit_guardrail_best_effort(
+                    session_id=session_id, model_id=model_id, phase="output_sdk"
+                )
+                yield _sse(
+                    "error",
+                    {
+                        "message": D10_FREEZE_MESSAGE,
+                        "code": D10_FREEZE_CODE,
+                        "session_id": session_id,
+                    },
+                )
+                yield _sse(
+                    "guardrail",
+                    {"phase": "output", "code": D10_FREEZE_CODE, "session_id": session_id},
+                )
+            except Exception as exc:  # noqa: BLE001
+                ok = False
+                logger.exception("copilot agent runtime error session=%s", session_id)
+                yield _sse("error", {"message": str(exc), "session_id": session_id})
+    except ModelConfigError as exc:
+        yield _sse("error", {"message": str(exc), "session_id": session_id})
+        yield _sse("done", {"session_id": session_id, "ok": False})
+        return
     except Exception as exc:  # noqa: BLE001
         ok = False
-        logger.exception("copilot agent runtime error session=%s", session_id)
-        yield _sse("error", {"message": str(exc), "session_id": session_id})
+        logger.exception("copilot MCP connect error session=%s", session_id)
+        yield _sse("error", {"message": f"MCP connect failed: {exc}", "session_id": session_id})
 
     record_usage(tokens=total_tokens, cost_usd=total_cost)
     logger.info(

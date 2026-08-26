@@ -1,9 +1,15 @@
-"""Multi-agent graph — Triage + specialists (Wave RS-F3)."""
+"""Multi-agent graph — Triage + specialists (Wave RS-F3).
+
+Uses a **single** shared MCPServerSse per Copilot turn (multi-SSE sessions
+crash FastMCP). Specialists share the same connected server; instructions
+constrain which tools they should prefer.
+"""
 
 from __future__ import annotations
 
 import os
-from functools import lru_cache
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +21,6 @@ from bifrost_research.copilot.guardrails import (
     build_output_guardrail,
 )
 from bifrost_research.copilot.models import resolve_model_for_agent
-from bifrost_research.mcp.tools._write_common import WRITE_TOOL_NAMES
 
 _INSTRUCTIONS_DIR = Path(__file__).resolve().parent / "instructions"
 
@@ -38,33 +43,12 @@ def _mcp_url() -> str:
     return os.environ.get("RESEARCH_MCP_SSE_URL", "http://127.0.0.1:8796/sse")
 
 
-def _prefix_filter(prefixes: tuple[str, ...]):
-    def _fn(_ctx: Any, tool: Any) -> bool:
-        name = getattr(tool, "name", "") or ""
-        return any(name.startswith(p) for p in prefixes)
-
-    return _fn
-
-
-def _write_filter(_ctx: Any, tool: Any) -> bool:
-    name = getattr(tool, "name", "") or ""
-    return name in WRITE_TOOL_NAMES
-
-
-@lru_cache(maxsize=32)
-def _mcp_server(*, cache_key: str, filter_key: str, prefixes: tuple[str, ...] = ()) -> MCPServerSse:
-    del cache_key
-    tool_filter = None
-    if prefixes:
-        tool_filter = _prefix_filter(prefixes)
-    elif filter_key == "write":
-        tool_filter = _write_filter
+def _new_mcp_server() -> MCPServerSse:
     return MCPServerSse(
         params={"url": _mcp_url()},
         cache_tools_list=True,
-        name=f"research-mcp-{filter_key or 'all'}",
+        name="research-mcp",
         client_session_timeout_seconds=30.0,
-        tool_filter=tool_filter,
     )
 
 
@@ -90,7 +74,8 @@ def _agent(
         "output_guardrails": out_g,
         "mcp_config": {
             "convert_schemas_to_strict": True,
-            "include_server_in_tool_names": False,
+            # Sanitize MCP tool names for OpenAI-compatible providers (DeepSeek rejects dots).
+            "include_server_in_tool_names": True,
         },
     }
     if mcp is not None:
@@ -102,51 +87,46 @@ def _agent(
     return Agent(**kwargs)
 
 
-def build_discovery_agent(model_id: str) -> Agent[Any]:
-    mcp = _mcp_server(cache_key=model_id, filter_key="discovery", prefixes=("research.discovery.",))
+def build_discovery_agent(model_id: str, mcp: MCPServerSse | None = None) -> Agent[Any]:
     return _agent(
         name="discovery",
         instructions=_read_instruction(
             "discovery",
-            "You specialize in SEPA, Event Radar, Momentum, and discovery tools.",
+            "You specialize in SEPA, Event Radar, Momentum, and discovery tools. "
+            "Prefer research.discovery.* tools.",
         ),
         model_id=model_id,
         mcp=mcp,
     )
 
 
-def build_analyze_agent(model_id: str) -> Agent[Any]:
-    mcp = _mcp_server(
-        cache_key=model_id,
-        filter_key="analyze",
-        prefixes=("research.vrp.", "research.vol_surface.", "research.opex_cycle."),
-    )
+def build_analyze_agent(model_id: str, mcp: MCPServerSse | None = None) -> Agent[Any]:
     return _agent(
         name="analyze",
         instructions=_read_instruction(
             "analyze",
-            "You specialize in VRP, vol surface, OpEx cycle, GEX, and flow analytics.",
+            "You specialize in VRP, vol surface, OpEx cycle, GEX, and flow analytics. "
+            "Prefer research.vrp.*, research.vol_surface.*, research.opex_cycle.* tools.",
         ),
         model_id=model_id,
         mcp=mcp,
     )
 
 
-def build_validate_agent(model_id: str) -> Agent[Any]:
-    mcp = _mcp_server(cache_key=model_id, filter_key="validate", prefixes=("research.backtest.",))
+def build_validate_agent(model_id: str, mcp: MCPServerSse | None = None) -> Agent[Any]:
     return _agent(
         name="validate",
         instructions=_read_instruction(
             "validate",
-            "You specialize in backtest runs, regime stats, and walk-forward validation.",
+            "You specialize in backtest runs, regime stats, and walk-forward validation. "
+            "Prefer research.backtest.* tools.",
         ),
         model_id=model_id,
         mcp=mcp,
     )
 
 
-def build_write_agent(model_id: str) -> Agent[Any]:
-    mcp = _mcp_server(cache_key=model_id, filter_key="write")
+def build_write_agent(model_id: str, mcp: MCPServerSse | None = None) -> Agent[Any]:
     return _agent(
         name="write",
         instructions=_read_instruction(
@@ -158,7 +138,8 @@ def build_write_agent(model_id: str) -> Agent[Any]:
     )
 
 
-def build_explain_agent(model_id: str) -> Agent[Any]:
+def build_explain_agent(model_id: str, mcp: MCPServerSse | None = None) -> Agent[Any]:
+    del mcp  # explain has no MCP tools
     return _agent(
         name="explain",
         instructions=_read_instruction(
@@ -169,10 +150,10 @@ def build_explain_agent(model_id: str) -> Agent[Any]:
     )
 
 
-def build_verdict_agent(model_id: str) -> Agent[Any]:
-    discovery = build_discovery_agent(model_id)
-    analyze = build_analyze_agent(model_id)
-    validate = build_validate_agent(model_id)
+def build_verdict_agent(model_id: str, mcp: MCPServerSse | None = None) -> Agent[Any]:
+    discovery = build_discovery_agent(model_id, mcp=mcp)
+    analyze = build_analyze_agent(model_id, mcp=mcp)
+    validate = build_validate_agent(model_id, mcp=mcp)
     tools = [
         discovery.as_tool(tool_name="discovery_specialist", tool_description="SEPA/discovery data"),
         analyze.as_tool(tool_name="analyze_specialist", tool_description="VRP/vol/OpEx analytics"),
@@ -190,15 +171,14 @@ def build_verdict_agent(model_id: str) -> Agent[Any]:
     )
 
 
-def build_triage_agent(model_id: str) -> Agent[Any]:
-    discovery = build_discovery_agent(model_id)
-    analyze = build_analyze_agent(model_id)
-    validate = build_validate_agent(model_id)
-    write = build_write_agent(model_id)
+def build_triage_agent(model_id: str, mcp: MCPServerSse | None = None) -> Agent[Any]:
+    discovery = build_discovery_agent(model_id, mcp=mcp)
+    analyze = build_analyze_agent(model_id, mcp=mcp)
+    validate = build_validate_agent(model_id, mcp=mcp)
+    write = build_write_agent(model_id, mcp=mcp)
     explain = build_explain_agent(model_id)
-    verdict = build_verdict_agent(model_id)
+    verdict = build_verdict_agent(model_id, mcp=mcp)
 
-    mcp = _mcp_server(cache_key=model_id, filter_key="all")
     return _agent(
         name="triage",
         instructions=_read_instruction(
@@ -221,6 +201,20 @@ def build_triage_agent(model_id: str) -> Agent[Any]:
     )
 
 
+@asynccontextmanager
+async def triage_agent_with_mcp(model_id: str) -> AsyncIterator[Agent[Any]]:
+    """Build triage agent with one connected MCP SSE session for the turn."""
+    server = _new_mcp_server()
+    try:
+        await server.connect()
+        yield build_triage_agent(model_id, mcp=server)
+    finally:
+        try:
+            await server.cleanup()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 __all__ = [
     "build_analyze_agent",
     "build_discovery_agent",
@@ -229,4 +223,5 @@ __all__ = [
     "build_validate_agent",
     "build_verdict_agent",
     "build_write_agent",
+    "triage_agent_with_mcp",
 ]

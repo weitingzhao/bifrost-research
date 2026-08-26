@@ -24,7 +24,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: api
-          image: 192.168.10.73:30500/bifrost-research:0.17.0
+          image: 192.168.10.73:30500/bifrost-research:0.17.1
           imagePullPolicy: Always
           args: ["python", "scripts/run_api.py"]
           envFrom:
@@ -46,6 +46,8 @@ spec:
               value: "analytics_writer"
             - name: ELEMENTARY_REPORT_PATH
               value: "/report/elementary_report.html"
+            - name: RESEARCH_MCP_SSE_URL
+              value: "http://research-mcp.research.svc.cluster.local:8796/sse"
           ports:
             - name: http
               containerPort: 8795
