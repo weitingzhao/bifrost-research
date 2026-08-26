@@ -55,6 +55,7 @@ _RULE_COLS = (
     "active",
     "source_session_id",
     "source_msg_ref",
+    "agent_owner",
     "created_at",
     "updated_at",
     "retired_at",
@@ -91,7 +92,7 @@ def list_rules(
         cur.execute(
             f"""
             SELECT id, owner_id, title, category, body_md, trigger_ctx, tags,
-                   active, source_session_id, source_msg_ref,
+                   active, source_session_id, source_msg_ref, agent_owner,
                    created_at, updated_at, retired_at
             FROM {TABLE_RESEARCH_PLAYBOOK_RULE}
             WHERE {where}
@@ -115,18 +116,20 @@ def create_rule(
     tags: list[str] | None = None,
     source_session_id: str | None = None,
     source_msg_ref: dict[str, Any] | None = None,
+    agent_owner: str | None = "shared",
 ) -> dict[str, Any]:
     rid = str(uuid.uuid4())
+    owner_slot = (agent_owner or "shared").strip() or "shared"
     with conn.cursor() as cur:
         cur.execute(
             f"""
             INSERT INTO {TABLE_RESEARCH_PLAYBOOK_RULE}
                 (id, owner_id, title, category, body_md, trigger_ctx, tags,
-                 source_session_id, source_msg_ref)
+                 source_session_id, source_msg_ref, agent_owner)
             VALUES (%s::uuid, %s, %s, %s, %s, %s::jsonb, %s::text[],
-                    %s::uuid, %s::jsonb)
+                    %s::uuid, %s::jsonb, %s)
             RETURNING id, owner_id, title, category, body_md, trigger_ctx, tags,
-                      active, source_session_id, source_msg_ref,
+                      active, source_session_id, source_msg_ref, agent_owner,
                       created_at, updated_at, retired_at
             """,
             (
@@ -139,6 +142,7 @@ def create_rule(
                 tags or [],
                 source_session_id,
                 json.dumps(source_msg_ref) if source_msg_ref else None,
+                owner_slot,
             ),
         )
         row = cur.fetchone()
@@ -178,7 +182,7 @@ def update_rule(
             SET {", ".join(sets)}
             WHERE id = %s::uuid AND owner_id = %s
             RETURNING id, owner_id, title, category, body_md, trigger_ctx, tags,
-                      active, source_session_id, source_msg_ref,
+                      active, source_session_id, source_msg_ref, agent_owner,
                       created_at, updated_at, retired_at
             """,
             tuple(params),
@@ -198,7 +202,7 @@ def retire_rule(conn: _Connection, rule_id: str, owner_id: str) -> dict[str, Any
             SET active = false, retired_at = now(), updated_at = now()
             WHERE id = %s::uuid AND owner_id = %s
             RETURNING id, owner_id, title, category, body_md, trigger_ctx, tags,
-                      active, source_session_id, source_msg_ref,
+                      active, source_session_id, source_msg_ref, agent_owner,
                       created_at, updated_at, retired_at
             """,
             (rule_id, owner_id),
@@ -215,7 +219,7 @@ def get_rule(conn: _Connection, rule_id: str, owner_id: str) -> dict[str, Any] |
         cur.execute(
             f"""
             SELECT id, owner_id, title, category, body_md, trigger_ctx, tags,
-                   active, source_session_id, source_msg_ref,
+                   active, source_session_id, source_msg_ref, agent_owner,
                    created_at, updated_at, retired_at
             FROM {TABLE_RESEARCH_PLAYBOOK_RULE}
             WHERE id = %s::uuid AND owner_id = %s
@@ -462,15 +466,60 @@ def search_keyword(
     }
 
 
+def list_rules_for_agent(
+    conn: _Connection,
+    *,
+    owner_id: str,
+    agent_name: str,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Active rules scoped to agent_name or shared (Wave RS-PS3)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT id, owner_id, title, category, body_md, trigger_ctx, tags,
+                   active, source_session_id, source_msg_ref, agent_owner,
+                   created_at, updated_at, retired_at
+            FROM {TABLE_RESEARCH_PLAYBOOK_RULE}
+            WHERE owner_id = %s
+              AND active = true
+              AND retired_at IS NULL
+              AND (agent_owner = %s OR agent_owner = 'shared')
+            ORDER BY updated_at DESC
+            LIMIT %s
+            """,
+            (owner_id, agent_name, limit),
+        )
+        rows = cur.fetchall()
+    return [_serialize(_row(r, _RULE_COLS)) for r in rows]
+
+
+def format_hard_constraints_blob(rules: list[dict[str, Any]]) -> str | None:
+    if not rules:
+        return None
+    lines = [
+        "Hard constraints from playbook (violate → refuse and cite rule id):",
+    ]
+    for r in rules:
+        rid = r.get("id", "")
+        title = r.get("title", "")
+        body = str(r.get("body_md") or "").strip()
+        owner = r.get("agent_owner") or "shared"
+        lines.append(f"- [rule:{rid}] ({owner}) {title}: {body}")
+    return "\n".join(lines)
+
+
 __all__ = [
     "create_case",
     "create_case_from_bridge",
     "create_note",
     "create_rule",
+    "format_hard_constraints_blob",
     "get_rule",
     "list_cases",
     "list_notes",
     "list_rules",
+    "list_rules_for_agent",
     "retire_rule",
     "search_keyword",
     "update_rule",

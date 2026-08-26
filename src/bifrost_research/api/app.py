@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from bifrost_research import __version__
+from bifrost_research.api.agent_persona import router as agent_persona_router
 from bifrost_research.api.agents import agents_router, drafts_router
 from bifrost_research.api.backtest_event import router as backtest_event_router
 from bifrost_research.api.copilot import router as copilot_router
@@ -61,6 +62,7 @@ def create_app() -> FastAPI:
     app.include_router(copilot_router)
     app.include_router(copilot_sessions_router)
     app.include_router(playbook_router)
+    app.include_router(agent_persona_router)
     app.include_router(agents_router)
     app.include_router(drafts_router)
     return app

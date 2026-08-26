@@ -16,6 +16,7 @@ def register_all(mcp: FastMCP) -> None:
         discovery,
         hypothesis,
         opex_cycle,
+        persona,
         playbook,
         trade_context,
         vol_surface,
@@ -33,6 +34,7 @@ def register_all(mcp: FastMCP) -> None:
     discovery.register(mcp)
     trade_context.register(mcp)
     playbook.register(mcp)
+    persona.register(mcp)
     write_hypothesis.register(mcp)
     write_backtest.register(mcp)
     write_playbook.register(mcp)

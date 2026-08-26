@@ -332,6 +332,7 @@ async def copilot_stream(
                 model=body.model,
                 max_tools=body.max_tools,
                 session_id=sid,
+                owner_id=owner_id,
                 provider=provider,
                 mcp=mcp,
                 turn_buffer=turn_buffer,

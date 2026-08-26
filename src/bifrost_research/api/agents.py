@@ -182,8 +182,10 @@ def approve_draft(
                 executed["note"] = "morning_brief approved (note only; no hypothesis write)"
 
         elif draft["kind"] == "playbook_rule":
+            from bifrost_research.repositories import agent_persona as persona_repo
             from bifrost_research.repositories import playbook as playbook_repo
 
+            agent_owner = str(payload.get("agent_owner") or "shared")
             rule = playbook_repo.create_rule(
                 conn,
                 owner_id=owner_id,
@@ -193,8 +195,18 @@ def approve_draft(
                 trigger_ctx=payload.get("trigger_ctx") if isinstance(payload.get("trigger_ctx"), dict) else {},
                 tags=list(payload.get("tags") or []),
                 source_session_id=payload.get("source_session_id"),
+                agent_owner=agent_owner,
             )
             executed["playbook_rule"] = rule
+            persona_diff = payload.get("persona_diff")
+            if isinstance(persona_diff, dict) and persona_diff and agent_owner != "shared":
+                persona_row = persona_repo.apply_preference_diff(
+                    conn,
+                    owner_id,
+                    agent_owner,
+                    persona_diff,
+                )
+                executed["persona"] = persona_row
 
         elif draft["kind"] == "playbook_note":
             from bifrost_research.repositories import playbook as playbook_repo

@@ -417,6 +417,50 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         """
     )
 
+    # --- Wave RS-PS1: owner-scoped agent personas ---
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.agent_persona (
+            owner_id            text NOT NULL,
+            agent_name          text NOT NULL,
+            persona_md          text NOT NULL DEFAULT '',
+            preferences_json    jsonb NOT NULL DEFAULT '{{}}'::jsonb,
+            guardrail_locked    boolean NOT NULL DEFAULT false,
+            seeded              boolean NOT NULL DEFAULT false,
+            updated_at          timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (owner_id, agent_name)
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS idx_agent_persona_owner
+        ON {SCHEMA_RESEARCH}.agent_persona (owner_id)
+        """
+    )
+
+    # --- Wave RS-PS3: playbook rule → agent owner ---
+    cur.execute(
+        f"""
+        ALTER TABLE {SCHEMA_RESEARCH}.playbook_rule
+        ADD COLUMN IF NOT EXISTS agent_owner text DEFAULT 'shared'
+        """
+    )
+    cur.execute(
+        f"""
+        UPDATE {SCHEMA_RESEARCH}.playbook_rule
+        SET agent_owner = 'shared'
+        WHERE agent_owner IS NULL
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS idx_playbook_rule_agent_owner
+        ON {SCHEMA_RESEARCH}.playbook_rule (owner_id, agent_owner, active)
+        WHERE active = true
+        """
+    )
+
     # --- RS-KB5: semantic retrieval store (pgvector optional) ---
     try:
         cur.execute("CREATE EXTENSION IF NOT EXISTS vector")

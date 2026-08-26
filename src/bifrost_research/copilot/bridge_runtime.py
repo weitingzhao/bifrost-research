@@ -293,6 +293,21 @@ def build_bridge(
         cost_usd = turn.cost_usd
         polished = True
 
+    persona_header = ""
+    conn_p = connect()
+    try:
+        from bifrost_research.repositories import agent_persona as persona_repo
+
+        lines = persona_repo.persona_snapshot_lines(conn_p, owner_id)
+        if lines:
+            persona_header = "## Owner trading personas\n\n" + "\n".join(lines) + "\n\n"
+    except Exception:
+        persona_header = ""
+    finally:
+        conn_p.close()
+    if persona_header:
+        markdown = persona_header + markdown
+
     conn = connect()
     try:
         event = bridge_repo.insert_event(

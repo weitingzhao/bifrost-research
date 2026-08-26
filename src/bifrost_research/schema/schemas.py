@@ -22,6 +22,7 @@ TABLE_RESEARCH_PLAYBOOK_RULE = f"{SCHEMA_RESEARCH}.playbook_rule"
 TABLE_RESEARCH_PLAYBOOK_CASE = f"{SCHEMA_RESEARCH}.playbook_case"
 TABLE_RESEARCH_PLAYBOOK_NOTE = f"{SCHEMA_RESEARCH}.playbook_note"
 TABLE_RESEARCH_EMBEDDING_CHUNK = f"{SCHEMA_RESEARCH}.embedding_chunk"
+TABLE_RESEARCH_AGENT_PERSONA = f"{SCHEMA_RESEARCH}.agent_persona"
 
 # --- Canonical table names (schema.table) ---
 TABLE_OPTION_METRIC_ATM_IV_DAILY = f"{SCHEMA_FEATURES}.option_metric_atm_iv_daily"

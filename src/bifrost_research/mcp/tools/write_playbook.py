@@ -37,6 +37,8 @@ def register(mcp: FastMCP) -> None:
         trigger_ctx: dict[str, Any] | None = None,
         tags: list[str] | None = None,
         source_session_id: str | None = None,
+        agent_owner: str | None = None,
+        persona_diff: dict[str, Any] | None = None,
         dry_run: bool = True,
         approval_token: str | None = None,
     ) -> dict[str, Any]:
@@ -47,6 +49,8 @@ def register(mcp: FastMCP) -> None:
             "trigger_ctx": trigger_ctx or {},
             "tags": tags or [],
             "source_session_id": source_session_id,
+            "agent_owner": (agent_owner or "shared").strip() or "shared",
+            "persona_diff": persona_diff or {},
         }
         gate = require_approval_or_error(
             dry_run=dry_run,

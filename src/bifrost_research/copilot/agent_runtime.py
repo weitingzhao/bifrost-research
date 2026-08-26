@@ -98,7 +98,7 @@ def _user_text(messages: list[dict[str, Any]]) -> str:
     return "\n".join(parts)
 
 
-def _playbook_context_blob(user_text: str) -> str | None:
+def _playbook_context_blob(user_text: str, owner_id: str | None) -> str | None:
     """Inject matching playbook rules into the turn (RS-KB5 keyword fallback)."""
     query = (user_text or "").strip()
     if len(query) < 8:
@@ -108,7 +108,7 @@ def _playbook_context_blob(user_text: str) -> str | None:
         try:
             import os
 
-            owner = os.environ.get("RESEARCH_DEFAULT_OWNER", "owner")
+            owner = owner_id or os.environ.get("RESEARCH_DEFAULT_OWNER", "owner")
             hits = playbook_repo.search_keyword(conn, owner_id=owner, query=query[:120], limit=5)
         finally:
             conn.close()
@@ -126,14 +126,14 @@ def _playbook_context_blob(user_text: str) -> str | None:
     return "\n".join(lines)
 
 
-def _bridge_cases_context_blob() -> str | None:
+def _bridge_cases_context_blob(owner_id: str | None) -> str | None:
     """Inject recent bridge-feedback playbook cases (RS-EX3)."""
     try:
         conn = connect()
         try:
             import os
 
-            owner = os.environ.get("RESEARCH_DEFAULT_OWNER", "owner")
+            owner = owner_id or os.environ.get("RESEARCH_DEFAULT_OWNER", "owner")
             cases = bridge_repo.list_recent_bridge_cases(conn, owner_id=owner, limit=3)
         finally:
             conn.close()
@@ -149,12 +149,12 @@ def _bridge_cases_context_blob() -> str | None:
     return "\n".join(lines)
 
 
-def _sdk_input(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _sdk_input(messages: list[dict[str, Any]], owner_id: str | None = None) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
-    playbook_ctx = _playbook_context_blob(_user_text(messages))
+    playbook_ctx = _playbook_context_blob(_user_text(messages), owner_id)
     if playbook_ctx:
         out.append({"role": "system", "content": playbook_ctx})
-    bridge_ctx = _bridge_cases_context_blob()
+    bridge_ctx = _bridge_cases_context_blob(owner_id)
     if bridge_ctx:
         out.append({"role": "system", "content": bridge_ctx})
     for msg in messages:
@@ -373,6 +373,7 @@ async def stream_agent(
     messages: list[dict[str, Any]],
     model_id: str,
     session_id: str | None = None,
+    owner_id: str | None = None,
     max_turns: int = 12,
     turn_buffer: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[str]:
@@ -404,11 +405,11 @@ async def stream_agent(
     ok = True
 
     try:
-        async with triage_agent_with_mcp(model_id) as agent:
+        async with triage_agent_with_mcp(model_id, owner_id=owner_id) as agent:
             try:
                 result = Runner.run_streamed(
                     agent,
-                    input=_sdk_input(messages),
+                    input=_sdk_input(messages, owner_id),
                     max_turns=max_turns,
                 )
 

@@ -61,6 +61,8 @@ TOOL_NAMES: tuple[str, ...] = (
     "research.playbook.cases_matching",
     "research.playbook.recent_bridge_cases",
     "research.copilot.recent_sessions",
+  # persona — RS-PS2
+    "research.persona.get_effective_preferences",
 )
 
 ALL_TOOL_NAMES: tuple[str, ...] = TOOL_NAMES + WRITE_TOOL_NAMES

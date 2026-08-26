@@ -25,6 +25,7 @@ async def orchestrate(
     model: str,
     max_tools: int = 8,
     session_id: str | None = None,
+    owner_id: str | None = None,
     provider: LlmProvider | None = None,
     mcp: Any | None = None,
     turn_buffer: list[dict[str, Any]] | None = None,
@@ -46,6 +47,7 @@ async def orchestrate(
         messages=messages,
         model_id=model,
         session_id=session_id,
+        owner_id=owner_id,
         max_turns=max(1, max_tools) + 1,
         turn_buffer=turn_buffer,
     ):
