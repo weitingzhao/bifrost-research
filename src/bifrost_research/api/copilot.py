@@ -13,7 +13,7 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -116,27 +116,38 @@ async def copilot_stream(
     async def event_gen():
         sid = body.session_id
         turn_buffer: list[dict[str, Any]] = []
-        async for frame in orchestrate(
-            messages=messages,
-            model=body.model,
-            max_tools=body.max_tools,
-            session_id=sid,
-            provider=provider,
-            mcp=mcp,
-            turn_buffer=turn_buffer,
-        ):
-            if await request.is_disconnected():
-                break
-            yield frame
-        sid = _persist_turn_best_effort(
-            session_id=sid,
-            model=body.model,
-            turn_frames=turn_buffer,
-            owner_id=owner_id,
-        )
-        if sid and sid != body.session_id:
-            # Minted UUID — append to final done frame if stream ended without disconnect.
-            yield f"data: {json.dumps({'event': 'session_id', 'session_id': sid})}\n\n"
+        try:
+            async for frame in orchestrate(
+                messages=messages,
+                model=body.model,
+                max_tools=body.max_tools,
+                session_id=sid,
+                provider=provider,
+                mcp=mcp,
+                turn_buffer=turn_buffer,
+            ):
+                if await request.is_disconnected():
+                    break
+                yield frame
+        finally:
+            # Always persist what we've collected — even when the client aborts
+            # (Stop button) mid-stream.  RS-KB1: full-memory persistence.
+            new_sid = _persist_turn_best_effort(
+                session_id=sid,
+                model=body.model,
+                turn_frames=turn_buffer,
+                owner_id=owner_id,
+            )
+            if new_sid and new_sid != body.session_id:
+                try:
+                    yield (
+                        "data: "
+                        + json.dumps({"event": "session_id", "session_id": new_sid})
+                        + "\n\n"
+                    )
+                except Exception:
+                    # client already gone — nothing else to do
+                    pass
 
     return StreamingResponse(
         event_gen(),

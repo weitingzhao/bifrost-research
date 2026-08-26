@@ -37,12 +37,13 @@ _COLUMNS = (
     "expires_at",
     "status",
     "pinned",
+    "group_name",
 )
 
 _SELECT_COLS = (
     "id, owner_id, title, model, agent_trail, messages, "
     "hypothesis_id, created_at, updated_at, expires_at, status, "
-    "COALESCE(pinned, false) AS pinned"
+    "COALESCE(pinned, false) AS pinned, group_name"
 )
 
 
@@ -315,6 +316,8 @@ def update_metadata(
     *,
     title: str | None = None,
     pinned: bool | None = None,
+    group_name: str | None = None,
+    clear_group: bool = False,
     owner_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Update ``title`` and/or ``pinned`` for a session (best-effort, no-op if none).
@@ -323,10 +326,23 @@ def update_metadata(
     "keep current title" — we never persist ``''`` because the FE would render
     a blank row.
     """
-    if title is None and pinned is None:
+    if title is None and pinned is None and group_name is None and not clear_group:
         return get_session(conn, session_id, owner_id=owner_id)
     owner_clause = " AND owner_id = %s" if owner_id else ""
-    params_tail: list[Any] = [title, title, title, pinned, session_id]
+    # group_name semantics:
+    #   clear_group=True → set NULL
+    #   group_name is not None → set new value
+    #   otherwise keep unchanged
+    group_expr = (
+        "NULL::text"
+        if clear_group
+        else "CASE WHEN %s::text IS NOT NULL AND length(trim(%s::text)) > 0 "
+        "THEN trim(%s::text) ELSE group_name END"
+    )
+    params_tail: list[Any] = [title, title, title]
+    if not clear_group:
+        params_tail.extend([group_name, group_name, group_name])
+    params_tail.extend([pinned, session_id])
     if owner_id:
         params_tail.append(owner_id)
     with conn.cursor() as cur:
@@ -335,6 +351,7 @@ def update_metadata(
             UPDATE {TABLE_RESEARCH_COPILOT_SESSION}
             SET title = CASE WHEN %s::text IS NOT NULL AND length(trim(%s::text)) > 0
                              THEN %s::text ELSE title END,
+                group_name = {group_expr},
                 pinned = COALESCE(%s::boolean, pinned),
                 updated_at = now()
             WHERE id = %s::uuid AND status = 'active'{owner_clause}

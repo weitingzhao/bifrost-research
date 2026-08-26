@@ -22,6 +22,8 @@ class SessionPatchBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
     title: str | None = Field(default=None, max_length=120)
     pinned: bool | None = None
+    group_name: str | None = Field(default=None, max_length=64)
+    clear_group: bool = False
 
 
 def _summary(row: dict[str, Any]) -> dict[str, Any]:
@@ -32,6 +34,7 @@ def _summary(row: dict[str, Any]) -> dict[str, Any]:
         "updated_at": row.get("updated_at"),
         "message_count": len(row.get("messages") or []),
         "pinned": bool(row.get("pinned") or False),
+        "group_name": row.get("group_name"),
     }
 
 
@@ -70,7 +73,12 @@ def patch_session(
     body: SessionPatchBody,
     owner_id: str = Depends(require_owner),
 ) -> dict[str, Any]:
-    if body.title is None and body.pinned is None:
+    if (
+        body.title is None
+        and body.pinned is None
+        and body.group_name is None
+        and not body.clear_group
+    ):
         raise HTTPException(status_code=400, detail="nothing to update")
     conn = connect()
     try:
@@ -79,6 +87,8 @@ def patch_session(
             session_id,
             title=body.title,
             pinned=body.pinned,
+            group_name=body.group_name,
+            clear_group=body.clear_group,
             owner_id=owner_id,
         )
     finally:

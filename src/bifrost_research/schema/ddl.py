@@ -287,6 +287,20 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         ADD COLUMN IF NOT EXISTS pinned boolean NOT NULL DEFAULT false
         """
     )
+    # RS-KB QA: session group label (folder-like grouping, owner-scoped)
+    cur.execute(
+        f"""
+        ALTER TABLE {SCHEMA_RESEARCH}.copilot_session
+        ADD COLUMN IF NOT EXISTS group_name text
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS idx_copilot_session_group
+        ON {SCHEMA_RESEARCH}.copilot_session (owner_id, group_name)
+        WHERE group_name IS NOT NULL
+        """
+    )
     # RS-KB1: extend short-lived sessions to 1-year sliding retention.
     cur.execute(
         f"""
