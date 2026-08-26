@@ -317,9 +317,17 @@ async def stream_agent(
         yield _sse("done", {"session_id": session_id, "ok": False})
         return
     except Exception as exc:  # noqa: BLE001
+        # Reached only when triage_agent_with_mcp.__aenter__() (i.e. MCPServerSse.connect())
+        # fails or the agent graph build raises before the runtime loop starts.
+        # The SDK's own MCP errors already read "Failed to connect to MCP server '<name>': ..."
+        # so we surface the raw class + message rather than prefix an assumed root cause.
         ok = False
-        logger.exception("copilot MCP connect error session=%s", session_id)
-        yield _sse("error", {"message": f"MCP connect failed: {exc}", "session_id": session_id})
+        logger.exception("copilot runtime setup error session=%s", session_id)
+        exc_name = type(exc).__name__
+        yield _sse(
+            "error",
+            {"message": f"{exc_name}: {exc}", "session_id": session_id},
+        )
 
     record_usage(tokens=total_tokens, cost_usd=total_cost)
     logger.info(

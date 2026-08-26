@@ -176,4 +176,5 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
-- 版本：`0.16.0`（Wave RS-E4 Copilot write tools + approval tokens + DiffApprovalCard；Cockpit E1–E4 complete）
+- 版本：`0.17.2`（agent_runtime outer catch → 显示实际异常类名，不再无差别报 "MCP connect failed"）
+- 历史：`0.16.0`（Wave RS-E4 Copilot write tools + approval tokens + DiffApprovalCard；Cockpit E1–E4 complete）
