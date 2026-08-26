@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -90,6 +91,93 @@ class DismissBody(BaseModel):
 @router.get("/usage")
 def copilot_usage() -> dict[str, Any]:
     return usage_to_dict(get_usage())
+
+
+# Provider → env var(s) required to actually reach that model.  When the
+# secrets are absent (dev cluster, home k3s), we hide the model from the UI
+# instead of shipping "supported in principle" placeholders.
+_MODEL_CATALOG: tuple[dict[str, Any], ...] = (
+    {
+        "id": "deepseek-chat",
+        "label": "DeepSeek Chat",
+        "provider": "deepseek",
+        "family": "DeepSeek",
+        "cost_per_mtok_in": 0.14,
+        "cost_per_mtok_out": 0.28,
+        "note": "通用对话，快速响应；每日 brief、tool 调用、总结类任务的默认选择。",
+        "env_required": ("DEEPSEEK_API_KEY",),
+    },
+    {
+        "id": "deepseek-reasoner",
+        "label": "DeepSeek Reasoner",
+        "provider": "deepseek",
+        "family": "DeepSeek",
+        "cost_per_mtok_in": 0.14,
+        "cost_per_mtok_out": 0.28,
+        "note": (
+            "推理模型 (R1)；先输出 chain-of-thought 再给最终答案。"
+            "更慢但复杂逻辑/数学/多步策略推理更强。"
+        ),
+        "env_required": ("DEEPSEEK_API_KEY",),
+    },
+    {
+        "id": "claude-4.5-sonnet",
+        "label": "Claude 4.5 Sonnet",
+        "provider": "anthropic",
+        "family": "Anthropic",
+        "cost_per_mtok_in": 3.0,
+        "cost_per_mtok_out": 15.0,
+        "note": "Anthropic 旗舰，长上下文与工具调用稳定；成本较高。",
+        "env_required": ("ANTHROPIC_API_KEY",),
+    },
+    {
+        "id": "gpt-5",
+        "label": "GPT-5",
+        "provider": "openai",
+        "family": "OpenAI",
+        "cost_per_mtok_in": 2.5,
+        "cost_per_mtok_out": 10.0,
+        "note": "OpenAI 旗舰通用模型。",
+        "env_required": ("OPENAI_API_KEY",),
+    },
+    {
+        "id": "ollama:llama3.2",
+        "label": "Ollama · Llama 3.2",
+        "provider": "ollama",
+        "family": "Ollama (local)",
+        "cost_per_mtok_in": 0.0,
+        "cost_per_mtok_out": 0.0,
+        "note": "本地 Ollama 服务；无 API 费用；不支持工具调用。",
+        "env_required": ("OLLAMA_BASE_URL",),
+    },
+)
+
+
+def _model_available(entry: dict[str, Any]) -> bool:
+    envs = entry.get("env_required") or ()
+    if not envs:
+        return True
+    # Every required env var must be set (and non-empty) for us to expose
+    # the model. Ollama could theoretically hit localhost by default, but
+    # we still gate on OLLAMA_BASE_URL so that a fresh deployment with no
+    # local daemon doesn't dangle a broken option in the UI.
+    return all(bool(os.environ.get(name, "").strip()) for name in envs)
+
+
+@router.get("/models")
+def copilot_models() -> dict[str, Any]:
+    """Return only the models that this deployment can actually reach."""
+    available = []
+    for entry in _MODEL_CATALOG:
+        if _model_available(entry):
+            row = {k: v for k, v in entry.items() if k != "env_required"}
+            available.append(row)
+    default_id = available[0]["id"] if available else None
+    return {
+        "available": available,
+        "default": default_id,
+        "total_catalog": len(_MODEL_CATALOG),
+    }
 
 
 @router.post("/stream")
