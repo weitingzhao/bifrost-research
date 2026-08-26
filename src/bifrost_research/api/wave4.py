@@ -19,8 +19,10 @@ from bifrost_research.engines.backtest.settlement import (
 )
 from bifrost_research.engines.event_radar.pipeline import run_pipeline
 from bifrost_research.engines.forecast.llm import get_default_provider
-from bifrost_research.engines.forecast.playbook import build_forecast_session
 from bifrost_research.engines.forecast.terrain import compute_market_terrain
+from bifrost_research.engines.forecast.playbook import build_forecast_session
+from bifrost_research.engines.backtest.regime_stats import compute_regime_stats
+from bifrost_research.engines.brief.synth import synthesize_daily_brief
 
 router = APIRouter(prefix="/research", tags=["research-wave4"])
 
@@ -502,6 +504,7 @@ def list_event_radar(
         "sentiment",
         "theme",
         "importance",
+        "event_date",
         "dropped",
         "drop_reason",
         "raw_text",
@@ -619,6 +622,9 @@ def event_themes() -> dict[str, Any]:
                 SELECT
                     theme,
                     COUNT(*) AS count,
+                    COUNT(*) FILTER (WHERE direction > 0) AS bull_count,
+                    COUNT(*) FILTER (WHERE direction < 0) AS bear_count,
+                    COUNT(*) FILTER (WHERE direction = 0) AS neutral_count,
                     ROUND(AVG(direction)::numeric, 2) AS direction_avg,
                     ROUND(AVG(sentiment)::numeric, 2) AS sentiment_avg
                 FROM features.event_signal_radar_daily
@@ -629,11 +635,94 @@ def event_themes() -> dict[str, Any]:
                 """
             )
             raw = cur.fetchall() or []
-        cols = ("theme", "count", "direction_avg", "sentiment_avg")
+        cols = (
+            "theme",
+            "count",
+            "bull_count",
+            "bear_count",
+            "neutral_count",
+            "direction_avg",
+            "sentiment_avg",
+        )
         rows = [_row_dict(r, cols) for r in raw]
     finally:
         conn.close()
     return {"rows": rows, "count": len(rows)}
+
+
+@router.get("/event-radar/macro/gap")
+def macro_gap(
+    limit: int = Query(30, ge=1, le=200),
+) -> dict[str, Any]:
+    """Macro actual vs expected — rows with computed gap_pct."""
+    conn = _connect_or_503()
+    cols = (
+        "macro_id",
+        "event_date",
+        "indicator",
+        "actual_value",
+        "expected_value",
+        "prior_value",
+        "unit",
+        "gap_pct",
+        "forward_flag",
+        "source",
+    )
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT {', '.join(cols)}
+                FROM features.macro_event_daily
+                WHERE forward_flag IS NOT TRUE
+                ORDER BY event_date DESC, computed_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            raw = cur.fetchall() or []
+        rows = [_row_dict(r, cols) for r in raw]
+    finally:
+        conn.close()
+    return {"rows": rows, "count": len(rows), "read_path": "features.macro_event_daily"}
+
+
+@router.get("/event-radar/macro/forward")
+def macro_forward(
+    days: int = Query(7, ge=1, le=30),
+) -> dict[str, Any]:
+    """Forward macro calendar — upcoming releases."""
+    conn = _connect_or_503()
+    cols = (
+        "macro_id",
+        "event_date",
+        "indicator",
+        "expected_value",
+        "prior_value",
+        "unit",
+        "forward_flag",
+        "source",
+        "notes",
+    )
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT {', '.join(cols)}
+                FROM features.macro_event_daily
+                WHERE forward_flag = true
+                  AND event_date >= CURRENT_DATE
+                  AND event_date <= CURRENT_DATE + %s * INTERVAL '1 day'
+                ORDER BY event_date ASC
+                LIMIT 100
+                """,
+                (days,),
+            )
+            raw = cur.fetchall() or []
+        rows = [_row_dict(r, cols) for r in raw]
+    finally:
+        conn.close()
+    return {"rows": rows, "count": len(rows), "days": days}
 
 
 @router.get("/events/calendar")
@@ -762,6 +851,7 @@ def get_forecast_settlement(
         "path_total",
         "hourly_json",
         "notes",
+        "stats_json",
         "computed_at",
     )
     try:
@@ -879,6 +969,7 @@ def get_settlement_summary(
         "path_hit_count",
         "path_total",
         "notes",
+        "stats_json",
         "computed_at",
     )
     try:
@@ -906,3 +997,38 @@ def get_settlement_summary(
     finally:
         conn.close()
     return {"rows": rows, "count": len(rows)}
+
+
+# ---------------------------------------------------------------------------
+# Wave R8 — Daily Brief synth + regime stats
+# ---------------------------------------------------------------------------
+
+
+@router.get("/daily-brief/synth")
+def daily_brief_synth(
+    symbol: str = Query(...),
+    date_param: date | None = Query(None, alias="date"),
+) -> dict[str, Any]:
+    conn = _connect_or_503()
+    try:
+        return synthesize_daily_brief(conn, symbol, date_param)
+    finally:
+        conn.close()
+
+
+@router.get("/backtest/regime-stats")
+def backtest_regime_stats(
+    symbol: str = Query(...),
+    lookback_days: int = Query(60, ge=7, le=365),
+    current_regime: str | None = Query(None),
+) -> dict[str, Any]:
+    conn = _connect_or_503()
+    try:
+        return compute_regime_stats(
+            conn,
+            symbol,
+            lookback_days=lookback_days,
+            current_regime=current_regime,
+        )
+    finally:
+        conn.close()

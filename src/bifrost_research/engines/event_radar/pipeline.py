@@ -466,7 +466,9 @@ def run_pipeline(
     bid = batch_id or f"batch-{uuid4().hex[:10]}"
     raw = step_parse(payload, source=source, collected_at=collected_at)
     cleaned, dropped_early = step_clean(raw)
-    tagged = step_tag(cleaned)
+    from bifrost_research.engines.event_radar.tagger import get_event_tagger
+
+    tagged = get_event_tagger().tag(cleaned)
     all_tagged = list(tagged) + list(dropped_early)
     export_rows = step_export(all_tagged)
     checks = step_self_check(len(raw), all_tagged, export_rows)

@@ -8,11 +8,18 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from bifrost_research import __version__
+from bifrost_research.api.agents import agents_router, drafts_router
+from bifrost_research.api.backtest_event import router as backtest_event_router
+from bifrost_research.api.copilot import router as copilot_router
 from bifrost_research.api.elementary import router as elementary_router
 from bifrost_research.api.health import router as health_router
+from bifrost_research.api.hypothesis import router as hypothesis_router
+from bifrost_research.api.opex_cycle import router as opex_cycle_router
 from bifrost_research.api.options import router as options_router
 from bifrost_research.api.research_engines import router as research_engines_router
 from bifrost_research.api.sepa import router as sepa_router
+from bifrost_research.api.vol_surface import router as vol_surface_router
+from bifrost_research.api.vrp import router as vrp_router
 from bifrost_research.api.wave4 import router as wave4_router
 
 logger = logging.getLogger(__name__)
@@ -44,6 +51,14 @@ def create_app() -> FastAPI:
     app.include_router(elementary_router)
     app.include_router(research_engines_router)
     app.include_router(wave4_router)
+    app.include_router(hypothesis_router)
+    app.include_router(vrp_router)
+    app.include_router(vol_surface_router)
+    app.include_router(opex_cycle_router)
+    app.include_router(backtest_event_router)
+    app.include_router(copilot_router)
+    app.include_router(agents_router)
+    app.include_router(drafts_router)
     return app
 
 

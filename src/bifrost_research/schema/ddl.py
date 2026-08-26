@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from bifrost_research.schema.schemas import (
     OPTION_METRIC_PARTITIONED_TABLES,
     SCHEMA_FEATURES,
+    SCHEMA_RESEARCH,
 )
 
 class _Cursor(Protocol):
@@ -43,6 +44,10 @@ RESEARCH_TABLES = (
     "stock_forecast_terrain_intraday",
     "option_metric_gex_intraday",
     "stock_signal_sepa_daily",
+    "stock_signal_vrp_daily",
+    "option_surface_fit_daily",
+    "option_surface_residual_daily",
+    "option_metric_vanna_charm_daily",
 )
 
 # Retired bare + prefixed legacy view schema names — cleaned on db-init.
@@ -91,6 +96,173 @@ def apply_features_ddl(conn: _Connection) -> None:
     conn.commit()
 
 
+def apply_research_workflow_ddl(conn: _Connection) -> None:
+    """Wave RS-A — create research schema + hypothesis table (idempotent)."""
+    with conn.cursor() as cur:
+        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_RESEARCH}")
+        _create_research_workflow_tables(cur)
+        _grant_research_schema_privileges(cur)
+    conn.commit()
+
+
+def _grant_research_schema_privileges(cur: _Cursor) -> None:
+    """Best-effort GRANT on research schema (roles may not exist in dev)."""
+    grants = [
+        f"GRANT USAGE ON SCHEMA {SCHEMA_RESEARCH} TO bifrost, analytics_writer",
+        f"GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA {SCHEMA_RESEARCH} TO bifrost, analytics_writer",
+        f"""
+        ALTER DEFAULT PRIVILEGES IN SCHEMA {SCHEMA_RESEARCH}
+          GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON TABLES TO bifrost, analytics_writer
+        """,
+    ]
+    for sql in grants:
+        try:
+            cur.execute(sql)
+        except Exception:
+            pass
+
+
+def _create_research_workflow_tables(cur: _Cursor) -> None:
+    """Wave RS-A · research.hypothesis — first-class workflow object.
+
+    D-RS-a locked: table lives in Golden Source ``research`` schema (OLAP domain).
+    Wave RS-C4 extends the schema with ``research.backtest_run`` for
+    event-driven backtest persistence.
+    """
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.hypothesis (
+            id                        text        PRIMARY KEY,
+            title                     text        NOT NULL,
+            thesis                    text        NOT NULL,
+            symbols                   text[]      NOT NULL DEFAULT '{{}}'::text[],
+            tags                      text[]      NOT NULL DEFAULT '{{}}'::text[],
+            status                    text        NOT NULL DEFAULT 'active',
+            origin_page               text,
+            origin_ref                jsonb,
+            linked_opportunity_ids    text[]      NOT NULL DEFAULT '{{}}'::text[],
+            linked_backtest_ids       text[]      NOT NULL DEFAULT '{{}}'::text[],
+            conclusion                text,
+            created_at                timestamptz NOT NULL DEFAULT now(),
+            updated_at                timestamptz NOT NULL DEFAULT now(),
+            retired_at                timestamptz
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS hypothesis_status
+        ON {SCHEMA_RESEARCH}.hypothesis (status)
+        WHERE retired_at IS NULL
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS hypothesis_symbols
+        ON {SCHEMA_RESEARCH}.hypothesis USING GIN (symbols)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS hypothesis_updated
+        ON {SCHEMA_RESEARCH}.hypothesis (updated_at DESC)
+        """
+    )
+    # --- Wave RS-C4: research.backtest_run ---
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.backtest_run (
+            id                 text        PRIMARY KEY,
+            hypothesis_id      text        REFERENCES {SCHEMA_RESEARCH}.hypothesis(id)
+                                            ON DELETE SET NULL,
+            event_def          jsonb       NOT NULL,
+            strategy_template  text        NOT NULL,
+            fill_config        jsonb       NOT NULL,
+            lookback_years     integer     NOT NULL,
+            summary            jsonb       NOT NULL,
+            walk_forward       jsonb,
+            benchmark          jsonb,
+            created_at         timestamptz NOT NULL DEFAULT now()
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS backtest_run_hypothesis
+        ON {SCHEMA_RESEARCH}.backtest_run (hypothesis_id)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS backtest_run_created
+        ON {SCHEMA_RESEARCH}.backtest_run (created_at DESC)
+        """
+    )
+    # --- Wave RS-E3: research.ai_action_log + research.ai_draft ---
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.ai_action_log (
+            id              text PRIMARY KEY,
+            session_id      text,
+            action_kind     text NOT NULL,
+            action_source   text NOT NULL,
+            model           text,
+            input           jsonb,
+            output          jsonb,
+            tool_calls      jsonb,
+            status          text NOT NULL DEFAULT 'proposed',
+            approved_by     text,
+            approved_at     timestamptz,
+            executed_at     timestamptz,
+            executed_result jsonb,
+            created_at      timestamptz NOT NULL DEFAULT now()
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS ai_action_log_status
+        ON {SCHEMA_RESEARCH}.ai_action_log (status)
+        WHERE status = 'proposed'
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS ai_action_log_source
+        ON {SCHEMA_RESEARCH}.ai_action_log (action_source, created_at DESC)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.ai_draft (
+            id               text PRIMARY KEY,
+            kind             text NOT NULL,
+            payload          jsonb NOT NULL,
+            scope            text NOT NULL,
+            status           text NOT NULL DEFAULT 'pending',
+            generated_by     text NOT NULL,
+            linked_action_id text REFERENCES {SCHEMA_RESEARCH}.ai_action_log(id)
+                             ON DELETE SET NULL,
+            created_at       timestamptz NOT NULL DEFAULT now(),
+            expires_at       timestamptz
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS ai_draft_pending
+        ON {SCHEMA_RESEARCH}.ai_draft (status, created_at DESC)
+        WHERE status = 'pending'
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS ai_draft_scope
+        ON {SCHEMA_RESEARCH}.ai_draft (scope)
+        """
+    )
+
+
 def apply_features_daily_ddl(conn: _Connection) -> None:
     """Legacy wrapper — partitioned option metrics + compat views."""
     with conn.cursor() as cur:
@@ -111,6 +283,7 @@ def apply_research_ddl(conn: _Connection) -> None:
 def apply_all_ddl(conn: _Connection) -> None:
     """Apply full Feature Store DDL and drop retired legacy view schemas."""
     apply_features_ddl(conn)
+    apply_research_workflow_ddl(conn)
     drop_legacy_feature_schemas(conn)
 
 
@@ -523,7 +696,69 @@ def _create_research_tables(cur: _Cursor) -> None:
             hourly_json       jsonb,
             notes             text,
             computed_at       timestamptz NOT NULL DEFAULT now(),
+            stats_json        jsonb,
             PRIMARY KEY (settlement_id)
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        ALTER TABLE {SCHEMA_FEATURES}.stock_backtest_settlement
+        ADD COLUMN IF NOT EXISTS stats_json jsonb
+        """
+    )
+
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.macro_event_daily (
+            macro_id          text        NOT NULL,
+            event_date        date        NOT NULL,
+            release_ts        timestamptz,
+            country           text,
+            indicator         text        NOT NULL,
+            actual_value      double precision,
+            expected_value    double precision,
+            prior_value       double precision,
+            unit              text,
+            gap_pct           double precision,
+            forward_flag      boolean     NOT NULL DEFAULT false,
+            source            text,
+            notes             text,
+            computed_at       timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (macro_id)
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS macro_event_daily_date
+        ON {SCHEMA_FEATURES}.macro_event_daily (event_date DESC)
+        """
+    )
+
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.stock_forecast_hourly_session (
+            hourly_session_id text        NOT NULL,
+            parent_session_id text        NOT NULL,
+            symbol            text        NOT NULL,
+            trade_date        date        NOT NULL,
+            hour_et           smallint    NOT NULL,
+            regime            text,
+            spot              double precision,
+            prob_rangy        double precision,
+            prob_bull         double precision,
+            prob_bear         double precision,
+            prob_squeeze      double precision,
+            expected_close    double precision,
+            structures_json   jsonb,
+            narrative         text,
+            llm_provider      text,
+            terrain_json        jsonb,
+            advisory          text,
+            computed_at       timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (hourly_session_id),
+            UNIQUE (parent_session_id, hour_et)
         )
         """
     )
@@ -690,6 +925,136 @@ def _create_research_tables(cur: _Cursor) -> None:
         f"""
         COMMENT ON COLUMN {SCHEMA_FEATURES}.stock_signal_sepa_daily.asof_ts IS
         'Last projection timestamp (Wave 12). Daily UPSERT overwrite — NOT a historical PIT snapshot.'
+        """
+    )
+
+    # --- Wave RS-B-VRP1: IV-RV Spread (Volatility Risk Premium) ---
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.stock_signal_vrp_daily (
+            symbol        text        NOT NULL,
+            trade_date    date        NOT NULL,
+            rv_20d        double precision,
+            rv_60d        double precision,
+            rv_252d       double precision,
+            atm_iv_30d    double precision,
+            vrp_20d       double precision,
+            vrp_60d       double precision,
+            vrp_pct_252d  double precision,
+            fwd_ret_20d   double precision,
+            computed_at   timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (symbol, trade_date)
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_signal_vrp_daily_pct
+        ON {SCHEMA_FEATURES}.stock_signal_vrp_daily (vrp_pct_252d)
+        WHERE vrp_pct_252d IS NOT NULL
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_signal_vrp_daily_date_symbol
+        ON {SCHEMA_FEATURES}.stock_signal_vrp_daily (trade_date DESC, symbol)
+        """
+    )
+
+    # --- Wave RS-B-Surface1: SVI Vol Surface fit + per-strike residuals ---
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.option_surface_fit_daily (
+            symbol        text        NOT NULL,
+            trade_date    date        NOT NULL,
+            expiry        date        NOT NULL,
+            dte           integer     NOT NULL,
+            svi_a         double precision,
+            svi_b         double precision,
+            svi_rho       double precision,
+            svi_m         double precision,
+            svi_sigma     double precision,
+            atm_vol       double precision,
+            atm_slope     double precision,
+            fit_rmse      double precision,
+            n_points      integer,
+            computed_at   timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (symbol, trade_date, expiry)
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS option_surface_fit_daily_symbol_date
+        ON {SCHEMA_FEATURES}.option_surface_fit_daily (symbol, trade_date DESC)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS option_surface_fit_daily_date_dte
+        ON {SCHEMA_FEATURES}.option_surface_fit_daily (trade_date DESC, dte)
+        """
+    )
+
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.option_surface_residual_daily (
+            symbol        text        NOT NULL,
+            trade_date    date        NOT NULL,
+            expiry        date        NOT NULL,
+            strike        double precision NOT NULL,
+            log_moneyness double precision,
+            iv_market     double precision,
+            iv_fitted     double precision,
+            residual      double precision,
+            residual_z    double precision,
+            computed_at   timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (symbol, trade_date, expiry, strike)
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS option_surface_residual_z_abs
+        ON {SCHEMA_FEATURES}.option_surface_residual_daily (abs(residual_z) DESC)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS option_surface_residual_symbol_date
+        ON {SCHEMA_FEATURES}.option_surface_residual_daily (symbol, trade_date DESC, expiry)
+        """
+    )
+
+    # --- Wave RS-B-OpEx1: Vanna/Charm + OpEx cycle daily ---
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.option_metric_vanna_charm_daily (
+            symbol             text        NOT NULL,
+            trade_date         date        NOT NULL,
+            spot               double precision,
+            total_vanna        double precision,
+            total_charm        double precision,
+            vanna_zero_strike  double precision,
+            charm_zero_strike  double precision,
+            dte_to_opex        integer,
+            is_opex_week       boolean,
+            computed_at        timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (symbol, trade_date)
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS option_metric_vanna_charm_symbol_date
+        ON {SCHEMA_FEATURES}.option_metric_vanna_charm_daily (symbol, trade_date DESC)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS option_metric_vanna_charm_opex_week
+        ON {SCHEMA_FEATURES}.option_metric_vanna_charm_daily (trade_date DESC)
+        WHERE is_opex_week = true
         """
     )
 

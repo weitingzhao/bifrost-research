@@ -274,7 +274,7 @@ def fetch_tape_flow_rows(conn: Any, symbol: str, trade_date: date) -> list[Optio
 
     Returns empty list when the table is missing or has no prints for the day.
     """
-    if not _table_exists(conn, "market", "option_trades"):
+    if not _table_exists(conn, "raw_market", "option_trades"):
         return []
 
     cols = (

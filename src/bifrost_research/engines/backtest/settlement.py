@@ -29,6 +29,7 @@ _SETTLEMENT_COLS = (
     "path_total",
     "hourly_json",
     "notes",
+    "stats_json",
     "computed_at",
 )
 
@@ -80,10 +81,15 @@ class ForecastSettlement:
     path_total: int
     hourly: list[HourlyActual] = field(default_factory=list)
     notes: str = ""
+    stats_json: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["trade_date"] = self.trade_date.isoformat()
+        d["direction_hit"] = self.stats_json.get("direction_hit")
+        d["path_shape"] = self.stats_json.get("path_shape")
+        d["close_zone"] = self.stats_json.get("close_zone")
+        d["lean_miss"] = self.stats_json.get("lean_miss")
         return d
 
 
@@ -185,6 +191,30 @@ def settle_forecast(
     close_ok = abs(miss_pct) <= 0.01
     path_hit = (hit_count / total >= 0.5) and close_ok
 
+    direction_hit = actual_close >= expected_close if expected_close else path_hit
+    if abs(miss_pct) <= 0.005:
+        path_shape = "flat"
+    elif miss_pct > 0.01:
+        path_shape = "up_miss"
+    elif miss_pct < -0.01:
+        path_shape = "down_miss"
+    else:
+        path_shape = "in_band"
+    if abs(miss_pct) <= 0.01:
+        close_zone = "on_target"
+    elif abs(miss_pct) <= 0.03:
+        close_zone = "near"
+    else:
+        close_zone = "far"
+    lean_miss = not close_ok and hit_count < total
+
+    stats_json = {
+        "direction_hit": direction_hit,
+        "path_shape": path_shape,
+        "close_zone": close_zone,
+        "lean_miss": lean_miss,
+    }
+
     return ForecastSettlement(
         settlement_id=settlement_id or f"stl-{uuid4().hex[:10]}",
         session_id=session_id,
@@ -199,6 +229,7 @@ def settle_forecast(
         path_total=len(hits),
         hourly=hits,
         notes="D10 BLOCKED — settlement is advisory evaluation only",
+        stats_json=stats_json,
     )
 
 
@@ -288,6 +319,7 @@ def upsert_settlement(conn: Any, settlement: ForecastSettlement) -> int:
                 settlement.path_total,
                 [asdict(h) for h in settlement.hourly],
                 settlement.notes,
+                settlement.stats_json,
                 now,
             )
         ],

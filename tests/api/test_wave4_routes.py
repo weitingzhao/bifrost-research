@@ -20,6 +20,8 @@ def test_wave4_routes_registered() -> None:
     assert "/research/backtest/settle" in paths
     assert "/research/backtest/aggregate" in paths
     assert "/research/backtest/settlement" in paths
+    assert "/research/daily-brief/synth" in paths
+    assert "/research/backtest/regime-stats" in paths
 
 
 def test_terrain_compute_endpoint() -> None:

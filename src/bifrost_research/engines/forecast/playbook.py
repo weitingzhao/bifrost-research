@@ -375,6 +375,71 @@ def build_forecast_session(
     )
 
 
+_HOURLY_SESSION_COLS = (
+    "hourly_session_id",
+    "parent_session_id",
+    "symbol",
+    "trade_date",
+    "hour_et",
+    "regime",
+    "spot",
+    "prob_rangy",
+    "prob_bull",
+    "prob_bear",
+    "prob_squeeze",
+    "expected_close",
+    "structures_json",
+    "narrative",
+    "llm_provider",
+    "terrain_json",
+    "advisory",
+    "computed_at",
+)
+
+
+def upsert_hourly_sessions(conn: Any, session: ForecastSession) -> int:
+    """Write one hourly-session row per path-call hour (Wave R4)."""
+    n = session.scenarios.normalized()
+    now = datetime.now(timezone.utc)
+    rows: list[tuple[Any, ...]] = []
+    for h in session.hourly:
+        sid = f"{session.session_id}-h{int(h.hour_et):02d}"
+        terrain = dict(session.terrain_json or {})
+        terrain["llm_tokens"] = terrain.get("llm_tokens") or {}
+        rows.append(
+            (
+                sid,
+                session.session_id,
+                session.symbol,
+                session.trade_date,
+                int(h.hour_et),
+                session.regime,
+                session.spot,
+                n.rangy,
+                n.bull,
+                n.bear,
+                n.squeeze,
+                h.level_target,
+                [s.to_dict() for s in session.structures],
+                h.path_call,
+                session.llm_provider,
+                terrain,
+                session.advisory,
+                now,
+            )
+        )
+    if not rows:
+        return 0
+    return batch_upsert(
+        conn,
+        "features.stock_forecast_hourly_session",
+        _HOURLY_SESSION_COLS,
+        rows,
+        conflict_keys=("hourly_session_id",),
+        set_fetched_at=False,
+    )
+
+
 def upsert_forecast_session(conn: Any, session: ForecastSession) -> int:
     n = session.scenarios.normalized()
     now = datetime.now(timezone.utc)
@@ -429,4 +494,5 @@ def upsert_forecast_session(conn: Any, session: ForecastSession) -> int:
         conflict_keys=("session_id", "hour_et"),
         set_fetched_at=False,
     )
+    upsert_hourly_sessions(conn, session)
     return 1 + len(hourly_rows)

@@ -161,6 +161,8 @@ def strike_gex_from_contracts(
                 "put_volume": int(b["put_volume"]),
                 "call_gex": round(float(b["call_gex"]), 4),
                 "put_gex": round(float(b["put_gex"]), 4),
+                "call_gex_vol": round(float(b["call_gex_vol"]), 4),
+                "put_gex_vol": round(float(b["put_gex_vol"]), 4),
                 "net_gex": round(net, 4),
                 "volume_net_gex": round(vol_net, 4),
                 "gex_source": source,
@@ -584,6 +586,11 @@ def compute_gex_intraday(
                 "call_gex": r["call_gex"],
                 "put_gex": r["put_gex"],
                 "net_gex": r["net_gex"],
+                "call_gex_vol": r.get("call_gex_vol"),
+                "put_gex_vol": r.get("put_gex_vol"),
+                "volume_net_gex": r.get("volume_net_gex"),
+                "call_volume": r.get("call_volume"),
+                "put_volume": r.get("put_volume"),
             }
             for r in top_strikes
         ]

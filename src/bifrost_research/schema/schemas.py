@@ -6,6 +6,17 @@ Wave 6.4–6.6: single ``features`` schema with four-part table names
 
 SCHEMA_FEATURES = "features"
 
+# Wave RS-A — Hypothesis + Research workflow objects (Golden Source, D-RS-a).
+SCHEMA_RESEARCH = "research"
+TABLE_RESEARCH_HYPOTHESIS = f"{SCHEMA_RESEARCH}.hypothesis"
+
+# Wave RS-C4 — event-driven backtest runs (colocated with hypotheses).
+TABLE_RESEARCH_BACKTEST_RUN = f"{SCHEMA_RESEARCH}.backtest_run"
+
+# Wave RS-E3 — AI draft inbox + action audit log (D-RS-E-e/g).
+TABLE_RESEARCH_AI_ACTION_LOG = f"{SCHEMA_RESEARCH}.ai_action_log"
+TABLE_RESEARCH_AI_DRAFT = f"{SCHEMA_RESEARCH}.ai_draft"
+
 # --- Canonical table names (schema.table) ---
 TABLE_OPTION_METRIC_ATM_IV_DAILY = f"{SCHEMA_FEATURES}.option_metric_atm_iv_daily"
 TABLE_OPTION_METRIC_MAX_PAIN_DAILY = f"{SCHEMA_FEATURES}.option_metric_max_pain_daily"
