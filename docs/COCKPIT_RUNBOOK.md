@@ -33,7 +33,7 @@ make db-init-research   # or your usual schema apply entrypoint
 | Env | Purpose |
 |-----|---------|
 | `ANTHROPIC_API_KEY` | Claude provider |
-| `OPENAI_API_KEY` | OpenAI provider |
+| `OPENAI_API_KEY` | OpenAI provider (`gpt-4o`, `gpt-4o-mini`) — patch into K8s: `export OPENAI_API_KEY=... && make sync-openai-secret` |
 | `COPILOT_DAILY_CAP_USD` | Daily cost cap (default **2.0**) |
 | `COPILOT_APPROVAL_HMAC_SECRET` | HMAC for write approval tokens (**required in prod**; missing → insecure local/dev fallback) |
 | `BIFROST_MORNING_AGENT_DRY_RUN` / `BIFROST_EOD_AGENT_DRY_RUN` | Force agent dry-run when set to `1`/`true` |

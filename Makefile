@@ -1,4 +1,4 @@
-.PHONY: install-dev install-orchestration dbt-deps dbt-run dbt-test dbt-docs dbt-clean dbt-parse lint test test-mcp build-image build-image-dagster run-api run-mcp db-init-analytics db-init-research db-migrate-6-4 db-migrate-6-6 dagster-dev dagster-defs event-radar-ingest smoke-agents-sdk
+.PHONY: install-dev install-orchestration dbt-deps dbt-run dbt-test dbt-docs dbt-clean dbt-parse lint test test-mcp build-image build-image-dagster run-api run-mcp db-init-analytics db-init-research db-migrate-6-4 db-migrate-6-6 dagster-dev dagster-defs event-radar-ingest smoke-agents-sdk sync-openai-secret
 
 DBT_DIR := src/bifrost_research/dbt
 DBT_PROFILES := $(DBT_DIR)
@@ -53,6 +53,11 @@ test-mcp:
 
 smoke-agents-sdk:
 	.venv/bin/python scripts/smoke_agents_sdk.py
+
+# Patch OPENAI_API_KEY into K8s secret bifrost-research-secrets (namespace research).
+# Usage: export OPENAI_API_KEY='sk-...' && make sync-openai-secret
+sync-openai-secret:
+	bash scripts/sync_openai_secret.sh
 
 db-init-analytics:
 	python -c "from bifrost_research.db.conn import connect; from bifrost_research.schema.ddl import apply_market_analytics_ddl, ensure_month_partitions; c=connect(); apply_market_analytics_ddl(c); ensure_month_partitions(c); c.close(); print('market_analytics DDL applied')"
