@@ -14,6 +14,7 @@ TRADE_TOOL_NAMES = (
     "trade.portfolio.risk_summary",
     "trade.trading.recent_executions",
     "trade.strategy.instances",
+    "trade.strategy.opportunities",
     "trade.market.watchlist",
     "trade.market.quotes",
 )

@@ -147,20 +147,48 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool(
         name="trade.strategy.instances",
         description=(
-            "Active strategy instances (running / paused / recently completed). "
+            "Active strategy instances (open positions tied to a strategy). "
             "Answers 'which strategies is the daemon currently running?'. "
             f"{READ_ONLY_SUFFIX}"
         ),
     )
     def strategy_instances(limit: int = 50) -> dict[str, Any]:
         def _run() -> dict[str, Any]:
-            data = get(base_strategy(), "/instances")
-            rows = (data or {}).get("instances") if isinstance(data, dict) else None
+            data = get(base_strategy(), "/strategies/instances")
+            rows = (data or {}).get("items") if isinstance(data, dict) else None
+            if rows is None:
+                rows = (data or {}).get("instances") if isinstance(data, dict) else None
             if rows is None and isinstance(data, list):
                 rows = data
             rows = rows or []
             trimmed = rows[: max(1, min(int(limit), 200))]
             return {"instances": trimmed, "count": len(trimmed)}
+
+        return _safe(_run)
+
+    @mcp.tool(
+        name="trade.strategy.opportunities",
+        description=(
+            "Configured strategy opportunities (patterns the daemon may execute). "
+            "Each row links a structure (e.g. Bull Put Spread, Covered Call) to "
+            "a scope of symbols and a gate. Use to answer 'which strategies is "
+            "the system set up to trade on which symbols?'. "
+            f"{READ_ONLY_SUFFIX}"
+        ),
+    )
+    def strategy_opportunities(active_only: bool = True, limit: int = 100) -> dict[str, Any]:
+        def _run() -> dict[str, Any]:
+            data = get(
+                base_strategy(),
+                "/strategies/opportunities",
+                params={"active_only": "true" if active_only else "false"},
+            )
+            rows = (data or {}).get("items") if isinstance(data, dict) else None
+            if rows is None and isinstance(data, list):
+                rows = data
+            rows = rows or []
+            trimmed = rows[: max(1, min(int(limit), 300))]
+            return {"opportunities": trimmed, "count": len(trimmed)}
 
         return _safe(_run)
 
