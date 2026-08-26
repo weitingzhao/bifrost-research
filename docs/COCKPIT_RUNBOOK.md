@@ -113,6 +113,36 @@ Token errors: **409** replay · **410** expired · **400** hash mismatch.
 
 ---
 
+## Wave RS-F runtime (Copilot v2)
+
+| Item | Value |
+|------|-------|
+| SDK | `openai-agents` — `Runner.run_streamed` via `copilot/agent_runtime.py` |
+| Default model | `deepseek-chat` (`DEEPSEEK_API_KEY`, base `https://api.deepseek.com/v1`) |
+| MCP | Unchanged SSE `:8796/sse` — `MCPServerSse` in `copilot/agents/graph.py` |
+| Agents | Triage → handoffs (Discovery / Analyze / Validate / Write / Explain / Verdict) |
+| SSE extensions | `agent_handoff`, `guardrail` (FE back-compat) |
+| D10 guardrails | Pre-check + SDK Input/OutputGuardrail → `error {code: "D10_FREEZE"}` + `ai_action_log.guardrail_reject` |
+| Sessions | `research.copilot_session` · `GET/DELETE /research/copilot/sessions` |
+| Tracing | stdout + optional JSONL (`RESEARCH_COPILOT_TRACE_JSONL`) · OTLP via `RESEARCH_COPILOT_OTLP_ENDPOINT` |
+| FE | Cockpit Settings: Overlay/Dock · Trace panel · Session sidebar · Agent chips |
+
+Legacy orchestrator (`orchestrator_legacy.py`) retained for API tests with injected `copilot_provider`.
+
+Smoke (needs `DEEPSEEK_API_KEY` + MCP running):
+
+```bash
+cd bifrost-research && make smoke-agents-sdk
+```
+
+Apply DDL (Golden Source):
+
+```bash
+make db-init-research
+```
+
+---
+
 ## Inspect approval / audit
 
 ```sql

@@ -54,6 +54,7 @@ class LlmProvider(Protocol):
 _PRICE_PER_MTOK: dict[str, tuple[float, float]] = {
     "claude": (3.0, 15.0),
     "gpt": (2.5, 10.0),
+    "deepseek": (0.14, 0.28),
     "ollama": (0.0, 0.0),
 }
 
@@ -61,7 +62,9 @@ _PRICE_PER_MTOK: dict[str, tuple[float, float]] = {
 def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     key = "claude"
     lower = model.lower()
-    if lower.startswith("gpt") or "openai" in lower:
+    if lower.startswith("deepseek"):
+        key = "deepseek"
+    elif lower.startswith("gpt") or "openai" in lower:
         key = "gpt"
     elif lower.startswith("ollama") or lower.startswith("llama"):
         key = "ollama"

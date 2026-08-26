@@ -40,7 +40,7 @@ spec:
                   exit 1
           containers:
             - name: dbt-runner
-              image: 192.168.10.73:30500/bifrost-research:0.16.0
+              image: 192.168.10.73:30500/bifrost-research:0.17.0
               imagePullPolicy: Always
               workingDir: /app/src/bifrost_research/dbt
               command: ["bash", "-lc"]

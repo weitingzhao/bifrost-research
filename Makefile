@@ -1,4 +1,4 @@
-.PHONY: install-dev install-orchestration dbt-deps dbt-run dbt-test dbt-docs dbt-clean dbt-parse lint test test-mcp build-image build-image-dagster run-api run-mcp db-init-analytics db-init-research db-migrate-6-4 db-migrate-6-6 dagster-dev dagster-defs event-radar-ingest
+.PHONY: install-dev install-orchestration dbt-deps dbt-run dbt-test dbt-docs dbt-clean dbt-parse lint test test-mcp build-image build-image-dagster run-api run-mcp db-init-analytics db-init-research db-migrate-6-4 db-migrate-6-6 dagster-dev dagster-defs event-radar-ingest smoke-agents-sdk
 
 DBT_DIR := src/bifrost_research/dbt
 DBT_PROFILES := $(DBT_DIR)
@@ -51,6 +51,9 @@ run-mcp:
 test-mcp:
 	pytest -q tests/mcp/
 
+smoke-agents-sdk:
+	python scripts/smoke_agents_sdk.py
+
 db-init-analytics:
 	python -c "from bifrost_research.db.conn import connect; from bifrost_research.schema.ddl import apply_market_analytics_ddl, ensure_month_partitions; c=connect(); apply_market_analytics_ddl(c); ensure_month_partitions(c); c.close(); print('market_analytics DDL applied')"
 
@@ -74,11 +77,11 @@ event-radar-ingest:
 	EVENT_RADAR_INPUT_DIR="$(EVENT_RADAR_INPUT_DIR)" python -m bifrost_research.scheduler.event_radar
 
 build-image:
-	docker build --platform linux/amd64 --target base -t bifrost-research:0.16.0 -f Dockerfile .
+	docker build --platform linux/amd64 --target base -t bifrost-research:0.17.0 -f Dockerfile .
 	docker build --platform linux/amd64 --target base -t bifrost-research:latest -f Dockerfile .
-	docker tag bifrost-research:0.16.0 192.168.10.73:30500/bifrost-research:0.16.0
+	docker tag bifrost-research:0.17.0 192.168.10.73:30500/bifrost-research:0.17.0
 	docker tag bifrost-research:latest 192.168.10.73:30500/bifrost-research:latest
-	docker push 192.168.10.73:30500/bifrost-research:0.16.0
+	docker push 192.168.10.73:30500/bifrost-research:0.17.0
 	docker push 192.168.10.73:30500/bifrost-research:latest
 
 build-image-dagster:

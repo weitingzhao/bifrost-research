@@ -1,6 +1,6 @@
 # Research Copilot v2 Plan — Wave RS-F (OpenAI Agents SDK · DeepSeek · Multi-Agent)
 
-**Status**: **Planned** — awaiting Owner sign-off on `D-RS-F-a` … `D-RS-F-i` before F1 kickoff
+**Status**: **Implemented** — Wave RS-F complete (bifrost-research **0.17.0**); F7 deferred
 **Predecessor**: Wave RS-E Complete (`docs/plans/RESEARCH_COCKPIT_PLAN.md`) — hand-rolled `orchestrator.py` + Claude/OpenAI/Ollama providers + Research MCP `:8796` SSE + preset agents + HMAC approval
 **Successor scope**: Ops / Hermes / Cockpit unification deferred to a separate future wave (Owner decision, 2026-08-25)
 **Total duration estimate**: 3–4 weeks (F1–F5 core · F6–F7 optional)

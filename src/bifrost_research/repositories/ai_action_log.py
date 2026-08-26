@@ -230,3 +230,31 @@ def list_actions(
         cur.execute(sql, tuple(params))
         rows = cur.fetchall() or []
     return [_row_to_dict(r) for r in rows]
+
+
+def log_guardrail_rejection(
+    conn: _Connection,
+    *,
+    reason: str,
+    session_id: str | None,
+    model: str | None = None,
+    matched_pattern: str | None = None,
+) -> dict[str, Any] | None:
+    """Record a D10 guardrail trip to ai_action_log."""
+    try:
+        return insert_action(
+            conn,
+            action_kind="guardrail_reject",
+            action_source="copilot_guardrail",
+            input_payload={
+                "reason": reason,
+                "matched_pattern": matched_pattern,
+            },
+            output_payload={"blocked": True},
+            status="rejected",
+            session_id=session_id,
+            model=model,
+        )
+    except Exception:
+        conn.rollback()
+        return None

@@ -165,6 +165,8 @@ def test_d10_no_trade_symbols_in_write_modules() -> None:
     offenders: list[str] = []
     for sub in ("mcp", "copilot"):
         for path in (root / sub).rglob("*.py"):
+            if path.name in ("guardrails.py",):
+                continue
             text = path.read_text(encoding="utf-8")
             for needle in forbidden:
                 if needle in text:

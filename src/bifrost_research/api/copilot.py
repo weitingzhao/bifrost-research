@@ -26,6 +26,7 @@ from bifrost_research.copilot.rate_limit import check_rate_limit, get_usage, usa
 from bifrost_research.db.conn import connect
 from bifrost_research.mcp.tools._write_common import WRITE_TOOL_NAMES
 from bifrost_research.repositories import ai_action_log as action_repo
+from bifrost_research.repositories import copilot_session as session_repo
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +46,10 @@ class CopilotStreamBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     messages: list[CopilotMessage] = Field(default_factory=list)
-    model: str = Field(default="claude-4.5-sonnet")
+    model: str = Field(default="deepseek-chat")
     max_tools: int = Field(default=8, ge=0, le=32)
     session_id: str | None = None
+    resume: bool = False
 
 
 class ApproveBody(BaseModel):
@@ -106,17 +108,24 @@ async def copilot_stream(body: CopilotStreamBody, request: Request) -> Streaming
     mcp = getattr(request.app.state, "copilot_mcp", None)
 
     async def event_gen():
+        sid = body.session_id
         async for frame in orchestrate(
             messages=messages,
             model=body.model,
             max_tools=body.max_tools,
-            session_id=body.session_id,
+            session_id=sid,
             provider=provider,
             mcp=mcp,
         ):
             if await request.is_disconnected():
                 break
             yield frame
+        _persist_session_best_effort(
+            session_id=sid,
+            model=body.model,
+            messages=messages,
+            resume=body.resume,
+        )
 
     return StreamingResponse(
         event_gen(),
@@ -335,6 +344,49 @@ def copilot_dismiss(body: DismissBody) -> dict[str, Any]:
             },
         }
     return {"ok": True, "data": {"action": action_row, "status": "rejected"}}
+
+
+def _persist_session_best_effort(
+    *,
+    session_id: str | None,
+    model: str,
+    messages: list[dict[str, Any]],
+    resume: bool,
+) -> None:
+    """Upsert copilot_session after a completed stream (best-effort)."""
+    if not messages:
+        return
+    try:
+        conn = connect()
+        try:
+            user_msgs = [m for m in messages if m.get("role") == "user"]
+            title = session_repo.derive_title(
+                str(user_msgs[0].get("content", "")) if user_msgs else ""
+            )
+            serialized = [
+                {"role": m.get("role"), "content": m.get("content", "")} for m in messages
+            ]
+            if session_id:
+                existing = session_repo.get_session(conn, session_id)
+                if existing:
+                    session_repo.append_message(
+                        conn,
+                        session_id,
+                        serialized[-1],
+                        title=existing.get("title") or title,
+                    )
+                    return
+            session_repo.create_session(
+                conn,
+                model=model,
+                title=title,
+                messages=serialized,
+                session_id=session_id,
+            )
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        logger.exception("copilot_session persist failed (non-fatal)")
 
 
 __all__ = ["router"]

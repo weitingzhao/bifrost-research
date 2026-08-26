@@ -261,6 +261,37 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         ON {SCHEMA_RESEARCH}.ai_draft (scope)
         """
     )
+    # --- Wave RS-F4: research.copilot_session ---
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.copilot_session (
+            id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+            owner_id      text NOT NULL DEFAULT 'owner',
+            title         text,
+            model         text NOT NULL,
+            agent_trail   jsonb DEFAULT '[]'::jsonb,
+            messages      jsonb NOT NULL DEFAULT '[]'::jsonb,
+            hypothesis_id text REFERENCES {SCHEMA_RESEARCH}.hypothesis(id) ON DELETE SET NULL,
+            created_at    timestamptz NOT NULL DEFAULT now(),
+            updated_at    timestamptz NOT NULL DEFAULT now(),
+            expires_at    timestamptz NOT NULL DEFAULT (now() + interval '30 days'),
+            status        text NOT NULL DEFAULT 'active'
+                CHECK (status IN ('active','archived','expired'))
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS idx_copilot_session_owner
+        ON {SCHEMA_RESEARCH}.copilot_session (owner_id, updated_at DESC)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS idx_copilot_session_hyp
+        ON {SCHEMA_RESEARCH}.copilot_session (hypothesis_id)
+        """
+    )
 
 
 def apply_features_daily_ddl(conn: _Connection) -> None:

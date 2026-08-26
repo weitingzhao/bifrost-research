@@ -16,6 +16,7 @@ TABLE_RESEARCH_BACKTEST_RUN = f"{SCHEMA_RESEARCH}.backtest_run"
 # Wave RS-E3 — AI draft inbox + action audit log (D-RS-E-e/g).
 TABLE_RESEARCH_AI_ACTION_LOG = f"{SCHEMA_RESEARCH}.ai_action_log"
 TABLE_RESEARCH_AI_DRAFT = f"{SCHEMA_RESEARCH}.ai_draft"
+TABLE_RESEARCH_COPILOT_SESSION = f"{SCHEMA_RESEARCH}.copilot_session"
 
 # --- Canonical table names (schema.table) ---
 TABLE_OPTION_METRIC_ATM_IV_DAILY = f"{SCHEMA_FEATURES}.option_metric_atm_iv_daily"

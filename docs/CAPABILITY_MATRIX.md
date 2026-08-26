@@ -1,6 +1,6 @@
 # Capability Matrix — Research UX Wave R1–R8 (2026-08-25)
 
-Supplements the Wave 6 parity matrix below. **bifrost-research 0.16.0** · Research Cockpit **Wave RS-E Complete** (E1–E4) + Event-Driven Backtest (RS-C).
+Supplements the Wave 6 parity matrix below. **bifrost-research 0.17.0** · Research Cockpit **Wave RS-F Complete** (F1–F5) + Event-Driven Backtest (RS-C).
 
 ## Wave delivery status
 
@@ -27,7 +27,7 @@ Supplements the Wave 6 parity matrix below. **bifrost-research 0.16.0** · Resea
 | RS-E2 | Read-only AI Copilot + Research MCP | ✅ MCP 25 tools (`bifrost_research.mcp`) | ✅ `POST /research/copilot/stream` · `GET /research/copilot/usage` · MCP `:8796/sse` | ✅ Copilot tab enabled · Settings AI Usage tile | D-RS-E-c/d/h/i; bifrost-research **0.14.0** |
 | RS-E3 | Morning / EOD Agents + Approval Inbox | ✅ `copilot/agents/` heuristic+LLM · CronJobs `k8s/agents/` | ✅ `POST /research/agents/{morning,eod}/run` · `GET/POST /research/drafts*` · DDL `ai_action_log` + `ai_draft` | ✅ Cockpit Inbox tab + Approve/Dismiss · Actions on-demand run | D-RS-E-e/f/g; agents **draft-only**; bifrost-research **0.15.0** |
 | RS-E4 | Interactive AI write actions | ✅ Write MCP tools (`create`/`patch`/`retire`/`run_event_query`) + HMAC approvals | ✅ `POST /research/copilot/{approve,execute,dismiss}` | ✅ `DiffApprovalCard` · `DiffPayloadRenderer` in Copilot | D-RS-E-e/g; dry_run default; bifrost-research **0.16.0** · runbook `docs/COCKPIT_RUNBOOK.md` · **program complete** |
-| RS-F | Copilot v2 · OpenAI Agents SDK + DeepSeek + Multi-Agent | 📋 Planned — F1 rewrite orchestrator on `openai-agents` (`Agent` + `MCPServerSse`) · F3 Triage+5 specialists via handoffs / `Agent.as_tool()` · F4 D10 guardrails + `research.copilot_session` DDL · F6 Morning/EOD → SDK | 📋 Planned — SSE contract extended (`agent_handoff` · `guardrail` events, back-compat) · new `/research/copilot/sessions*` routes · DeepSeek via OpenAI-compatible `api.deepseek.com/v1` | 📋 Planned — DeepSeek in model catalog · Trace panel · Session list sidebar · Dock/Overlay toggle · Agent chip inline | D-RS-F-a…j — plan `docs/plans/RESEARCH_COPILOT_V2_PLAN.md`; targets bifrost-research **0.17.0**; D10 hard-reject guardrail non-negotiable; Ops/Hermes untouched |
+| RS-F | Copilot v2 · OpenAI Agents SDK + DeepSeek + Multi-Agent | ✅ `openai-agents` runtime · Triage+5 specialists handoffs · D10 guardrails · `research.copilot_session` · tracing JSONL | ✅ SSE `agent_handoff`/`guardrail` · `/research/copilot/sessions*` · DeepSeek `api.deepseek.com/v1` | ✅ DeepSeek default · Trace panel · Sessions sidebar · Dock/Overlay toggle · Agent chips | D-RS-F-a…j **implemented** · bifrost-research **0.17.0**; F6 optional deferred · F7 sandbox deferred |
 
 ## Owner decisions (defaults)
 
