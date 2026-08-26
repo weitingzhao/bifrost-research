@@ -22,7 +22,7 @@ COPY src ./src
 COPY scripts ./scripts
 COPY workspace.yaml ./
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[copilot]"
 
 ENV PYTHONUNBUFFERED=1
 ENV HOST=0.0.0.0

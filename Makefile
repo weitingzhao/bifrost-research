@@ -52,7 +52,7 @@ test-mcp:
 	pytest -q tests/mcp/
 
 smoke-agents-sdk:
-	python scripts/smoke_agents_sdk.py
+	.venv/bin/python scripts/smoke_agents_sdk.py
 
 db-init-analytics:
 	python -c "from bifrost_research.db.conn import connect; from bifrost_research.schema.ddl import apply_market_analytics_ddl, ensure_month_partitions; c=connect(); apply_market_analytics_ddl(c); ensure_month_partitions(c); c.close(); print('market_analytics DDL applied')"
