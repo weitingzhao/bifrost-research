@@ -323,6 +323,34 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         """
     )
 
+    # --- Wave RS-EX2: Context Bridge audit log ---
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.copilot_bridge_event (
+            id                      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+            owner_id                text NOT NULL,
+            session_id              uuid NOT NULL REFERENCES {SCHEMA_RESEARCH}.copilot_session(id) ON DELETE CASCADE,
+            focus                   text NOT NULL,
+            depth                   text NOT NULL,
+            target                  text NOT NULL,
+            model                   text NOT NULL,
+            frames_from_message_id  text,
+            input_tokens            int NOT NULL DEFAULT 0,
+            output_tokens           int NOT NULL DEFAULT 0,
+            cost_usd                numeric(12, 6) NOT NULL DEFAULT 0,
+            preview_md              text NOT NULL,
+            polished                boolean NOT NULL DEFAULT true,
+            created_at              timestamptz NOT NULL DEFAULT now()
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS idx_copilot_bridge_owner_day
+        ON {SCHEMA_RESEARCH}.copilot_bridge_event (owner_id, created_at DESC)
+        """
+    )
+
     # --- RS-KB3: Playbook (personal trading system DNA) ---
     cur.execute(
         f"""

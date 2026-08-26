@@ -25,10 +25,12 @@ from bifrost_research.copilot.approvals import (
     strip_meta_args,
 )
 from bifrost_research.copilot.orchestrator import execute_approved_write, orchestrate
+from bifrost_research.copilot.bridge_presets import list_presets
 from bifrost_research.copilot.rate_limit import check_rate_limit, get_usage, usage_to_dict
 from bifrost_research.db.conn import connect
 from bifrost_research.mcp.tools._write_common import WRITE_TOOL_NAMES
 from bifrost_research.repositories import ai_action_log as action_repo
+from bifrost_research.repositories import copilot_bridge as bridge_repo
 from bifrost_research.repositories import copilot_session as session_repo
 
 logger = logging.getLogger(__name__)
@@ -89,8 +91,28 @@ class DismissBody(BaseModel):
 
 
 @router.get("/usage")
-def copilot_usage() -> dict[str, Any]:
-    return usage_to_dict(get_usage())
+def copilot_usage(owner_id: str = Depends(require_owner)) -> dict[str, Any]:
+    out = usage_to_dict(get_usage())
+    try:
+        conn = connect()
+        try:
+            out.update(bridge_repo.usage_stats_today(conn, owner_id=owner_id))
+        finally:
+            conn.close()
+    except Exception:
+        out.update(
+            {
+                "bridge_count_today": 0,
+                "bridge_tokens_today": 0,
+                "bridge_cost_usd_today": 0.0,
+            }
+        )
+    return out
+
+
+@router.get("/bridge/presets")
+def bridge_presets() -> dict[str, Any]:
+    return {"ok": True, "data": list_presets()}
 
 
 # Provider → env var(s) required to actually reach that model.  When the
@@ -188,6 +210,56 @@ _MODEL_CATALOG: tuple[dict[str, Any], ...] = (
         "cost_per_mtok_in": 1.25,
         "cost_per_mtok_out": 10.0,
         "note": "GPT-5 旗舰；复杂多步分析与英文报告。",
+        "env_required": ("OPENAI_API_KEY",),
+    },
+    {
+        "id": "gpt-5.6-luna",
+        "label": "GPT-5.6 Luna",
+        "provider": "openai",
+        "family": "OpenAI",
+        "cost_per_mtok_in": 0.20,
+        "cost_per_mtok_out": 1.20,
+        "note": "5.6 最便宜档；高吞吐日常问答，OpenAI 主力便宜选项。",
+        "env_required": ("OPENAI_API_KEY",),
+    },
+    {
+        "id": "gpt-5.6-terra",
+        "label": "GPT-5.6 Terra",
+        "provider": "openai",
+        "family": "OpenAI",
+        "cost_per_mtok_in": 2.00,
+        "cost_per_mtok_out": 12.00,
+        "note": "5.6 平衡档；比 Luna 更聪明、比 Sol 便宜，中等复杂任务。",
+        "env_required": ("OPENAI_API_KEY",),
+    },
+    {
+        "id": "gpt-5.6-sol",
+        "label": "GPT-5.6 Sol",
+        "provider": "openai",
+        "family": "OpenAI",
+        "cost_per_mtok_in": 4.00,
+        "cost_per_mtok_out": 20.00,
+        "note": "5.6 旗舰；复杂推理与 coding，费用高，少用于日常闲聊。",
+        "env_required": ("OPENAI_API_KEY",),
+    },
+    {
+        "id": "gpt-5.4-nano",
+        "label": "GPT-5.4 nano",
+        "provider": "openai",
+        "family": "OpenAI",
+        "cost_per_mtok_in": 0.20,
+        "cost_per_mtok_out": 1.25,
+        "note": "5.4 最便宜档；分类、摘要、简单问答，与 5.6 Luna 同价。",
+        "env_required": ("OPENAI_API_KEY",),
+    },
+    {
+        "id": "gpt-5.5",
+        "label": "GPT-5.5",
+        "provider": "openai",
+        "family": "OpenAI",
+        "cost_per_mtok_in": 5.00,
+        "cost_per_mtok_out": 30.00,
+        "note": "5.5 旗舰；很贵，仅用于最复杂英文专业分析。",
         "env_required": ("OPENAI_API_KEY",),
     },
     {

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from bifrost_research.auth.deps import require_owner
+from bifrost_research.copilot.bridge_runtime import build_bridge
 from bifrost_research.db.conn import connect
 from bifrost_research.repositories import copilot_session as session_repo
 
@@ -24,6 +25,16 @@ class SessionPatchBody(BaseModel):
     pinned: bool | None = None
     group_name: str | None = Field(default=None, max_length=64)
     clear_group: bool = False
+
+
+class BridgeBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    focus: str = Field(default="portfolio_risk")
+    depth: str = Field(default="standard")
+    target: str = Field(default="deepseek")
+    model: str | None = Field(default="deepseek-chat")
+    frames_from_message_id: str | None = None
 
 
 def _summary(row: dict[str, Any]) -> dict[str, Any]:
@@ -111,6 +122,40 @@ def archive_session(
     if row is None:
         raise HTTPException(status_code=404, detail="session not found")
     return {"archived": True, "session": _summary(row)}
+
+
+@router.post("/{session_id}/bridge")
+def bridge_session(
+    session_id: str,
+    body: BridgeBody,
+    owner_id: str = Depends(require_owner),
+) -> dict[str, Any]:
+    result = build_bridge(
+        session_id=session_id,
+        owner_id=owner_id,
+        focus=body.focus,
+        depth=body.depth,
+        target=body.target,
+        model=body.model,
+        frames_from_message_id=body.frames_from_message_id,
+    )
+    if not result.get("ok"):
+        err = result.get("error")
+        if err == "bridge_rate_limit":
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": err,
+                    "retry_after_sec": result.get("retry_after_sec"),
+                    "limit_per_minute": result.get("limit_per_minute"),
+                },
+            )
+        if err == "session_not_found":
+            raise HTTPException(status_code=404, detail=err)
+        if err == "empty_context":
+            raise HTTPException(status_code=400, detail=err)
+        raise HTTPException(status_code=400, detail=str(err))
+    return result
 
 
 __all__ = ["router"]

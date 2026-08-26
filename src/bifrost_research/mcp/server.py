@@ -59,6 +59,7 @@ TOOL_NAMES: tuple[str, ...] = (
     "research.playbook.rules_active",
     "research.playbook.notes_for",
     "research.playbook.cases_matching",
+    "research.playbook.recent_bridge_cases",
     "research.copilot.recent_sessions",
 )
 

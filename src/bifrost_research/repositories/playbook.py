@@ -354,6 +354,67 @@ def create_case(
     )
 
 
+def create_case_from_bridge(
+    conn: _Connection,
+    *,
+    owner_id: str,
+    bridge_event_id: str,
+    external_reply_md: str,
+    outcome: str | None = None,
+    tags: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Save external AI reply as playbook case (RS-EX3 feedback loop)."""
+    from bifrost_research.schema.schemas import TABLE_RESEARCH_COPILOT_BRIDGE_EVENT
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT id, session_id, focus, target, preview_md
+            FROM {TABLE_RESEARCH_COPILOT_BRIDGE_EVENT}
+            WHERE id = %s::uuid AND owner_id = %s
+            """,
+            (bridge_event_id, owner_id),
+        )
+        bridge = cur.fetchone()
+    if not bridge:
+        return None
+    if isinstance(bridge, dict):
+        bridge_row = bridge
+    else:
+        bridge_row = {
+            "id": bridge[0],
+            "session_id": bridge[1],
+            "focus": bridge[2],
+            "target": bridge[3],
+            "preview_md": bridge[4],
+        }
+    merged_tags = list(tags or [])
+    if "bridge-feedback" not in merged_tags:
+        merged_tags.append("bridge-feedback")
+    lessons = (
+        "## External AI reply\n\n"
+        f"{external_reply_md.strip()}\n\n"
+        "## Bridge context (snapshot)\n\n"
+        f"{str(bridge_row.get('preview_md') or '')[:4000]}"
+    )
+    trade_ref = {
+        "source": "bridge_feedback",
+        "bridge_event_id": str(bridge_row.get("id")),
+        "session_id": str(bridge_row.get("session_id")),
+        "focus": bridge_row.get("focus"),
+        "target": bridge_row.get("target"),
+        "external_reply_md": external_reply_md.strip()[:8000],
+    }
+    return create_case(
+        conn,
+        owner_id=owner_id,
+        lessons_md=lessons,
+        trade_ref=trade_ref,
+        outcome=outcome or "Bridge feedback",
+        tags=merged_tags,
+    )
+
+
 def search_keyword(
     conn: _Connection,
     *,
@@ -403,6 +464,7 @@ def search_keyword(
 
 __all__ = [
     "create_case",
+    "create_case_from_bridge",
     "create_note",
     "create_rule",
     "get_rule",

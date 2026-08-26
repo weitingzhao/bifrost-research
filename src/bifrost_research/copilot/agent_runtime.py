@@ -34,6 +34,7 @@ from bifrost_research.copilot.write_gate import force_chat_dry_run
 from bifrost_research.db.conn import connect
 from bifrost_research.mcp.server import ALL_TOOL_NAMES
 from bifrost_research.repositories import playbook as playbook_repo
+from bifrost_research.repositories import copilot_bridge as bridge_repo
 from bifrost_research.repositories.ai_action_log import log_guardrail_rejection
 
 logger = logging.getLogger("bifrost.copilot.audit")
@@ -125,11 +126,37 @@ def _playbook_context_blob(user_text: str) -> str | None:
     return "\n".join(lines)
 
 
+def _bridge_cases_context_blob() -> str | None:
+    """Inject recent bridge-feedback playbook cases (RS-EX3)."""
+    try:
+        conn = connect()
+        try:
+            import os
+
+            owner = os.environ.get("RESEARCH_DEFAULT_OWNER", "owner")
+            cases = bridge_repo.list_recent_bridge_cases(conn, owner_id=owner, limit=3)
+        finally:
+            conn.close()
+    except Exception:
+        return None
+    if not cases:
+        return None
+    lines = ["Recent bridge feedback cases (external AI replies saved to playbook):"]
+    for c in cases:
+        outcome = c.get("outcome") or "case"
+        body = str(c.get("lessons_md") or "")[:500]
+        lines.append(f"- {outcome}: {body}")
+    return "\n".join(lines)
+
+
 def _sdk_input(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     playbook_ctx = _playbook_context_blob(_user_text(messages))
     if playbook_ctx:
         out.append({"role": "system", "content": playbook_ctx})
+    bridge_ctx = _bridge_cases_context_blob()
+    if bridge_ctx:
+        out.append({"role": "system", "content": bridge_ctx})
     for msg in messages:
         role = msg.get("role", "user")
         if role in ("user", "assistant", "system"):

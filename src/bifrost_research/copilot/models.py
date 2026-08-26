@@ -52,12 +52,17 @@ def resolve_model_for_agent(model_id: str) -> Model:
     if lower.startswith("gpt") or lower.startswith("openai"):
         from openai import AsyncOpenAI
 
-        from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
+        from agents.models.openai_responses import OpenAIResponsesModel
 
         api_key = _require_key("OPENAI_API_KEY", model_id)
         client = AsyncOpenAI(api_key=api_key)
         mid = model_id if model_id.startswith("gpt") else "gpt-4o"
-        return OpenAIChatCompletionsModel(model=mid, openai_client=client)
+        # GPT-5.x (Luna/Terra/Sol/5.5/5.4-nano/5-mini/5) require the Responses
+        # API when function tools are combined with reasoning settings; the
+        # Chat Completions endpoint rejects both together with HTTP 400 even
+        # when reasoning_effort='none'.  For simplicity route *all* OpenAI GPT
+        # ids through Responses — it works for 4o / 4.1 too.
+        return OpenAIResponsesModel(model=mid, openai_client=client)
 
     if lower.startswith("claude"):
         try:

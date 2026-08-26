@@ -55,6 +55,15 @@ class CaseCreateBody(BaseModel):
     related_rule_ids: list[str] = Field(default_factory=list)
 
 
+class CaseFromBridgeBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    bridge_event_id: str = Field(min_length=1)
+    external_reply_md: str = Field(min_length=1)
+    outcome: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+
 @router.get("/rules")
 def list_rules(
     owner_id: str = Depends(require_owner),
@@ -184,6 +193,28 @@ def create_case(body: CaseCreateBody, owner_id: str = Depends(require_owner)) ->
         return {"ok": True, "data": row}
     finally:
         conn.close()
+
+
+@router.post("/cases/from_bridge")
+def create_case_from_bridge(
+    body: CaseFromBridgeBody,
+    owner_id: str = Depends(require_owner),
+) -> dict[str, Any]:
+    conn = connect()
+    try:
+        row = playbook_repo.create_case_from_bridge(
+            conn,
+            owner_id=owner_id,
+            bridge_event_id=body.bridge_event_id,
+            external_reply_md=body.external_reply_md,
+            outcome=body.outcome,
+            tags=body.tags,
+        )
+    finally:
+        conn.close()
+    if row is None:
+        raise HTTPException(status_code=404, detail="bridge event not found")
+    return {"ok": True, "data": row}
 
 
 @router.get("/search")

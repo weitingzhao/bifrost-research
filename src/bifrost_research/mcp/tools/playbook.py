@@ -9,6 +9,7 @@ from mcp.server.fastmcp import FastMCP
 
 from bifrost_research.mcp.tools._common import READ_ONLY_SUFFIX, err, ok, with_conn
 from bifrost_research.repositories import copilot_session as session_repo
+from bifrost_research.repositories import copilot_bridge as bridge_repo
 from bifrost_research.repositories import playbook as playbook_repo
 
 
@@ -69,6 +70,24 @@ def register(mcp: FastMCP) -> None:
     def cases_matching(limit: int = 20) -> dict[str, Any]:
         def _run(conn: Any) -> dict[str, Any]:
             rows = playbook_repo.list_cases(conn, owner_id=_owner_id(), limit=min(limit, 50))
+            return ok({"rows": rows, "count": len(rows)})
+
+        try:
+            return with_conn(_run)
+        except Exception as exc:  # noqa: BLE001
+            return err(str(exc))
+
+    @mcp.tool(
+        name="research.playbook.recent_bridge_cases",
+        description=f"Recent playbook cases saved from Context Bridge external replies. {READ_ONLY_SUFFIX}",
+    )
+    def recent_bridge_cases(limit: int = 5) -> dict[str, Any]:
+        def _run(conn: Any) -> dict[str, Any]:
+            rows = bridge_repo.list_recent_bridge_cases(
+                conn,
+                owner_id=_owner_id(),
+                limit=min(limit, 20),
+            )
             return ok({"rows": rows, "count": len(rows)})
 
         try:
