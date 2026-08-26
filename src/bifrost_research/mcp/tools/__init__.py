@@ -16,11 +16,13 @@ def register_all(mcp: FastMCP) -> None:
         discovery,
         hypothesis,
         opex_cycle,
+        playbook,
         trade_context,
         vol_surface,
         vrp,
         write_backtest,
         write_hypothesis,
+        write_playbook,
     )
 
     hypothesis.register(mcp)
@@ -29,8 +31,8 @@ def register_all(mcp: FastMCP) -> None:
     vol_surface.register(mcp)
     opex_cycle.register(mcp)
     discovery.register(mcp)
-    # Wave RS-F5 — Trade System read-only context tools
     trade_context.register(mcp)
-    # Wave RS-E4 write tools (dry_run default true)
+    playbook.register(mcp)
     write_hypothesis.register(mcp)
     write_backtest.register(mcp)
+    write_playbook.register(mcp)

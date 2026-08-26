@@ -55,6 +55,11 @@ TOOL_NAMES: tuple[str, ...] = (
     "trade.strategy.opportunities",
     "trade.market.watchlist",
     "trade.market.quotes",
+    # playbook + copilot memory — RS-KB4
+    "research.playbook.rules_active",
+    "research.playbook.notes_for",
+    "research.playbook.cases_matching",
+    "research.copilot.recent_sessions",
 )
 
 ALL_TOOL_NAMES: tuple[str, ...] = TOOL_NAMES + WRITE_TOOL_NAMES

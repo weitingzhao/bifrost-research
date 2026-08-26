@@ -27,6 +27,7 @@ async def orchestrate(
     session_id: str | None = None,
     provider: LlmProvider | None = None,
     mcp: Any | None = None,
+    turn_buffer: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[str]:
     """Yield SSE frames: token | tool_call | tool_result | error | done | agent_handoff."""
     if provider is not None:
@@ -46,6 +47,7 @@ async def orchestrate(
         model_id=model,
         session_id=session_id,
         max_turns=max(1, max_tools) + 1,
+        turn_buffer=turn_buffer,
     ):
         yield frame
 

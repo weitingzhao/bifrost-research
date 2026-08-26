@@ -274,7 +274,7 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
             hypothesis_id text REFERENCES {SCHEMA_RESEARCH}.hypothesis(id) ON DELETE SET NULL,
             created_at    timestamptz NOT NULL DEFAULT now(),
             updated_at    timestamptz NOT NULL DEFAULT now(),
-            expires_at    timestamptz NOT NULL DEFAULT (now() + interval '30 days'),
+            expires_at    timestamptz NOT NULL DEFAULT (now() + interval '1 year'),
             status        text NOT NULL DEFAULT 'active'
                 CHECK (status IN ('active','archived','expired'))
         )
@@ -285,6 +285,15 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         f"""
         ALTER TABLE {SCHEMA_RESEARCH}.copilot_session
         ADD COLUMN IF NOT EXISTS pinned boolean NOT NULL DEFAULT false
+        """
+    )
+    # RS-KB1: extend short-lived sessions to 1-year sliding retention.
+    cur.execute(
+        f"""
+        UPDATE {SCHEMA_RESEARCH}.copilot_session
+        SET expires_at = updated_at + interval '1 year'
+        WHERE expires_at IS NULL
+           OR expires_at < now() + interval '30 days'
         """
     )
     cur.execute(
@@ -299,6 +308,100 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         ON {SCHEMA_RESEARCH}.copilot_session (hypothesis_id)
         """
     )
+
+    # --- RS-KB3: Playbook (personal trading system DNA) ---
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.playbook_rule (
+            id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+            owner_id            text NOT NULL,
+            title               text NOT NULL,
+            category            text NOT NULL DEFAULT 'general',
+            body_md             text NOT NULL,
+            trigger_ctx         jsonb NOT NULL DEFAULT '{{}}'::jsonb,
+            tags                text[] NOT NULL DEFAULT '{{}}'::text[],
+            active              boolean NOT NULL DEFAULT true,
+            source_session_id   uuid REFERENCES {SCHEMA_RESEARCH}.copilot_session(id) ON DELETE SET NULL,
+            source_msg_ref      jsonb,
+            created_at          timestamptz NOT NULL DEFAULT now(),
+            updated_at          timestamptz NOT NULL DEFAULT now(),
+            retired_at          timestamptz
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.playbook_case (
+            id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+            owner_id            text NOT NULL,
+            trade_ref           jsonb NOT NULL DEFAULT '{{}}'::jsonb,
+            outcome             text,
+            lessons_md          text NOT NULL,
+            tags                text[] NOT NULL DEFAULT '{{}}'::text[],
+            related_rule_ids    uuid[] NOT NULL DEFAULT '{{}}'::uuid[],
+            created_at          timestamptz NOT NULL DEFAULT now()
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.playbook_note (
+            id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+            owner_id            text NOT NULL,
+            note_md             text NOT NULL,
+            tags                text[] NOT NULL DEFAULT '{{}}'::text[],
+            symbols             text[] NOT NULL DEFAULT '{{}}'::text[],
+            source_session_id   uuid REFERENCES {SCHEMA_RESEARCH}.copilot_session(id) ON DELETE SET NULL,
+            created_at          timestamptz NOT NULL DEFAULT now()
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS idx_playbook_rule_owner
+        ON {SCHEMA_RESEARCH}.playbook_rule (owner_id, category, active)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS idx_playbook_rule_tags
+        ON {SCHEMA_RESEARCH}.playbook_rule USING gin (tags)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS idx_playbook_note_owner
+        ON {SCHEMA_RESEARCH}.playbook_note (owner_id, created_at DESC)
+        """
+    )
+
+    # --- RS-KB5: semantic retrieval store (pgvector optional) ---
+    try:
+        cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.embedding_chunk (
+                id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+                owner_id        text NOT NULL,
+                entity_type     text NOT NULL,
+                entity_id       uuid NOT NULL,
+                chunk_id        int NOT NULL DEFAULT 0,
+                content         text NOT NULL,
+                embedding       vector(1024),
+                created_at      timestamptz NOT NULL DEFAULT now(),
+                UNIQUE (entity_type, entity_id, chunk_id)
+            )
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_embedding_owner_type
+            ON {SCHEMA_RESEARCH}.embedding_chunk (owner_id, entity_type)
+            """
+        )
+    except Exception:
+        # pgvector not available — keyword search fallback (RS-KB5)
+        pass
 
 
 def apply_features_daily_ddl(conn: _Connection) -> None:

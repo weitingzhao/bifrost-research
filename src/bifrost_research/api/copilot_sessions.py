@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.repositories import copilot_session as session_repo
 
@@ -35,21 +36,27 @@ def _summary(row: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("")
-def list_sessions(limit: int = 20) -> SessionListResponse:
+def list_sessions(
+    limit: int = 20,
+    owner_id: str = Depends(require_owner),
+) -> SessionListResponse:
     limit = max(1, min(limit, 50))
     conn = connect()
     try:
-        rows = session_repo.list_recent(conn, limit=limit)
+        rows = session_repo.list_recent(conn, owner_id=owner_id, limit=limit)
     finally:
         conn.close()
     return SessionListResponse(rows=[_summary(r) for r in rows])
 
 
 @router.get("/{session_id}")
-def get_session(session_id: str) -> dict[str, Any]:
+def get_session(
+    session_id: str,
+    owner_id: str = Depends(require_owner),
+) -> dict[str, Any]:
     conn = connect()
     try:
-        row = session_repo.get_session(conn, session_id)
+        row = session_repo.get_session(conn, session_id, owner_id=owner_id)
     finally:
         conn.close()
     if row is None:
@@ -58,7 +65,11 @@ def get_session(session_id: str) -> dict[str, Any]:
 
 
 @router.patch("/{session_id}")
-def patch_session(session_id: str, body: SessionPatchBody) -> dict[str, Any]:
+def patch_session(
+    session_id: str,
+    body: SessionPatchBody,
+    owner_id: str = Depends(require_owner),
+) -> dict[str, Any]:
     if body.title is None and body.pinned is None:
         raise HTTPException(status_code=400, detail="nothing to update")
     conn = connect()
@@ -68,6 +79,7 @@ def patch_session(session_id: str, body: SessionPatchBody) -> dict[str, Any]:
             session_id,
             title=body.title,
             pinned=body.pinned,
+            owner_id=owner_id,
         )
     finally:
         conn.close()
@@ -77,10 +89,13 @@ def patch_session(session_id: str, body: SessionPatchBody) -> dict[str, Any]:
 
 
 @router.delete("/{session_id}")
-def archive_session(session_id: str) -> dict[str, Any]:
+def archive_session(
+    session_id: str,
+    owner_id: str = Depends(require_owner),
+) -> dict[str, Any]:
     conn = connect()
     try:
-        row = session_repo.archive_session(conn, session_id)
+        row = session_repo.archive_session(conn, session_id, owner_id=owner_id)
     finally:
         conn.close()
     if row is None:

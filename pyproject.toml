@@ -1,6 +1,6 @@
 [project]
 name = "bifrost-research"
-version = "0.18.2"
+version = "0.23.0"
 description = "Bifrost Research Engine — OLAP analytics, engines, and Research API"
 requires-python = ">=3.11"
 dependencies = [

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any
 
 from agents import Runner
@@ -32,6 +33,7 @@ from bifrost_research.copilot.tracing import maybe_configure_otlp, trace_event
 from bifrost_research.copilot.write_gate import force_chat_dry_run
 from bifrost_research.db.conn import connect
 from bifrost_research.mcp.server import ALL_TOOL_NAMES
+from bifrost_research.repositories import playbook as playbook_repo
 from bifrost_research.repositories.ai_action_log import log_guardrail_rejection
 
 logger = logging.getLogger("bifrost.copilot.audit")
@@ -95,8 +97,39 @@ def _user_text(messages: list[dict[str, Any]]) -> str:
     return "\n".join(parts)
 
 
+def _playbook_context_blob(user_text: str) -> str | None:
+    """Inject matching playbook rules into the turn (RS-KB5 keyword fallback)."""
+    query = (user_text or "").strip()
+    if len(query) < 8:
+        return None
+    try:
+        conn = connect()
+        try:
+            import os
+
+            owner = os.environ.get("RESEARCH_DEFAULT_OWNER", "owner")
+            hits = playbook_repo.search_keyword(conn, owner_id=owner, query=query[:120], limit=5)
+        finally:
+            conn.close()
+    except Exception:
+        return None
+    rules = hits.get("rules") or []
+    if not rules:
+        return None
+    lines = ["User playbook rules (cite when relevant):"]
+    for r in rules[:5]:
+        title = r.get("title") or "rule"
+        cat = r.get("category") or "general"
+        body = str(r.get("body_md") or "")[:400]
+        lines.append(f"- [{cat}] {title}: {body}")
+    return "\n".join(lines)
+
+
 def _sdk_input(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
+    playbook_ctx = _playbook_context_blob(_user_text(messages))
+    if playbook_ctx:
+        out.append({"role": "system", "content": playbook_ctx})
     for msg in messages:
         role = msg.get("role", "user")
         if role in ("user", "assistant", "system"):
@@ -175,6 +208,128 @@ def _extract_tool_result(item: ToolCallOutputItem) -> Any:
     return {"ok": True, "data": str(output)}
 
 
+def _frame_ts() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+class _TurnFrameRecorder:
+    """Accumulates structured turn frames for server-side session persistence (RS-KB1)."""
+
+    def __init__(self, buffer: list[dict[str, Any]] | None, *, initial_agent: str = "triage") -> None:
+        self._buffer = buffer
+        self._assistant_parts: list[str] = []
+        self._current_agent = initial_agent
+
+    def _append(self, frame: dict[str, Any]) -> None:
+        if self._buffer is not None:
+            self._buffer.append(frame)
+
+    def flush_assistant_text(self) -> None:
+        if not self._assistant_parts:
+            return
+        text = "".join(self._assistant_parts).strip()
+        self._assistant_parts.clear()
+        if not text:
+            return
+        self._append(
+            {
+                "kind": "text",
+                "role": "assistant",
+                "content": text,
+                "agent": self._current_agent,
+                "ts": _frame_ts(),
+            }
+        )
+
+    def record_user_text(self, content: str) -> None:
+        text = (content or "").strip()
+        if not text:
+            return
+        self._append(
+            {
+                "kind": "text",
+                "role": "user",
+                "content": text,
+                "ts": _frame_ts(),
+            }
+        )
+
+    def record_token(self, text: str) -> None:
+        if text:
+            self._assistant_parts.append(text)
+
+    def record_handoff(self, from_agent: str, to_agent: str) -> None:
+        self.flush_assistant_text()
+        self._current_agent = to_agent
+        self._append(
+            {
+                "kind": "handoff",
+                "role": "system",
+                "agent_from": from_agent,
+                "agent_to": to_agent,
+                "ts": _frame_ts(),
+            }
+        )
+
+    def record_tool_call(
+        self,
+        call_id: str,
+        tool_name: str,
+        args: dict[str, Any],
+    ) -> None:
+        self.flush_assistant_text()
+        self._append(
+            {
+                "kind": "tool_call",
+                "role": "tool",
+                "tool_call_id": call_id,
+                "tool_name": tool_name,
+                "args": args,
+                "agent": self._current_agent,
+                "ts": _frame_ts(),
+            }
+        )
+
+    def record_tool_result(
+        self,
+        call_id: str,
+        tool_name: str,
+        result_payload: Any,
+    ) -> None:
+        ok = True
+        data: Any = result_payload
+        error: str | None = None
+        if isinstance(result_payload, dict):
+            if result_payload.get("ok") is False:
+                ok = False
+                error = str(result_payload.get("error") or result_payload.get("message") or "tool failed")
+            data = result_payload.get("data", result_payload)
+        frame: dict[str, Any] = {
+            "kind": "tool_result",
+            "role": "tool",
+            "tool_call_id": call_id,
+            "tool_name": tool_name,
+            "ok": ok,
+            "ts": _frame_ts(),
+        }
+        if ok:
+            frame["data"] = data
+        else:
+            frame["error"] = error
+            frame["data"] = data
+        self._append(frame)
+
+    def finalize(self) -> None:
+        self.flush_assistant_text()
+
+
+def _last_user_message(messages: list[dict[str, Any]]) -> str:
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            return str(msg.get("content", ""))
+    return ""
+
+
 def _text_delta(event: RawResponsesStreamEvent) -> str:
     data = event.data
     typ = getattr(data, "type", None) or (data.get("type") if isinstance(data, dict) else None)
@@ -192,8 +347,12 @@ async def stream_agent(
     model_id: str,
     session_id: str | None = None,
     max_turns: int = 12,
+    turn_buffer: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[str]:
     """Yield SSE frames compatible with RS-E contract + RS-F extensions."""
+    recorder = _TurnFrameRecorder(turn_buffer)
+    recorder.record_user_text(_last_user_message(messages))
+
     user_blob = _user_text(messages)
     guard = check_input(user_blob)
     if guard.tripwire:
@@ -233,6 +392,7 @@ async def stream_agent(
                         prev = current_agent
                         current_agent = event.new_agent.name or "agent"
                         if prev != current_agent:
+                            recorder.record_handoff(prev, current_agent)
                             yield _sse(
                                 "agent_handoff",
                                 {
@@ -251,6 +411,7 @@ async def stream_agent(
                     if isinstance(event, RawResponsesStreamEvent):
                         delta = _text_delta(event)
                         if delta:
+                            recorder.record_token(delta)
                             yield _sse("token", {"text": delta, "session_id": session_id})
                         continue
 
@@ -259,10 +420,13 @@ async def stream_agent(
                         if event.name == "handoff_requested" and isinstance(item, HandoffCallItem):
                             raw = item.raw_item
                             target = getattr(raw, "name", None) or "specialist"
+                            prev_agent = current_agent
+                            recorder.record_handoff(prev_agent, str(target))
+                            current_agent = str(target)
                             yield _sse(
                                 "agent_handoff",
                                 {
-                                    "from": current_agent,
+                                    "from": prev_agent,
                                     "to": str(target),
                                     "reason": "handoff_requested",
                                     "session_id": session_id,
@@ -274,6 +438,7 @@ async def stream_agent(
                             call_id, name, args = _extract_tool_call(item)
                             display_args = force_chat_dry_run(name, args)
                             pending_calls[call_id] = (name, display_args)
+                            recorder.record_tool_call(call_id, name, display_args)
                             yield _sse(
                                 "tool_call",
                                 {
@@ -299,6 +464,7 @@ async def stream_agent(
                                 resolved = next(iter(pending_calls), None) or "tool"
                             name, _ = pending_calls.pop(resolved, ("unknown", {}))
                             result_payload = _extract_tool_result(item)
+                            recorder.record_tool_result(resolved, name, result_payload)
                             yield _sse(
                                 "tool_result",
                                 {
@@ -319,6 +485,7 @@ async def stream_agent(
                                 [item]
                             )
                             if isinstance(text, str) and text.strip():
+                                recorder.record_token(text)
                                 yield _sse("token", {"text": text, "session_id": session_id})
 
                 if result.run_loop_task is not None:
@@ -385,6 +552,8 @@ async def stream_agent(
             "error",
             {"message": f"{exc_name}: {exc}", "session_id": session_id},
         )
+
+    recorder.finalize()
 
     record_usage(tokens=total_tokens, cost_usd=total_cost)
     logger.info(

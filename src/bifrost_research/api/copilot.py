@@ -9,13 +9,15 @@ POST /research/copilot/dismiss  → mark proposed write as rejected in ai_action
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from bifrost_research.auth.deps import require_owner
 from bifrost_research.copilot.approvals import (
     ApprovalError,
     issue_token,
@@ -91,7 +93,11 @@ def copilot_usage() -> dict[str, Any]:
 
 
 @router.post("/stream")
-async def copilot_stream(body: CopilotStreamBody, request: Request) -> StreamingResponse:
+async def copilot_stream(
+    body: CopilotStreamBody,
+    request: Request,
+    owner_id: str = Depends(require_owner),
+) -> StreamingResponse:
     snap = check_rate_limit()
     if snap is None:
         raise HTTPException(
@@ -109,6 +115,7 @@ async def copilot_stream(body: CopilotStreamBody, request: Request) -> Streaming
 
     async def event_gen():
         sid = body.session_id
+        turn_buffer: list[dict[str, Any]] = []
         async for frame in orchestrate(
             messages=messages,
             model=body.model,
@@ -116,16 +123,20 @@ async def copilot_stream(body: CopilotStreamBody, request: Request) -> Streaming
             session_id=sid,
             provider=provider,
             mcp=mcp,
+            turn_buffer=turn_buffer,
         ):
             if await request.is_disconnected():
                 break
             yield frame
-        _persist_session_best_effort(
+        sid = _persist_turn_best_effort(
             session_id=sid,
             model=body.model,
-            messages=messages,
-            resume=body.resume,
+            turn_frames=turn_buffer,
+            owner_id=owner_id,
         )
+        if sid and sid != body.session_id:
+            # Minted UUID — append to final done frame if stream ended without disconnect.
+            yield f"data: {json.dumps({'event': 'session_id', 'session_id': sid})}\n\n"
 
     return StreamingResponse(
         event_gen(),
@@ -346,47 +357,41 @@ def copilot_dismiss(body: DismissBody) -> dict[str, Any]:
     return {"ok": True, "data": {"action": action_row, "status": "rejected"}}
 
 
-def _persist_session_best_effort(
+def _persist_turn_best_effort(
     *,
     session_id: str | None,
     model: str,
-    messages: list[dict[str, Any]],
-    resume: bool,
-) -> None:
-    """Upsert copilot_session after a completed stream (best-effort)."""
-    if not messages:
-        return
+    turn_frames: list[dict[str, Any]],
+    owner_id: str = "owner",
+) -> str | None:
+    """Persist full turn frames after SSE completes (RS-KB1). Returns canonical session id."""
+    if not turn_frames:
+        return session_id
     try:
         conn = connect()
         try:
-            user_msgs = [m for m in messages if m.get("role") == "user"]
-            title = session_repo.derive_title(
-                str(user_msgs[0].get("content", "")) if user_msgs else ""
-            )
-            serialized = [
-                {"role": m.get("role"), "content": m.get("content", "")} for m in messages
-            ]
-            if session_id:
-                existing = session_repo.get_session(conn, session_id)
-                if existing:
-                    session_repo.append_message(
-                        conn,
-                        session_id,
-                        serialized[-1],
-                        title=existing.get("title") or title,
-                    )
-                    return
-            session_repo.create_session(
+            sid = session_repo.ensure_session(
                 conn,
-                model=model,
-                title=title,
-                messages=serialized,
                 session_id=session_id,
+                model=model,
+                owner_id=owner_id,
             )
+            user_text = ""
+            for frame in turn_frames:
+                if frame.get("kind") == "text" and frame.get("role") == "user":
+                    user_text = str(frame.get("content", ""))
+                    break
+            title = session_repo.derive_title(user_text) if user_text else None
+            existing = session_repo.get_session(conn, sid, owner_id=owner_id)
+            if existing and existing.get("title"):
+                title = None
+            session_repo.append_turn(conn, sid, turn_frames, title=title)
+            return sid
         finally:
             conn.close()
     except Exception:  # noqa: BLE001
-        logger.exception("copilot_session persist failed (non-fatal)")
+        logger.exception("copilot_session turn persist failed (non-fatal)")
+        return session_id
 
 
 __all__ = ["router"]

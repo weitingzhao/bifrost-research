@@ -17,9 +17,10 @@ import logging
 import os
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
+from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.repositories import ai_action_log as action_repo
 from bifrost_research.repositories import ai_draft as draft_repo
@@ -125,8 +126,12 @@ class ApproveBody(BaseModel):
 
 
 @drafts_router.post("/{draft_id}/approve")
-def approve_draft(draft_id: str, body: ApproveBody | None = None) -> dict[str, Any]:
-    approved_by = (body.approved_by if body else "owner") or "owner"
+def approve_draft(
+    draft_id: str,
+    body: ApproveBody | None = None,
+    owner_id: str = Depends(require_owner),
+) -> dict[str, Any]:
+    approved_by = (body.approved_by if body else owner_id) or owner_id
     conn = connect()
     try:
         draft = draft_repo.get_draft(conn, draft_id)
@@ -175,6 +180,34 @@ def approve_draft(draft_id: str, body: ApproveBody | None = None) -> dict[str, A
                     executed["note"] = "create_hypothesis true but title/thesis missing"
             else:
                 executed["note"] = "morning_brief approved (note only; no hypothesis write)"
+
+        elif draft["kind"] == "playbook_rule":
+            from bifrost_research.repositories import playbook as playbook_repo
+
+            rule = playbook_repo.create_rule(
+                conn,
+                owner_id=owner_id,
+                title=str(payload.get("title") or "Untitled rule"),
+                category=str(payload.get("category") or "general"),
+                body_md=str(payload.get("body_md") or ""),
+                trigger_ctx=payload.get("trigger_ctx") if isinstance(payload.get("trigger_ctx"), dict) else {},
+                tags=list(payload.get("tags") or []),
+                source_session_id=payload.get("source_session_id"),
+            )
+            executed["playbook_rule"] = rule
+
+        elif draft["kind"] == "playbook_note":
+            from bifrost_research.repositories import playbook as playbook_repo
+
+            note = playbook_repo.create_note(
+                conn,
+                owner_id=owner_id,
+                note_md=str(payload.get("note_md") or ""),
+                tags=list(payload.get("tags") or []),
+                symbols=list(payload.get("symbols") or []),
+                source_session_id=payload.get("source_session_id"),
+            )
+            executed["playbook_note"] = note
 
         updated = draft_repo.update_draft_status(conn, draft_id, status="approved")
         linked = draft.get("linked_action_id")

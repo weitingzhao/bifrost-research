@@ -12,7 +12,15 @@ from typing import Any, Protocol
 from bifrost_research.schema.schemas import TABLE_RESEARCH_AI_DRAFT
 
 _ALLOWED_STATUSES = frozenset({"pending", "approved", "dismissed", "expired"})
-_ALLOWED_KINDS = frozenset({"morning_brief", "eod_verdict", "hypothesis_suggestion"})
+_ALLOWED_KINDS = frozenset(
+    {
+        "morning_brief",
+        "eod_verdict",
+        "hypothesis_suggestion",
+        "playbook_rule",
+        "playbook_note",
+    }
+)
 
 _COLUMNS: tuple[str, ...] = (
     "id",

@@ -17,6 +17,8 @@ WRITE_TOOL_NAMES: tuple[str, ...] = (
     "research.hypothesis.patch",
     "research.hypothesis.retire",
     "research.backtest.run_event_query",
+    "research.playbook.propose_rule",
+    "research.playbook.propose_note",
 )
 
 
