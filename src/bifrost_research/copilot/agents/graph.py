@@ -150,6 +150,26 @@ def build_explain_agent(model_id: str, mcp: MCPServerSse | None = None) -> Agent
     )
 
 
+def build_portfolio_agent(model_id: str, mcp: MCPServerSse | None = None) -> Agent[Any]:
+    """Portfolio specialist (Wave RS-F5).
+
+    Combines live Trade System context (`trade.*` tools) with Research analytics
+    (`research.*` tools) to give holdings-aware answers. D10 remains enforced —
+    the agent may never recommend a live trade.
+    """
+    return _agent(
+        name="portfolio",
+        instructions=_read_instruction(
+            "portfolio",
+            "You combine live portfolio holdings (trade.portfolio.snapshot / "
+            "trade.market.quotes / trade.trading.recent_executions) with Research "
+            "analytics to answer holdings-aware questions. Never suggest live orders.",
+        ),
+        model_id=model_id,
+        mcp=mcp,
+    )
+
+
 def build_verdict_agent(model_id: str, mcp: MCPServerSse | None = None) -> Agent[Any]:
     discovery = build_discovery_agent(model_id, mcp=mcp)
     analyze = build_analyze_agent(model_id, mcp=mcp)
@@ -178,6 +198,7 @@ def build_triage_agent(model_id: str, mcp: MCPServerSse | None = None) -> Agent[
     write = build_write_agent(model_id, mcp=mcp)
     explain = build_explain_agent(model_id)
     verdict = build_verdict_agent(model_id, mcp=mcp)
+    portfolio = build_portfolio_agent(model_id, mcp=mcp)
 
     return _agent(
         name="triage",
@@ -186,7 +207,9 @@ def build_triage_agent(model_id: str, mcp: MCPServerSse | None = None) -> Agent[
             f"{_SYSTEM_BASE}\n\nRoute the user to the best specialist via handoff. "
             "Discovery for SEPA/events; Analyze for VRP/vol; Validate for backtests; "
             "Write for hypothesis/backtest mutations; Explain for concepts; "
-            "Verdict for compose/synthesis questions.",
+            "Verdict for compose/synthesis questions; "
+            "Portfolio for questions about the user's actual holdings, positions, "
+            "recent trades, or 'given my portfolio and current market' advice.",
         ),
         model_id=model_id,
         mcp=mcp,
@@ -197,6 +220,7 @@ def build_triage_agent(model_id: str, mcp: MCPServerSse | None = None) -> Agent[
             handoff(write, tool_description_override="Route to Write specialist"),
             handoff(explain, tool_description_override="Route to Explain specialist"),
             handoff(verdict, tool_description_override="Route to Verdict compose specialist"),
+            handoff(portfolio, tool_description_override="Route to Portfolio specialist"),
         ],
     )
 
@@ -219,6 +243,7 @@ __all__ = [
     "build_analyze_agent",
     "build_discovery_agent",
     "build_explain_agent",
+    "build_portfolio_agent",
     "build_triage_agent",
     "build_validate_agent",
     "build_verdict_agent",

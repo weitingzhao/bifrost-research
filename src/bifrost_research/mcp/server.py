@@ -47,6 +47,13 @@ TOOL_NAMES: tuple[str, ...] = (
     "research.discovery.gex_intraday",
     "research.discovery.flow_sentiment",
     "research.discovery.regime_stats",
+    # trade context — Wave RS-F5 (read-only Trade System bridge)
+    "trade.portfolio.snapshot",
+    "trade.portfolio.risk_summary",
+    "trade.trading.recent_executions",
+    "trade.strategy.instances",
+    "trade.market.watchlist",
+    "trade.market.quotes",
 )
 
 ALL_TOOL_NAMES: tuple[str, ...] = TOOL_NAMES + WRITE_TOOL_NAMES

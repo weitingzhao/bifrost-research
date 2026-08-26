@@ -38,7 +38,8 @@ def test_all_canonical_tools_registered() -> None:
 
 def test_tool_names_follow_convention() -> None:
     for name in TOOL_NAMES:
-        assert name.startswith("research.")
+        # Wave RS-F5: trade.* namespace joins research.* (both read-only bridges).
+        assert name.startswith("research.") or name.startswith("trade.")
         parts = name.split(".")
         assert len(parts) >= 3
 

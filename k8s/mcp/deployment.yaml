@@ -24,7 +24,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: mcp
-          image: 192.168.10.73:30500/bifrost-research:0.17.2
+          image: 192.168.10.73:30500/bifrost-research:0.18.0
           imagePullPolicy: Always
           args: ["python", "scripts/run_mcp.py"]
           envFrom:
@@ -44,6 +44,17 @@ spec:
               value: "bifrost_golden_source"
             - name: ANALYTICS_PG_USER
               value: "analytics_writer"
+            # Wave RS-F5: Trade System read-only bridge (cross-NS cluster DNS)
+            - name: TRADE_API_MONITOR_URL
+              value: "http://api-monitor.bifrost-prod.svc.cluster.local:8765"
+            - name: TRADE_API_TRADING_URL
+              value: "http://api-trading.bifrost-prod.svc.cluster.local:8769"
+            - name: TRADE_API_STRATEGY_URL
+              value: "http://api-strategy.bifrost-prod.svc.cluster.local:8769"
+            - name: TRADE_API_MARKET_URL
+              value: "http://api-market.bifrost-prod.svc.cluster.local:8772"
+            - name: TRADE_API_TIMEOUT
+              value: "8.0"
           ports:
             - name: sse
               containerPort: 8796
