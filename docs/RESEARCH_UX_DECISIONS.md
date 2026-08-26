@@ -33,7 +33,19 @@
 | D-RS-E-g | AI action audit log | `research.ai_action_log` table — **locked** · **implemented** Wave RS-E3 (+ `research.ai_draft`) · **RS-E4** execute/dismiss paths |
 | D-RS-E-h | MCP transport | HTTP + SSE — **locked** · **implemented** Wave RS-E2 (`:8796/sse`) |
 | D-RS-E-i | Cost / rate-limit | Hard daily token cap (`MAX_TOKENS_PER_DAY`) — **locked** · **implemented** Wave RS-E2 (`COPILOT_DAILY_CAP_USD` default $2/day) |
+| D-RS-F-a | Copilot runtime SDK | `openai-agents` (Python) — **locked** by Owner 2026-08-25; plan `docs/plans/RESEARCH_COPILOT_V2_PLAN.md`; F1 rewrites `orchestrator.py` on top of `Agent` + `Runner.run_streamed` |
+| D-RS-F-b | MCP transport (RS-F) | Keep current **SSE** `:8796/sse` for RS-F (SDK `MCPServerSse` supports it); Streamable HTTP migration deferred to RS-G-optional — **locked** |
+| D-RS-F-c | Default Copilot model | User preference persisted in `localStorage` · **default `deepseek-chat`** (Owner has key, ~10× cheaper than Claude/GPT); per-session override in Cockpit Settings — **locked** |
+| D-RS-F-d | DeepSeek transport | **Direct API** `https://api.deepseek.com/v1` (OpenAI-compatible) via `DEEPSEEK_API_KEY` — **locked** by Owner 2026-08-25; not routed through Hermes |
+| D-RS-F-e | Multi-agent topology | Hybrid: Triage Agent with `handoffs` to 5 specialists (Discovery / Analyze / Validate / Write / Explain / Verdict) + Verdict Agent uses Discovery/Analyze/Validate as `Agent.as_tool()` for compose — **locked** |
+| D-RS-F-f | SSE event schema | **Extend** current schema with new events (`agent_handoff`, `guardrail`); existing FE ignores unknown events (back-compat) — **locked** |
+| D-RS-F-g | Session storage | New table `research.copilot_session` (jsonb `messages`, 30-day TTL, FK optional → `research.hypothesis`); enables resume from Cockpit Sessions sidebar — **locked** |
+| D-RS-F-h | Guardrail strictness | **Hard reject** on D10 patterns (input + output) via SDK `InputGuardrail` / `OutputGuardrail`; tripwire yields SSE `error {code: "D10_FREEZE"}` and audit log row — **locked**, non-negotiable |
+| D-RS-F-i | Cockpit form-factor v2 | User toggle in Settings: `Overlay` (default; current non-modal `RightInspectorShell`) vs `Dock` (main content shifts 400 px left) — **locked** |
+| D-RS-F-j | Tracing sink | Stdout for dev + JSONL rotation for prod; optional OTLP via `RESEARCH_COPILOT_OTLP_ENDPOINT` env — **locked** |
 
 Override via env / spine when Owner changes policy.
 
 > **Wave RS-E note**: **Complete** — E1 Static Cockpit · E2 Copilot + MCP · E3 Morning/EOD + Inbox · E4 interactive writes (diff + approve). See `docs/COCKPIT_RUNBOOK.md`.
+
+> **Wave RS-F note**: **Planned** (2026-08-25) — Copilot v2 migrates runtime to OpenAI Agents SDK, adds DeepSeek as default model, splits into Triage + 5 specialists with handoffs, enforces D10 guardrails, persists sessions. Ops / Hermes untouched (Owner decision — new chat for Ops-side unification). Plan: `docs/plans/RESEARCH_COPILOT_V2_PLAN.md`; targets **bifrost-research 0.17.0**.
