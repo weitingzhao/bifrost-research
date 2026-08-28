@@ -261,17 +261,41 @@ def list_recent(
     *,
     owner_id: str = "owner",
     limit: int = 20,
+    q: str | None = None,
 ) -> list[dict[str, Any]]:
+    """Recent active sessions, newest first (pinned on top).
+
+    `q` filters on title **and message content** (program research-copilot-reach
+    P2).  Title-only search was not enough: the observed failure mode is asking
+    the same question twice because an answer buried in an old thread cannot be
+    found — the words the user remembers are in the conversation body, not the
+    auto-generated title.
+
+    `messages::text ILIKE` is adequate at single-owner volume. If session counts
+    reach the thousands, revisit with a GIN index on a `to_tsvector` expression;
+    deliberately not pre-optimised here.
+    """
+    where = ["owner_id = %s", "status = 'active'"]
+    params: list[Any] = [owner_id]
+
+    term = (q or "").strip()
+    if term:
+        where.append("(title ILIKE %s OR messages::text ILIKE %s)")
+        like = f"%{term}%"
+        params.extend([like, like])
+
+    params.append(limit)
+
     with conn.cursor() as cur:
         cur.execute(
             f"""
             SELECT {_SELECT_COLS}
             FROM {TABLE_RESEARCH_COPILOT_SESSION}
-            WHERE owner_id = %s AND status = 'active'
+            WHERE {" AND ".join(where)}
             ORDER BY pinned DESC, updated_at DESC
             LIMIT %s
             """,
-            (owner_id, limit),
+            tuple(params),
         )
         rows = cur.fetchall()
     return [_serialize(_row(r, _COLUMNS)) for r in rows]

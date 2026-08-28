@@ -17,6 +17,7 @@ from bifrost_research.mcp.server import TOOL_NAMES, create_mcp_server
 class _ScriptedProvider:
     def __init__(self, turns: list[ProviderTurn]) -> None:
         self._turns = list(turns)
+        self.seen_messages: list[list[dict[str, Any]]] = []
 
     def complete(
         self,
@@ -25,6 +26,7 @@ class _ScriptedProvider:
         tools: list[ToolSpec],
         model: str,
     ) -> ProviderTurn:
+        self.seen_messages.append(list(messages))
         if not self._turns:
             return ProviderTurn(text="(exhausted)", cost_usd=0.0)
         return self._turns.pop(0)
@@ -216,6 +218,93 @@ def test_rate_limit_429() -> None:
         )
         assert res.status_code == 429
         assert "Retry-After" in res.headers
+
+
+def test_stream_without_client_context_matches_legacy(client: TestClient) -> None:
+    res = client.post(
+        "/research/copilot/stream",
+        json={
+            "messages": [{"role": "user", "content": "List active NVDA hypotheses"}],
+            "model": "claude-4.5-sonnet",
+            "max_tools": 8,
+            "session_id": "test-no-ctx",
+        },
+    )
+    assert res.status_code == 200
+    events = _parse_sse(res.text)
+    assert "done" in [e.get("event") for e in events]
+    provider = client.app.state.copilot_provider
+    assert provider.seen_messages
+    first = provider.seen_messages[0]
+    assert not any(
+        str(m.get("content", "")).startswith("Client view context:") for m in first
+    )
+    user_msgs = [m for m in first if m.get("role") == "user"]
+    assert user_msgs[-1]["content"] == "List active NVDA hypotheses"
+
+
+def test_stream_injects_client_context_system_message(client: TestClient) -> None:
+    res = client.post(
+        "/research/copilot/stream",
+        json={
+            "messages": [{"role": "user", "content": "What is VRP?"}],
+            "model": "claude-4.5-sonnet",
+            "client_context": {
+                "origin_page": "vrp-lab",
+                "origin_label": "VRP Lab",
+                "symbol": "AAPL",
+                "date": "2026-08-27",
+                "panel": "term-structure",
+                "snapshot": {
+                    "vrp": 0.12,
+                    "api_key": "sk-secret-should-not-leak",
+                    "token": "abc-token",
+                },
+                "suggested_prompt": "Explain AAPL VRP",
+            },
+        },
+    )
+    assert res.status_code == 200
+    provider = client.app.state.copilot_provider
+    assert provider.seen_messages
+    first = provider.seen_messages[0]
+    ctx_msgs = [
+        m
+        for m in first
+        if m.get("role") == "system"
+        and str(m.get("content", "")).startswith("Client view context:")
+    ]
+    assert len(ctx_msgs) == 1
+    content = ctx_msgs[0]["content"]
+    assert content.startswith("Client view context: ")
+    assert "origin=VRP Lab (vrp-lab)" in content
+    assert "symbol=AAPL" in content
+    assert "date=2026-08-27" in content
+    assert "panel=term-structure" in content
+    assert "snapshot=" in content
+    assert '"vrp":0.12' in content
+    assert "suggested_prompt=Explain AAPL VRP" in content
+    assert "sk-secret-should-not-leak" not in content
+    assert "abc-token" not in content
+    user_msgs = [m for m in first if m.get("role") == "user"]
+    assert user_msgs[-1]["content"] == "What is VRP?"
+    assert "Client view context:" not in user_msgs[-1]["content"]
+
+
+def test_stream_empty_client_context_is_noop(client: TestClient) -> None:
+    res = client.post(
+        "/research/copilot/stream",
+        json={
+            "messages": [{"role": "user", "content": "hello"}],
+            "client_context": {},
+        },
+    )
+    assert res.status_code == 200
+    provider = client.app.state.copilot_provider
+    first = provider.seen_messages[0]
+    assert not any(
+        str(m.get("content", "")).startswith("Client view context:") for m in first
+    )
 
 
 def test_missing_key_streams_error() -> None:

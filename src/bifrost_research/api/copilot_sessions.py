@@ -52,12 +52,14 @@ def _summary(row: dict[str, Any]) -> dict[str, Any]:
 @router.get("")
 def list_sessions(
     limit: int = 20,
+    q: str | None = None,
     owner_id: str = Depends(require_owner),
 ) -> SessionListResponse:
+    """List recent sessions. `q` full-text filters title + message content."""
     limit = max(1, min(limit, 50))
     conn = connect()
     try:
-        rows = session_repo.list_recent(conn, owner_id=owner_id, limit=limit)
+        rows = session_repo.list_recent(conn, owner_id=owner_id, limit=limit, q=q)
     finally:
         conn.close()
     return SessionListResponse(rows=[_summary(r) for r in rows])

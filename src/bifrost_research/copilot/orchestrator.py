@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from bifrost_research.copilot.agent_runtime import stream_agent
+from bifrost_research.copilot.client_context import inject_client_context_message
 from bifrost_research.copilot.orchestrator_legacy import (
     execute_approved_write as _legacy_execute,
 )
@@ -29,11 +30,13 @@ async def orchestrate(
     provider: LlmProvider | None = None,
     mcp: Any | None = None,
     turn_buffer: list[dict[str, Any]] | None = None,
+    client_context: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     """Yield SSE frames: token | tool_call | tool_result | error | done | agent_handoff."""
+    agent_messages = inject_client_context_message(messages, client_context)
     if provider is not None:
         async for frame in _legacy_orchestrate(
-            messages=messages,
+            messages=agent_messages,
             model=model,
             max_tools=max_tools,
             session_id=session_id,
@@ -44,7 +47,7 @@ async def orchestrate(
         return
 
     async for frame in stream_agent(
-        messages=messages,
+        messages=agent_messages,
         model_id=model,
         session_id=session_id,
         owner_id=owner_id,

@@ -81,13 +81,16 @@ EVENT_RADAR_INPUT_DIR ?= $(HOME)/Desktop/stocks/Research-workspace/事件雷达�
 event-radar-ingest:
 	EVENT_RADAR_INPUT_DIR="$(EVENT_RADAR_INPUT_DIR)" python -m bifrost_research.scheduler.event_radar
 
+IMAGE_VERSION ?= 0.30.0
+REGISTRY ?= 192.168.10.73:30500
+
 build-image:
-	docker build --platform linux/amd64 --target base -t bifrost-research:0.17.2 -f Dockerfile .
+	docker build --platform linux/amd64 --target base -t bifrost-research:$(IMAGE_VERSION) -f Dockerfile .
 	docker build --platform linux/amd64 --target base -t bifrost-research:latest -f Dockerfile .
-	docker tag bifrost-research:0.17.2 192.168.10.73:30500/bifrost-research:0.17.2
-	docker tag bifrost-research:latest 192.168.10.73:30500/bifrost-research:latest
-	docker push 192.168.10.73:30500/bifrost-research:0.17.2
-	docker push 192.168.10.73:30500/bifrost-research:latest
+	docker tag bifrost-research:$(IMAGE_VERSION) $(REGISTRY)/bifrost-research:$(IMAGE_VERSION)
+	docker tag bifrost-research:latest $(REGISTRY)/bifrost-research:latest
+	docker push $(REGISTRY)/bifrost-research:$(IMAGE_VERSION)
+	docker push $(REGISTRY)/bifrost-research:latest
 
 build-image-dagster:
 	docker build --platform linux/amd64 --target orchestration -t bifrost-research:0.8.0-dagster -f Dockerfile .

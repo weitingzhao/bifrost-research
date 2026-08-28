@@ -24,7 +24,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: api
-          image: 192.168.10.73:30500/bifrost-research:0.28.1
+          image: 192.168.10.73:30500/bifrost-research:0.30.0
           imagePullPolicy: Always
           args: ["python", "scripts/run_api.py"]
           envFrom:

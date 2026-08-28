@@ -176,7 +176,11 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
-- 版本：`0.23.2`（Wave RS-KB QA · Q6 — `GET /research/copilot/models` 只返回后端实际配置的 provider（DEV cluster 只暴露 DeepSeek Chat / Reasoner），每个模型带中文 `note` 说明；前端 composer + Settings 从这个端点拉列表）
+- 版本：`0.30.0`（program research-copilot-reach — `GET /research/copilot/sessions` 新增 `q` 全文检索（title + messages 内容）；
+  新增 3 个 Trade 只读 MCP 工具 `trade.strategy.gate_safety` / `trade.trading.position_attribution` / `trade.trading.performance`）
+- 历史：`0.29.0`（Copilot `POST /research/copilot/stream` 可选 `client_context` — 注入 ephemeral system message，不写入 session 用户 turn）
+- 历史：`0.28.1`（package version at Phase 1 start）
+- 历史：`0.23.2`（Wave RS-KB QA · Q6 — `GET /research/copilot/models` 只返回后端实际配置的 provider（DEV cluster 只暴露 DeepSeek Chat / Reasoner），每个模型带中文 `note` 说明；前端 composer + Settings 从这个端点拉列表）
 - 历史：`0.23.1`（Wave RS-KB QA — session `group_name` 列 + PATCH group/clear_group；stream `finally` flush-on-cancel（Stop 按钮 partial turn 落库））
 - 历史：`0.23.0`（Wave RS-KB1→RS-KB5 — 全量 chat memory (turn frames)、multi-user bearer、Playbook rules/cases/notes、Curator agent、pgvector embedding stub）
 - 历史：`0.18.2`（Wave RS-UX5 — 修复 tool_result `call_id` 匹配（PENDING 悬挂 root cause）+ MCP text envelope unwrap；`copilot_session.pinned` 列 + `update_metadata` + PATCH endpoint（rename/pin））

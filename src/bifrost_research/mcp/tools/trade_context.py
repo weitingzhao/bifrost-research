@@ -235,3 +235,89 @@ def register(mcp: FastMCP) -> None:
             return {"quotes": quotes, "count": len(quotes), "symbols": cleaned}
 
         return _safe(_run)
+
+    @mcp.tool(
+        name="trade.strategy.gate_safety",
+        description=(
+            "Safety gate (guard) configuration for strategies — which gates exist, "
+            "their six dimensions, and whether each is active. Use this to answer "
+            "'why did the daemon not open this position?' or 'what is currently "
+            "blocking entries?'. Under spine D10 the daemon is frozen, so this is "
+            "the observation surface for entry gating. "
+            f"{READ_ONLY_SUFFIX}"
+        ),
+    )
+    def strategy_gate_safety(active_only: bool = False) -> dict[str, Any]:
+        def _run() -> dict[str, Any]:
+            data = get(base_strategy(), "/strategies/gate-safety")
+            items = (data or {}).get("items") if isinstance(data, dict) else None
+            if items is None and isinstance(data, list):
+                items = data
+            items = items or []
+            if active_only:
+                items = [g for g in items if g.get("is_active")]
+            return {
+                "gates": items,
+                "count": len(items),
+                "active_count": sum(1 for g in items if g.get("is_active")),
+            }
+
+        return _safe(_run)
+
+    @mcp.tool(
+        name="trade.trading.position_attribution",
+        description=(
+            "Per-position attribution linking executions to the positions they "
+            "opened/closed. Use for 'how did this position come about?' and "
+            "close-out review. "
+            f"{READ_ONLY_SUFFIX}"
+        ),
+    )
+    def trading_position_attribution(limit: int = 50) -> dict[str, Any]:
+        def _run() -> dict[str, Any]:
+            data = get(base_trading(), "/executions/position-attribution")
+            rows = (data or {}).get("attributions") if isinstance(data, dict) else None
+            if rows is None and isinstance(data, list):
+                rows = data
+            rows = rows or []
+            capped = max(1, min(limit, 200))
+            return {
+                "attributions": rows[:capped],
+                "count": len(rows[:capped]),
+                "total_available": len(rows),
+            }
+
+        return _safe(_run)
+
+    @mcp.tool(
+        name="trade.trading.performance",
+        description=(
+            "Realized P&L summary and breakdowns (by account, sec type, strategy "
+            "opportunity / instance). Returns aggregates only — the raw "
+            "transaction ledger is deliberately excluded to keep the payload small; "
+            "use trade.trading.recent_executions for individual fills. "
+            f"{READ_ONLY_SUFFIX}"
+        ),
+    )
+    def trading_performance() -> dict[str, Any]:
+        def _run() -> dict[str, Any]:
+            data = get(base_trading(), "/performance")
+            if not isinstance(data, dict):
+                return {"summary": {}, "note": "unexpected payload shape"}
+            # `transactions` is ~100+ rows of raw ledger; keep the aggregates and
+            # report the count so the model knows detail exists behind another tool.
+            txns = data.get("transactions")
+            return {
+                "summary": data.get("summary", {}),
+                "realized_by_account": data.get("realized_by_account", []),
+                "realized_by_sec_type": data.get("realized_by_sec_type", []),
+                "realized_by_strategy_opportunity": data.get(
+                    "realized_by_strategy_opportunity", []
+                ),
+                "realized_by_strategy_instance": data.get(
+                    "realized_by_strategy_instance", []
+                ),
+                "transaction_count": len(txns) if isinstance(txns, list) else None,
+            }
+
+        return _safe(_run)

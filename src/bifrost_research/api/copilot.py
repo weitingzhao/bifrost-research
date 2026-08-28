@@ -47,6 +47,18 @@ class CopilotMessage(BaseModel):
     name: str | None = None
 
 
+class ClientContext(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    origin_page: str | None = None
+    origin_label: str | None = None
+    symbol: str | None = None
+    date: str | None = None
+    panel: str | None = None
+    snapshot: dict[str, Any] | None = None
+    suggested_prompt: str | None = None
+
+
 class CopilotStreamBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -55,6 +67,7 @@ class CopilotStreamBody(BaseModel):
     max_tools: int = Field(default=8, ge=0, le=32)
     session_id: str | None = None
     resume: bool = False
+    client_context: ClientContext | None = None
 
 
 class ApproveBody(BaseModel):
@@ -336,6 +349,9 @@ async def copilot_stream(
                 provider=provider,
                 mcp=mcp,
                 turn_buffer=turn_buffer,
+                client_context=(
+                    None if body.client_context is None else body.client_context.model_dump()
+                ),
             ):
                 if await request.is_disconnected():
                     break
@@ -616,4 +632,4 @@ def _persist_turn_best_effort(
         return session_id
 
 
-__all__ = ["router"]
+__all__ = ["ClientContext", "CopilotMessage", "CopilotStreamBody", "router"]
