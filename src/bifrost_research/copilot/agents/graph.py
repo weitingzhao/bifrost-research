@@ -261,6 +261,19 @@ def build_curator_agent(
     )
 
 
+def build_loop_curator_agent(
+    model_id: str,
+    mcp: MCPServerSse | None = None,
+    owner_id: str | None = None,
+) -> Agent[Any]:
+    return _agent(
+        name="loop_curator",
+        instructions=_assembled_instruction("loop_curator", owner_id),
+        model_id=model_id,
+        mcp=mcp,
+    )
+
+
 def build_verdict_agent(
     model_id: str,
     mcp: MCPServerSse | None = None,
@@ -295,6 +308,7 @@ def build_triage_agent(
     verdict = build_verdict_agent(model_id, mcp=mcp, owner_id=owner_id)
     portfolio = build_portfolio_agent(model_id, mcp=mcp, owner_id=owner_id)
     curator = build_curator_agent(model_id, mcp=mcp, owner_id=owner_id)
+    loop_curator = build_loop_curator_agent(model_id, mcp=mcp, owner_id=owner_id)
 
     return _agent(
         name="triage",
@@ -310,6 +324,12 @@ def build_triage_agent(
             handoff(verdict, tool_description_override="Route to Verdict compose specialist"),
             handoff(portfolio, tool_description_override="Route to Portfolio specialist"),
             handoff(curator, tool_description_override="Route to Curator playbook specialist"),
+            handoff(
+                loop_curator,
+                tool_description_override=(
+                    "Route to Loop Curator for candidate→hypothesis→decision workflow"
+                ),
+            ),
         ],
     )
 
@@ -336,6 +356,7 @@ __all__ = [
     "build_curator_agent",
     "build_discovery_agent",
     "build_explain_agent",
+    "build_loop_curator_agent",
     "build_portfolio_agent",
     "build_triage_agent",
     "build_validate_agent",

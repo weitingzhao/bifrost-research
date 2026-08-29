@@ -54,6 +54,26 @@ def _row_dict(row: Any, columns: Sequence[str]) -> dict[str, Any]:
     return out
 
 
+def _extract_hourly_realized(stats_json: Any) -> list[dict[str, Any]] | None:
+    """Pull realized hourly closes from settlement ``stats_json.hourly_close``."""
+    if not isinstance(stats_json, dict):
+        return None
+    hourly_close = stats_json.get("hourly_close")
+    if not isinstance(hourly_close, list) or not hourly_close:
+        return None
+    out: list[dict[str, Any]] = []
+    for item in hourly_close:
+        if isinstance(item, dict):
+            out.append(dict(item))
+    return out or None
+
+
+def _enrich_settlement_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Attach ``hourly_realized`` from stats_json; ``hourly_json`` stays forecast path."""
+    row["hourly_realized"] = _extract_hourly_realized(row.get("stats_json"))
+    return row
+
+
 def _connect_or_503() -> Any:
     try:
         return connect()
@@ -277,6 +297,48 @@ def get_terrain(
             "symbol": sym,
             "trade_date": resolved.isoformat() if resolved else None,
         }
+    finally:
+        conn.close()
+
+
+@router.get("/forecast/terrain/history")
+def get_terrain_history(
+    symbol: str = Query(...),
+    limit: int = Query(30, ge=1, le=200),
+) -> dict[str, Any]:
+    """Analyze C.3 / B.6 — recent terrain daily rows ordered by trade_date DESC."""
+    conn = _connect_or_503()
+    cols = (
+        "symbol",
+        "trade_date",
+        "pin_score",
+        "trend_release",
+        "vol_squeeze",
+        "tail_risk",
+        "expected_close",
+        "gamma_zone_low",
+        "gamma_zone_high",
+        "regime",
+        "spot",
+        "inputs_json",
+        "computed_at",
+    )
+    sym = symbol.strip().upper()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT {', '.join(cols)}
+                FROM features.stock_forecast_terrain_daily
+                WHERE symbol = %s
+                ORDER BY trade_date DESC
+                LIMIT %s
+                """,
+                (sym, limit),
+            )
+            raw = cur.fetchall() or []
+        rows = [_row_dict(r, cols) for r in raw]
+        return {"symbol": sym, "rows": rows, "count": len(rows)}
     finally:
         conn.close()
 
@@ -875,10 +937,111 @@ def get_forecast_settlement(
         with conn.cursor() as cur:
             cur.execute(sql, tuple(params))
             raw = cur.fetchall() or []
-        rows = [_row_dict(r, cols) for r in raw]
+        rows = [_enrich_settlement_row(_row_dict(r, cols)) for r in raw]
     finally:
         conn.close()
     return {"rows": rows, "count": len(rows)}
+
+
+@router.get("/forecast/hit-rate")
+def forecast_hit_rate(
+    symbol: str = Query(..., min_length=1, max_length=32),
+    lookback_days: int = Query(30, ge=1, le=365),
+) -> dict[str, Any]:
+    """Analyze C.1 — hit-rate summary from existing ``stock_backtest_settlement``.
+
+    Does not create a duplicate realized table; path_hit / close_miss already live
+    on ``features.stock_backtest_settlement``.
+    """
+    conn = _connect_or_503()
+    sym = symbol.strip().upper()
+    summary_cols = (
+        "settlement_id",
+        "session_id",
+        "symbol",
+        "trade_date",
+        "expected_close",
+        "actual_close",
+        "close_miss_pct",
+        "path_hit",
+        "stats_json",
+        "computed_at",
+    )
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*)::bigint AS session_count,
+                    ROUND(
+                        AVG(CASE WHEN path_hit THEN 1.0 ELSE 0.0 END)::numeric, 4
+                    ) AS path_hit_rate,
+                    ROUND(AVG(ABS(close_miss_pct))::numeric, 6) AS avg_close_miss_pct,
+                    ROUND(
+                        AVG(
+                            CASE
+                                WHEN stats_json ? 'direction_hit'
+                                THEN CASE
+                                    WHEN (stats_json->>'direction_hit')::boolean THEN 1.0
+                                    ELSE 0.0
+                                END
+                                ELSE NULL
+                            END
+                        )::numeric,
+                        4
+                    ) AS direction_hit_rate
+                FROM features.stock_backtest_settlement
+                WHERE symbol = %s
+                  AND trade_date >= CURRENT_DATE - (%s::integer)
+                """,
+                (sym, lookback_days),
+            )
+            agg = cur.fetchone()
+            cur.execute(
+                f"""
+                SELECT {', '.join(summary_cols)}
+                FROM features.stock_backtest_settlement
+                WHERE symbol = %s
+                  AND trade_date >= CURRENT_DATE - (%s::integer)
+                ORDER BY trade_date DESC, computed_at DESC
+                LIMIT 50
+                """,
+                (sym, lookback_days),
+            )
+            raw = cur.fetchall() or []
+        if agg is None or isinstance(agg, Mapping):
+            session_count = int((agg or {}).get("session_count") or 0) if isinstance(agg, Mapping) else 0
+            path_hit_rate = float((agg or {}).get("path_hit_rate") or 0) if isinstance(agg, Mapping) else 0.0
+            avg_close_miss_pct = (
+                float((agg or {}).get("avg_close_miss_pct") or 0) if isinstance(agg, Mapping) else 0.0
+            )
+            direction_hit_rate = (
+                float((agg or {}).get("direction_hit_rate") or 0)
+                if isinstance(agg, Mapping) and (agg or {}).get("direction_hit_rate") is not None
+                else None
+            )
+        else:
+            session_count = int(agg[0] or 0)
+            path_hit_rate = float(agg[1] or 0)
+            avg_close_miss_pct = float(agg[2] or 0)
+            direction_hit_rate = float(agg[3]) if agg[3] is not None else None
+        rows = [_row_dict(r, summary_cols) for r in raw]
+        # Flatten direction_hit onto row summaries when present
+        for item in rows:
+            stats = item.get("stats_json")
+            if isinstance(stats, dict) and "direction_hit" in stats:
+                item["direction_hit"] = stats.get("direction_hit")
+        return {
+            "symbol": sym,
+            "lookback_days": lookback_days,
+            "session_count": session_count,
+            "path_hit_rate": path_hit_rate,
+            "avg_close_miss_pct": avg_close_miss_pct,
+            "direction_hit_rate": direction_hit_rate,
+            "rows": rows,
+        }
+    finally:
+        conn.close()
 
 
 @router.post("/forecast/settle")
@@ -993,7 +1156,7 @@ def get_settlement_summary(
         with conn.cursor() as cur:
             cur.execute(sql, tuple(params))
             raw = cur.fetchall() or []
-        rows = [_row_dict(r, cols) for r in raw]
+        rows = [_enrich_settlement_row(_row_dict(r, cols)) for r in raw]
     finally:
         conn.close()
     return {"rows": rows, "count": len(rows)}

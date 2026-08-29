@@ -133,14 +133,31 @@ def test_extremes_rejects_unknown_bucket() -> None:
     assert r.status_code == 422
 
 
+def _collect_paths(app) -> set[str]:
+    """FastAPI ≥0.115 wraps included routers in `_IncludedRouter`; walk both
+    `.routes` (regular Mount/Router) and `.original_router.routes` (IncludedRouter)."""
+    paths: set[str] = set()
+
+    def _walk(routes) -> None:
+        for r in routes:
+            p = getattr(r, "path", None)
+            if isinstance(p, str):
+                paths.add(p)
+            sub = getattr(r, "routes", None)
+            if sub is None:
+                orig = getattr(r, "original_router", None)
+                if orig is not None:
+                    sub = getattr(orig, "routes", None)
+            if sub:
+                _walk(sub)
+
+    _walk(app.routes)
+    return paths
+
+
 def test_router_registered_in_app() -> None:
     """Guard: `/research/vrp/*` prefix must be part of create_app()."""
-    app = create_app()
-    paths: set[str] = set()
-    for route in app.routes:
-        path = getattr(route, "path", None)
-        if isinstance(path, str):
-            paths.add(path)
+    paths = _collect_paths(create_app())
     assert "/research/vrp/latest" in paths
     assert "/research/vrp/history" in paths
     assert "/research/vrp/extremes" in paths

@@ -19,6 +19,11 @@ _ALLOWED_KINDS = frozenset(
         "hypothesis_suggestion",
         "playbook_rule",
         "playbook_note",
+        # Wave C / A / O — Research Loop
+        "candidate_batch",
+        "hypothesis_draft",
+        "decision_draft",
+        "order_intent",
     }
 )
 

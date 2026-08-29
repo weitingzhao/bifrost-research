@@ -19,6 +19,11 @@ WRITE_TOOL_NAMES: tuple[str, ...] = (
     "research.backtest.run_event_query",
     "research.playbook.propose_rule",
     "research.playbook.propose_note",
+    # Wave C — Research Loop
+    "research.loop.propose_candidate",
+    "research.loop.promote_to_hypothesis",
+    "research.loop.attach_backtest_evidence",
+    "research.loop.draft_decision",
 )
 
 

@@ -45,9 +45,15 @@ RESEARCH_TABLES = (
     "option_metric_gex_intraday",
     "stock_signal_sepa_daily",
     "stock_signal_vrp_daily",
+    "stock_signal_canonical_pnl_daily",
+    "option_iv_reconstructed_daily",
     "option_surface_fit_daily",
     "option_surface_residual_daily",
     "option_metric_vanna_charm_daily",
+    "stock_signal_playbook_trigger_intraday",
+    "stock_signal_scan_daily",
+    "stock_signal_lens_hit_daily",
+    "stock_signal_alert_daily",
 )
 
 # Retired bare + prefixed legacy view schema names — cleaned on db-init.
@@ -488,6 +494,96 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
     except Exception:
         # pgvector not available — keyword search fallback (RS-KB5)
         pass
+
+    # --- Wave Loop v1: research.candidate_pool ---
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.candidate_pool (
+            id            text        PRIMARY KEY,
+            trade_date    date        NOT NULL,
+            symbol        text        NOT NULL,
+            source        text        NOT NULL,
+            source_ref    jsonb,
+            score         numeric,
+            lens_snapshot jsonb       NOT NULL DEFAULT '{{}}'::jsonb,
+            tags          text[]      NOT NULL DEFAULT '{{}}'::text[],
+            status        text        NOT NULL DEFAULT 'open'
+                          CHECK (status IN ('open','promoted','dismissed','expired')),
+            hypothesis_id text        REFERENCES {SCHEMA_RESEARCH}.hypothesis(id)
+                                      ON DELETE SET NULL,
+            owner_id      text        NOT NULL DEFAULT 'owner',
+            created_at    timestamptz NOT NULL DEFAULT now(),
+            ttl_at        timestamptz
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS candidate_pool_open
+        ON {SCHEMA_RESEARCH}.candidate_pool (owner_id, status, trade_date DESC)
+        WHERE status = 'open'
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS candidate_pool_symbol
+        ON {SCHEMA_RESEARCH}.candidate_pool (symbol, trade_date DESC)
+        """
+    )
+
+    # --- Wave Harness: research.objective + objective_run ---
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.objective (
+            id            text        PRIMARY KEY,
+            title         text        NOT NULL,
+            description   text        NOT NULL,
+            schedule      text        NOT NULL,
+            policy_json   jsonb       NOT NULL DEFAULT '{{}}'::jsonb,
+            persona       text        NOT NULL DEFAULT 'loop_curator',
+            status        text        NOT NULL DEFAULT 'active',
+            owner_id      text        NOT NULL DEFAULT 'owner',
+            created_at    timestamptz NOT NULL DEFAULT now()
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.objective_run (
+            id            text        PRIMARY KEY,
+            objective_id  text        NOT NULL REFERENCES {SCHEMA_RESEARCH}.objective(id),
+            started_at    timestamptz NOT NULL DEFAULT now(),
+            finished_at   timestamptz,
+            plan_json     jsonb,
+            trace_json    jsonb,
+            outputs       jsonb,
+            status        text        NOT NULL DEFAULT 'running'
+                          CHECK (status IN (
+                            'running','awaiting_approval','completed','failed','cancelled'
+                          ))
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS objective_run_objective
+        ON {SCHEMA_RESEARCH}.objective_run (objective_id, started_at DESC)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS objective_run_status
+        ON {SCHEMA_RESEARCH}.objective_run (status, started_at DESC)
+        """
+    )
+
+    # Wave C: copilot_session.candidate_ids for Loop attach
+    cur.execute(
+        f"""
+        ALTER TABLE {SCHEMA_RESEARCH}.copilot_session
+        ADD COLUMN IF NOT EXISTS candidate_ids text[] NOT NULL DEFAULT '{{}}'::text[]
+        """
+    )
 
 
 def apply_features_daily_ddl(conn: _Connection) -> None:
@@ -1188,6 +1284,110 @@ def _create_research_tables(cur: _Cursor) -> None:
         """
     )
 
+    # --- Wave Canonical-PnL Foundation: dual-write features + dw_stock mart ---
+    cur.execute("CREATE SCHEMA IF NOT EXISTS dw_stock")
+    _canonical_pnl_ddl = """
+        (
+            as_of_date       date         NOT NULL,
+            entry_date       date         NOT NULL,
+            symbol           text         NOT NULL,
+            structure        text         NOT NULL,
+            params_hash      text         NOT NULL,
+            structure_params jsonb        NOT NULL DEFAULT '{}'::jsonb,
+            entry_spot       double precision,
+            entry_atm_iv     double precision,
+            entry_mid        double precision,
+            as_of_spot       double precision,
+            as_of_atm_iv     double precision,
+            mtm_value        double precision,
+            pnl_since_entry  double precision,
+            dte_remaining    integer,
+            expired          boolean      NOT NULL DEFAULT false,
+            final_pnl        double precision,
+            data_quality     text         NOT NULL DEFAULT 'ok',
+            computed_at      timestamptz  NOT NULL DEFAULT now(),
+            PRIMARY KEY (as_of_date, entry_date, symbol, structure, params_hash)
+        )
+    """
+    cur.execute(
+        f"CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.stock_signal_canonical_pnl_daily {_canonical_pnl_ddl}"
+    )
+    cur.execute(
+        f"CREATE TABLE IF NOT EXISTS dw_stock.mart_canonical_pnl_daily {_canonical_pnl_ddl}"
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_signal_canonical_pnl_symbol_entry
+        ON {SCHEMA_FEATURES}.stock_signal_canonical_pnl_daily (symbol, entry_date, structure)
+        """
+    )
+
+    # --- IDS Historical IV Solver: dual-source reconstructed IV ---
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.option_iv_reconstructed_daily (
+            symbol          text        NOT NULL,
+            option_ticker   text        NOT NULL,
+            trade_date      date        NOT NULL,
+            strike          double precision,
+            expiry          date,
+            option_right    text,
+            mid_price       double precision,
+            spot            double precision,
+            tte_years       double precision,
+            iv              double precision,
+            delta           double precision,
+            gamma           double precision,
+            solver_status   text        NOT NULL DEFAULT 'ok',
+            computed_at     timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (symbol, option_ticker, trade_date)
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS option_iv_reconstructed_symbol_date
+        ON {SCHEMA_FEATURES}.option_iv_reconstructed_daily (symbol, trade_date)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS option_iv_reconstructed_trade_date
+        ON {SCHEMA_FEATURES}.option_iv_reconstructed_daily (trade_date DESC)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS option_iv_reconstructed_ok_iv
+        ON {SCHEMA_FEATURES}.option_iv_reconstructed_daily (trade_date DESC, symbol)
+        WHERE iv IS NOT NULL
+        """
+    )
+    # Unified ATM preference view: reconstructed first, then live snapshot (IDS-4)
+    cur.execute(
+        f"""
+        CREATE OR REPLACE VIEW {SCHEMA_FEATURES}.v_atm_iv_unified AS
+        SELECT
+          r.option_ticker,
+          r.symbol AS underlying,
+          r.iv,
+          r.spot AS underlying_price,
+          r.expiry,
+          r.strike,
+          r.option_right,
+          r.trade_date,
+          r.solver_status AS iv_source
+        FROM {SCHEMA_FEATURES}.option_iv_reconstructed_daily r
+        WHERE r.iv IS NOT NULL AND r.iv > 0
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS mart_canonical_pnl_symbol_entry
+        ON dw_stock.mart_canonical_pnl_daily (symbol, entry_date, structure)
+        """
+    )
+
     # --- Wave RS-B-Surface1: SVI Vol Surface fit + per-strike residuals ---
     cur.execute(
         f"""
@@ -1284,6 +1484,124 @@ def _create_research_tables(cur: _Cursor) -> None:
         WHERE is_opex_week = true
         """
     )
+
+    # --- Analyze C.2: Playbook scenario trigger event-log ---
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.stock_signal_playbook_trigger_intraday (
+            symbol              text        NOT NULL,
+            trade_date          date        NOT NULL,
+            scenario_key        text        NOT NULL,
+            trigger_at          timestamptz NOT NULL,
+            satisfied           boolean     NOT NULL DEFAULT false,
+            condition_snapshot  jsonb,
+            computed_at         timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (symbol, trade_date, scenario_key, trigger_at)
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_signal_playbook_trigger_symbol_date
+        ON {SCHEMA_FEATURES}.stock_signal_playbook_trigger_intraday
+            (symbol, trade_date DESC, trigger_at DESC)
+        """
+    )
+
+    # --- Analyze Wave D: materialized multi-lens scanner ---
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.stock_signal_scan_daily (
+            trade_date          date        NOT NULL,
+            symbol              text        NOT NULL,
+            close               double precision,
+            iv_rank_1y          double precision,
+            vrp_pct_252d        double precision,
+            atm_slope_30d       double precision,
+            pin_pct_distance    double precision,
+            dte_to_opex         integer,
+            zero_gamma_offset   double precision,
+            gex_notional        double precision,
+            terrain_regime      text,
+            pin_score           double precision,
+            tail_risk           double precision,
+            trend_release       double precision,
+            composite_score     double precision,
+            lens_flags          jsonb NOT NULL DEFAULT '{{}}'::jsonb,
+            computed_at         timestamptz NOT NULL,
+            fetched_at          timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (trade_date, symbol)
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_signal_scan_daily_date_score
+        ON {SCHEMA_FEATURES}.stock_signal_scan_daily (trade_date DESC, composite_score DESC)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_signal_scan_daily_symbol_date
+        ON {SCHEMA_FEATURES}.stock_signal_scan_daily (symbol, trade_date DESC)
+        """
+    )
+
+
+
+    # --- Analyze Wave I: lens trigger hit / signal decay ---
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.stock_signal_lens_hit_daily (
+            trade_date        date        NOT NULL,
+            symbol            text        NOT NULL,
+            lens              text        NOT NULL,
+            trigger_side      text        NOT NULL,
+            trigger_value     double precision,
+            fwd_return_5d     double precision,
+            fwd_return_20d    double precision,
+            hit_5d            boolean,
+            hit_20d           boolean,
+            computed_at       timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (trade_date, symbol, lens, trigger_side)
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_signal_lens_hit_daily_symbol_lens_date
+        ON {SCHEMA_FEATURES}.stock_signal_lens_hit_daily (symbol, lens, trade_date DESC)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_signal_lens_hit_daily_lens_date
+        ON {SCHEMA_FEATURES}.stock_signal_lens_hit_daily (lens, trade_date DESC)
+        """
+    )
+
+    # --- Analyze Wave M: daily analyze alerts ---
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.stock_signal_alert_daily (
+            trade_date        date        NOT NULL,
+            kind              text        NOT NULL,
+            symbol            text        NOT NULL DEFAULT '',
+            lens              text        NOT NULL DEFAULT '',
+            severity          text        NOT NULL DEFAULT 'info',
+            reason_json       jsonb       NOT NULL DEFAULT '{{}}'::jsonb,
+            computed_at       timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (trade_date, kind, symbol, lens)
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_signal_alert_daily_date_sev
+        ON {SCHEMA_FEATURES}.stock_signal_alert_daily (trade_date DESC, severity)
+        """
+    )
+
 
 
 def ensure_month_partitions(

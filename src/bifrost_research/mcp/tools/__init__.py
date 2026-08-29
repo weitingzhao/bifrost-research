@@ -14,6 +14,7 @@ def register_all(mcp: FastMCP) -> None:
     from bifrost_research.mcp.tools import (
         backtest,
         discovery,
+        exhibit,
         hypothesis,
         opex_cycle,
         persona,
@@ -23,12 +24,14 @@ def register_all(mcp: FastMCP) -> None:
         vrp,
         write_backtest,
         write_hypothesis,
+        write_loop,
         write_playbook,
     )
 
     hypothesis.register(mcp)
     backtest.register(mcp)
     vrp.register(mcp)
+    exhibit.register(mcp)
     vol_surface.register(mcp)
     opex_cycle.register(mcp)
     discovery.register(mcp)
@@ -38,3 +41,4 @@ def register_all(mcp: FastMCP) -> None:
     write_hypothesis.register(mcp)
     write_backtest.register(mcp)
     write_playbook.register(mcp)
+    write_loop.register(mcp)

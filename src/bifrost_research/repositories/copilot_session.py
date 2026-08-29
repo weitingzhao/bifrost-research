@@ -38,12 +38,14 @@ _COLUMNS = (
     "status",
     "pinned",
     "group_name",
+    "candidate_ids",
 )
 
 _SELECT_COLS = (
     "id, owner_id, title, model, agent_trail, messages, "
     "hypothesis_id, created_at, updated_at, expires_at, status, "
-    "COALESCE(pinned, false) AS pinned, group_name"
+    "COALESCE(pinned, false) AS pinned, group_name, "
+    "COALESCE(candidate_ids, '{}'::text[]) AS candidate_ids"
 )
 
 
@@ -342,15 +344,22 @@ def update_metadata(
     pinned: bool | None = None,
     group_name: str | None = None,
     clear_group: bool = False,
+    candidate_ids: list[str] | None = None,
     owner_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Update ``title`` and/or ``pinned`` for a session (best-effort, no-op if none).
+    """Update ``title`` / ``pinned`` / ``group_name`` / ``candidate_ids`` (best-effort).
 
     Callers pass ``None`` to leave a field unchanged.  Empty title is treated as
     "keep current title" — we never persist ``''`` because the FE would render
     a blank row.
     """
-    if title is None and pinned is None and group_name is None and not clear_group:
+    if (
+        title is None
+        and pinned is None
+        and group_name is None
+        and not clear_group
+        and candidate_ids is None
+    ):
         return get_session(conn, session_id, owner_id=owner_id)
     owner_clause = " AND owner_id = %s" if owner_id else ""
     # group_name semantics:
@@ -363,10 +372,18 @@ def update_metadata(
         else "CASE WHEN %s::text IS NOT NULL AND length(trim(%s::text)) > 0 "
         "THEN trim(%s::text) ELSE group_name END"
     )
+    cand_expr = (
+        "%s::text[]"
+        if candidate_ids is not None
+        else "candidate_ids"
+    )
     params_tail: list[Any] = [title, title, title]
     if not clear_group:
         params_tail.extend([group_name, group_name, group_name])
-    params_tail.extend([pinned, session_id])
+    params_tail.append(pinned)
+    if candidate_ids is not None:
+        params_tail.append(list(candidate_ids))
+    params_tail.append(session_id)
     if owner_id:
         params_tail.append(owner_id)
     with conn.cursor() as cur:
@@ -377,6 +394,7 @@ def update_metadata(
                              THEN %s::text ELSE title END,
                 group_name = {group_expr},
                 pinned = COALESCE(%s::boolean, pinned),
+                candidate_ids = {cand_expr},
                 updated_at = now()
             WHERE id = %s::uuid AND status = 'active'{owner_clause}
             RETURNING {_SELECT_COLS}
@@ -398,6 +416,11 @@ def _serialize(row: dict[str, Any]) -> dict[str, Any]:
         val = out.get(col)
         if isinstance(val, str):
             out[col] = json.loads(val)
+    cids = out.get("candidate_ids")
+    if cids is None:
+        out["candidate_ids"] = []
+    elif not isinstance(cids, list):
+        out["candidate_ids"] = list(cids)
     for col in ("created_at", "updated_at", "expires_at"):
         val = out.get(col)
         if isinstance(val, datetime):

@@ -25,6 +25,7 @@ class SessionPatchBody(BaseModel):
     pinned: bool | None = None
     group_name: str | None = Field(default=None, max_length=64)
     clear_group: bool = False
+    candidate_ids: list[str] | None = None
 
 
 class BridgeBody(BaseModel):
@@ -46,6 +47,7 @@ def _summary(row: dict[str, Any]) -> dict[str, Any]:
         "message_count": len(row.get("messages") or []),
         "pinned": bool(row.get("pinned") or False),
         "group_name": row.get("group_name"),
+        "candidate_ids": list(row.get("candidate_ids") or []),
     }
 
 
@@ -91,6 +93,7 @@ def patch_session(
         and body.pinned is None
         and body.group_name is None
         and not body.clear_group
+        and body.candidate_ids is None
     ):
         raise HTTPException(status_code=400, detail="nothing to update")
     conn = connect()
@@ -102,6 +105,7 @@ def patch_session(
             pinned=body.pinned,
             group_name=body.group_name,
             clear_group=body.clear_group,
+            candidate_ids=body.candidate_ids,
             owner_id=owner_id,
         )
     finally:

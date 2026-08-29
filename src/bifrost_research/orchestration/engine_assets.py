@@ -156,6 +156,42 @@ def backtest(context: AssetExecutionContext) -> MaterializeResult:
     return MaterializeResult(metadata=_metadata(result))
 
 
+@asset(
+    key=AssetKey(["engines", "canonical_pnl"]),
+    deps=[_MARKET],
+    group_name="python_analytics",
+    description=(
+        "Canonical structure hypothetical PnL → features.stock_signal_canonical_pnl_daily "
+        "+ dw_stock.mart_canonical_pnl_daily (stub until Dagster prod; CronJob is live path)"
+    ),
+)
+def canonical_pnl(context: AssetExecutionContext) -> MaterializeResult:
+    result = runners.run_canonical_pnl(lookback_months=6, dry_run=False)
+    context.log.info("canonical_pnl result=%s", result)
+    return MaterializeResult(metadata=_metadata(result))
+
+
+@asset(
+    key=AssetKey(["engines", "scan"]),
+    deps=[
+        AssetKey(["engines", "volatility"]),
+        AssetKey(["engines", "gex"]),
+        AssetKey(["engines", "surface"]),
+        AssetKey(["engines", "terrain"]),
+    ],
+    group_name="python_analytics",
+    description=(
+        "Materialized multi-lens scanner → features.stock_signal_scan_daily. "
+        "VRP and OpEx CronJobs are not Dagster assets — ensure "
+        "research-vrp / research-opex-cycle finish before scan Cron schedule."
+    ),
+)
+def scan(context: AssetExecutionContext) -> MaterializeResult:
+    result = runners.run_scan()
+    context.log.info("scan result=%s", result)
+    return MaterializeResult(metadata=_metadata(result))
+
+
 ENGINE_ASSETS = [
     volatility,
     momentum,
@@ -166,4 +202,6 @@ ENGINE_ASSETS = [
     forecast,
     event_radar,
     backtest,
+    canonical_pnl,
+    scan,
 ]

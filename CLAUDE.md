@@ -176,8 +176,25 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
-- 版本：`0.30.0`（program research-copilot-reach — `GET /research/copilot/sessions` 新增 `q` 全文检索（title + messages 内容）；
-  新增 3 个 Trade 只读 MCP 工具 `trade.strategy.gate_safety` / `trade.trading.position_attribution` / `trade.trading.performance`）
+- 版本：`0.48.4`（Loop Smartness 下一刀 — Approve-all 复用 Inbox `apply_draft_approval`（policy merge）；`candidate_batch` approve 建轻量 hypothesis + `promote_candidate`；harness `top_scan_symbols` 应用 `resolve_preset`；flag→decay lens 映射，unmapped/无 decay 行 skip 不当 failing；本机 research-api 加载工作区源码）
+- 历史：`0.48.3`（Wave Z Loop Cleanup — harness/{gate,suggestion}.py 从 runtime.py 拆出（runtime 再 re-export 保兼容）；FE `components/research/harness/{CandidateBatchBody,PolicySuggestionBody}` 从 `cockpit/DraftCard.tsx` 抽出（308→147 行）；D10/D13 边界审计：harness/* 无 `ib:operator:cmd` / `place_order` / Trade DB 写入；写路径限定 `research.*` + `features.*`；新增 `tests/copilot/test_policy_suggestion_contract.py` 锁死 `plan_llm.POLICY_SUGGESTION_KEYS` == `objective_repo.POLICY_SUGGESTION_WHITELIST`）
+- 历史：`0.48.2`（Wave Y.3 Loop Smartness — filter-scoped hit-rate gate（B3）+ awaiting_approval 不阻断 + candidate_batch draft 带 `hit_rate_warn`（C3）；`policy_suggestion` 独立 Decision Inbox draft，approve 时 `objective_repo.patch_policy_json` jsonb `||` merge 到 `objective.policy_json`（A1）；whitelist = `{preset, flag_filter, min_composite_score, min_hit_rate, max_candidates}`；LLM policy_suggestion 二重过滤（pydantic + repositories）；D10 BLOCKED — 仍不触交易执行）
+- 历史：`0.48.1`（Wave Y.2 Loop Smartness — harness LLM plan step：`plan_llm.generate_plan_llm()` DeepSeek OpenAI-compat + Pydantic `LLMPlanResponse` schema（op 白名单 scan_universe/signal_decay_check/propose_candidates/await_approval）+ 15s timeout + 全 fail-soft；`plan.generated_by = "llm" | "heuristic"`；`policy_suggestion` advisory（不改 objective.policy_json）；env `BIFROST_HARNESS_LLM_PLAN=1` 或 `policy.use_llm_plan` 触发；`policy.llm_model` 可覆盖默认 `deepseek-reasoner`；D10 BLOCKED — plan 只描述路径不下单）
+- 历史：`0.48.0`（Wave Y.1 Loop Smartness — harness runtime 接 `features.stock_signal_scan_daily` + `features.stock_signal_lens_hit_daily`；heuristic seed_symbols 退化为 fallback；scan/fallback/failed 三分支单测；policy_json 新增 preset / flag_filter / min_composite_score / min_hit_rate（后两个到 Y.3 生效））
+- 历史：`0.47.1`（Wave X Loop Usability — `POST /research/drafts` owner-manual + Harness Console New Objective 弹窗 + Trade Opportunities Copy Payload → Open in form）
+- 历史：`0.47.0`（Research Loop Maturity Z/R/C/A/O — candidate_pool + research.loop.* + harness propose-only + order_intent advisory；D10 BLOCKED）
+- 历史：`0.43.0`（Analyze J/K/L/M — YAML align + opex_pin 0.01 + PortfolioTag + Signal Decay intersect/regime + AlertBell）
+- 历史：`0.41.0`（Analyze J — integrity + opex threshold + pending）
+- 历史：`0.40.0`（Analyze G/H/I — DEV deploy fill + Scan desk presets/flags + Signal Decay lens hit-rate + adaptive_30d）
+- 历史：`0.38.0`（Analyze D/E/F — scan daily + playbook hit-rate + gex/regime lenses + forecast path overlay）
+- 历史：`0.36.0`（Analyze B.2/C — similar-regime term_slope/pin_distance · forecast hit-rate · playbook trigger event-log · terrain history）
+- 历史：`0.35.0`（IDS Waves 1–6 — Historical IV Solver dual-source）
+- 历史：`0.34.0`（Waves 13–15 — hypothesis refresh-trajectory · similar-regime · signal-health · exhibit API/MCP；FE WatchlistHypothesisDetail / SignalHealth / AnalyzeVerdictStrip）
+- 历史：`0.33.0`（Wave 14 — similar-regime + signal-health）
+- 历史：`0.32.0`（Wave 13 — watchlist hypothesis loop / refresh-trajectory）
+- 历史：`0.31.0`（Wave 12 — canonical PnL foundation）
+- 历史：`0.30.0`（program research-copilot-reach — `GET /research/copilot/sessions` 新增 `q` 全文检索（title + messages 内容）；
+ 新增 3 个 Trade 只读 MCP 工具 `trade.strategy.gate_safety` / `trade.trading.position_attribution` / `trade.trading.performance`）
 - 历史：`0.29.0`（Copilot `POST /research/copilot/stream` 可选 `client_context` — 注入 ephemeral system message，不写入 session 用户 turn）
 - 历史：`0.28.1`（package version at Phase 1 start）
 - 历史：`0.23.2`（Wave RS-KB QA · Q6 — `GET /research/copilot/models` 只返回后端实际配置的 provider（DEV cluster 只暴露 DeepSeek Chat / Reasoner），每个模型带中文 `note` 说明；前端 composer + Settings 从这个端点拉列表）

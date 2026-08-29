@@ -118,3 +118,46 @@ def run_backtest(*, as_of: date | None = None) -> dict[str, Any]:
         ),
         "advisory": "D10 BLOCKED",
     }
+
+
+def run_canonical_pnl(
+    *,
+    lookback_months: int = 6,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Canonical structure PnL cohort (Dagster stub / CronJob shared runner)."""
+    from bifrost_research.db.calendar import (
+        load_symbols_from_env_or_query,
+        union_iv_radar_benchmarks,
+    )
+    from bifrost_research.db.conn import connect
+    from bifrost_research.engines.canonical_pnl import run_cohort
+
+    conn = connect()
+    try:
+        underlyings = load_symbols_from_env_or_query(conn)
+        universe = union_iv_radar_benchmarks(underlyings)
+        result = run_cohort(
+            conn,
+            symbols=universe,
+            lookback_months=lookback_months,
+            dry_run=dry_run,
+        )
+        result["engine"] = "canonical_pnl"
+        result["advisory"] = "D10 BLOCKED"
+        return result
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def run_scan(*, lookback_days: int = 3) -> dict[str, Any]:
+    """Materialized scanner — depends on upstream CronJobs (vrp/opex) finishing first."""
+    from bifrost_research.engines.scan.entry import run
+
+    result = run(lookback_days=lookback_days)
+    result["engine"] = "scan"
+    result["advisory"] = "D10 BLOCKED"
+    return result

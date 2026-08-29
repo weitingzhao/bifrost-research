@@ -81,7 +81,7 @@ EVENT_RADAR_INPUT_DIR ?= $(HOME)/Desktop/stocks/Research-workspace/事件雷达�
 event-radar-ingest:
 	EVENT_RADAR_INPUT_DIR="$(EVENT_RADAR_INPUT_DIR)" python -m bifrost_research.scheduler.event_radar
 
-IMAGE_VERSION ?= 0.30.0
+IMAGE_VERSION ?= 0.48.4
 REGISTRY ?= 192.168.10.73:30500
 
 build-image:

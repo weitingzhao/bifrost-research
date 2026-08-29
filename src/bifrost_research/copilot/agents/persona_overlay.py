@@ -57,6 +57,10 @@ def assemble_instruction(
 ) -> str:
     """Merge base instruction file, persona overlay, and optional hard playbook rules."""
     chunks = [base.strip()]
+    if agent_name == "loop_curator":
+        from bifrost_research.copilot.agents.loop_curator import loop_curator_appendix
+
+        chunks.append(loop_curator_appendix())
     overlay = render_persona_overlay(agent_name, persona_md, preferences_json)
     if overlay:
         chunks.append("---")

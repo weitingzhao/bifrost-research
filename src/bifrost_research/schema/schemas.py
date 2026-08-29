@@ -24,6 +24,13 @@ TABLE_RESEARCH_PLAYBOOK_NOTE = f"{SCHEMA_RESEARCH}.playbook_note"
 TABLE_RESEARCH_EMBEDDING_CHUNK = f"{SCHEMA_RESEARCH}.embedding_chunk"
 TABLE_RESEARCH_AGENT_PERSONA = f"{SCHEMA_RESEARCH}.agent_persona"
 
+# Wave Loop v1 — Candidate Pool (Discover → Analyze bridge).
+TABLE_RESEARCH_CANDIDATE_POOL = f"{SCHEMA_RESEARCH}.candidate_pool"
+
+# Wave Harness — Objective + run audit (Stage 3).
+TABLE_RESEARCH_OBJECTIVE = f"{SCHEMA_RESEARCH}.objective"
+TABLE_RESEARCH_OBJECTIVE_RUN = f"{SCHEMA_RESEARCH}.objective_run"
+
 # --- Canonical table names (schema.table) ---
 TABLE_OPTION_METRIC_ATM_IV_DAILY = f"{SCHEMA_FEATURES}.option_metric_atm_iv_daily"
 TABLE_OPTION_METRIC_MAX_PAIN_DAILY = f"{SCHEMA_FEATURES}.option_metric_max_pain_daily"
@@ -35,8 +42,15 @@ TABLE_OPTION_METRIC_GEX_LEVELS_DAILY = f"{SCHEMA_FEATURES}.option_metric_gex_lev
 TABLE_OPTION_SURFACE_IV_DAILY = f"{SCHEMA_FEATURES}.option_surface_iv_daily"
 TABLE_OPTION_FLOW_SENTIMENT_DAILY = f"{SCHEMA_FEATURES}.option_flow_sentiment_daily"
 TABLE_OPTION_FLOW_MULTI_LEG_DAILY = f"{SCHEMA_FEATURES}.option_flow_multi_leg_daily"
+# IDS Historical IV Solver — dual-source reconstructed IV (OHLCV Brent + vendor snapshot)
+TABLE_OPTION_IV_RECONSTRUCTED_DAILY = f"{SCHEMA_FEATURES}.option_iv_reconstructed_daily"
 TABLE_STOCK_SIGNAL_MOMENTUM_DAILY = f"{SCHEMA_FEATURES}.stock_signal_momentum_daily"
 TABLE_STOCK_SIGNAL_SEPA_DAILY = f"{SCHEMA_FEATURES}.stock_signal_sepa_daily"
+TABLE_STOCK_SIGNAL_VRP_DAILY = f"{SCHEMA_FEATURES}.stock_signal_vrp_daily"
+# Wave Canonical-PnL Foundation — dual layer (features projection + dw_stock mart)
+TABLE_STOCK_SIGNAL_CANONICAL_PNL_DAILY = f"{SCHEMA_FEATURES}.stock_signal_canonical_pnl_daily"
+SCHEMA_DW_STOCK = "dw_stock"
+TABLE_MART_CANONICAL_PNL_DAILY = f"{SCHEMA_DW_STOCK}.mart_canonical_pnl_daily"
 TABLE_EVENT_SIGNAL_RADAR_DAILY = f"{SCHEMA_FEATURES}.event_signal_radar_daily"
 TABLE_STOCK_FORECAST_TERRAIN_DAILY = f"{SCHEMA_FEATURES}.stock_forecast_terrain_daily"
 TABLE_STOCK_FORECAST_TERRAIN_INTRADAY = f"{SCHEMA_FEATURES}.stock_forecast_terrain_intraday"
@@ -44,6 +58,16 @@ TABLE_STOCK_FORECAST_SESSION = f"{SCHEMA_FEATURES}.stock_forecast_session"
 TABLE_STOCK_FORECAST_HOURLY = f"{SCHEMA_FEATURES}.stock_forecast_hourly"
 TABLE_STOCK_BACKTEST_SETTLEMENT = f"{SCHEMA_FEATURES}.stock_backtest_settlement"
 TABLE_STOCK_BACKTEST_RESULTS_PERIOD = f"{SCHEMA_FEATURES}.stock_backtest_results_period"
+# Analyze C.2 — playbook scenario trigger event-log
+TABLE_STOCK_SIGNAL_PLAYBOOK_TRIGGER_INTRADAY = (
+    f"{SCHEMA_FEATURES}.stock_signal_playbook_trigger_intraday"
+)
+# Analyze Wave D — materialized multi-lens scanner
+TABLE_STOCK_SIGNAL_SCAN_DAILY = f"{SCHEMA_FEATURES}.stock_signal_scan_daily"
+# Analyze Wave I — lens trigger hit / signal decay
+TABLE_STOCK_SIGNAL_LENS_HIT_DAILY = f"{SCHEMA_FEATURES}.stock_signal_lens_hit_daily"
+# Analyze Wave M — daily analyze alerts
+TABLE_STOCK_SIGNAL_ALERT_DAILY = f"{SCHEMA_FEATURES}.stock_signal_alert_daily"
 
 # Partitioned option metric daily tables (for ensure_month_partitions)
 OPTION_METRIC_PARTITIONED_TABLES = (
@@ -64,8 +88,11 @@ CANONICAL_FEATURE_TABLES = (
     TABLE_OPTION_SURFACE_IV_DAILY,
     TABLE_OPTION_FLOW_SENTIMENT_DAILY,
     TABLE_OPTION_FLOW_MULTI_LEG_DAILY,
+    TABLE_OPTION_IV_RECONSTRUCTED_DAILY,
     TABLE_STOCK_SIGNAL_MOMENTUM_DAILY,
     TABLE_STOCK_SIGNAL_SEPA_DAILY,
+    TABLE_STOCK_SIGNAL_VRP_DAILY,
+    TABLE_STOCK_SIGNAL_CANONICAL_PNL_DAILY,
     TABLE_EVENT_SIGNAL_RADAR_DAILY,
     TABLE_STOCK_FORECAST_TERRAIN_DAILY,
     TABLE_STOCK_FORECAST_TERRAIN_INTRADAY,
@@ -73,6 +100,10 @@ CANONICAL_FEATURE_TABLES = (
     TABLE_STOCK_FORECAST_HOURLY,
     TABLE_STOCK_BACKTEST_SETTLEMENT,
     TABLE_STOCK_BACKTEST_RESULTS_PERIOD,
+    TABLE_STOCK_SIGNAL_PLAYBOOK_TRIGGER_INTRADAY,
+    TABLE_STOCK_SIGNAL_SCAN_DAILY,
+    TABLE_STOCK_SIGNAL_LENS_HIT_DAILY,
+    TABLE_STOCK_SIGNAL_ALERT_DAILY,
 )
 
 # Deprecated aliases — same canonical tables (gradual code migration)

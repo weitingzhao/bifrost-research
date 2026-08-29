@@ -1,0 +1,31 @@
+version: 2
+
+models:
+  - name: mart_canonical_pnl_daily
+    description: >
+      Canonical structure hypothetical PnL (Watchlist trust / replay).
+      Python engine dual-writes features.stock_signal_canonical_pnl_daily;
+      this mart rebuilds from features for human-read / dbt tests.
+      Structures: short_strangle, put_credit_spread, long_straddle,
+      covered_call, short_put. D10 BLOCKED — observe only.
+    columns:
+      - name: as_of_date
+        tests: [not_null]
+      - name: entry_date
+        tests: [not_null]
+      - name: symbol
+        tests: [not_null]
+      - name: structure
+        tests: [not_null]
+      - name: params_hash
+        tests: [not_null]
+      - name: data_quality
+        description: "ok | insufficient_chain | iv_interpolated"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - as_of_date
+            - entry_date
+            - symbol
+            - structure
+            - params_hash

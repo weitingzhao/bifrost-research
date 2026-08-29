@@ -4,5 +4,5 @@ from bifrost_research import __version__
 
 
 def test_version() -> None:
-    # Wave RS-F5 · Portfolio Context tools + agent; 0.29.0 client_context
-    assert __version__ == "0.30.0"
+    # Analyze Waves A/B/C (0.36) after IDS IV Solver (0.35) + Waves 12-15.
+    assert __version__ == "0.48.4"

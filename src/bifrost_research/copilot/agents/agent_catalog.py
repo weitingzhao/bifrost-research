@@ -1,4 +1,4 @@
-"""Canonical Copilot agent names and persona metadata (Wave RS-PS)."""
+"""Canonical Copilot agent names and persona metadata (Wave RS-PS + Loop C)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ AgentName = Literal[
     "portfolio",
     "verdict",
     "curator",
+    "loop_curator",
 ]
 
 AGENT_NAMES: tuple[str, ...] = (
@@ -24,6 +25,7 @@ AGENT_NAMES: tuple[str, ...] = (
     "portfolio",
     "verdict",
     "curator",
+    "loop_curator",
 )
 
 AGENT_LABELS: dict[str, str] = {
@@ -35,6 +37,7 @@ AGENT_LABELS: dict[str, str] = {
     "portfolio": "Portfolio",
     "verdict": "Verdict",
     "curator": "Curator",
+    "loop_curator": "Loop Curator",
 }
 
 AGENT_LABELS_ZH: dict[str, str] = {
@@ -46,6 +49,7 @@ AGENT_LABELS_ZH: dict[str, str] = {
     "portfolio": "持仓",
     "verdict": "综合裁决",
     "curator": "沉淀",
+    "loop_curator": "研究循环",
 }
 
 GUARDRAIL_LOCKED_AGENTS: frozenset[str] = frozenset({"validate"})

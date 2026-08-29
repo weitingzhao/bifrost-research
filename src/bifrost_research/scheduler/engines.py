@@ -269,6 +269,27 @@ def run_terrain_intraday(
             iv=iv or None,
         )
         written += upsert_terrain_intraday(conn, [terrain])
+        try:
+            from bifrost_research.engines.forecast.playbook import (
+                emit_triggers_for_terrain_intraday,
+            )
+
+            emit_triggers_for_terrain_intraday(
+                conn,
+                symbol=terrain.symbol,
+                trade_date=terrain.trade_date,
+                asof_ts=terrain.asof_ts,
+                regime=str(terrain.regime),
+                prob_rangy=terrain.prob_rangy,
+                prob_bull=terrain.prob_bull,
+                prob_bear=terrain.prob_bear,
+                prob_squeeze=terrain.prob_squeeze,
+            )
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
     return {
         "slot": "terrain-intraday",
         "rows_written": written,

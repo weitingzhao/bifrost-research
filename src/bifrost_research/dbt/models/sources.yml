@@ -135,8 +135,10 @@ sources:
   - name: features
     database: bifrost_golden_source
     schema: features
-    description: "Research Feature Store — read-only for dbt SEPA options tier"
+    description: "Research Feature Store — read-only for dbt SEPA options tier + canonical PnL"
     tables:
       - name: option_metric_iv_percentile_daily
       - name: option_metric_pcr_daily
       - name: option_metric_gex_levels_daily
+      - name: stock_signal_canonical_pnl_daily
+        description: "Canonical structure hypothetical PnL (Python engine authority)"

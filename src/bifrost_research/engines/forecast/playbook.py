@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from bifrost_research.db.upsert import batch_upsert
 from bifrost_research.engines.forecast.llm import (
@@ -495,4 +495,325 @@ def upsert_forecast_session(conn: Any, session: ForecastSession) -> int:
         set_fetched_at=False,
     )
     upsert_hourly_sessions(conn, session)
+    try:
+        emit_triggers_for_session(conn, session)
+    except Exception:
+        # Trigger log is best-effort — do not fail the forecast write path
+        try:
+            conn.rollback()
+        except Exception:
+            pass
     return 1 + len(hourly_rows)
+
+
+# ---------------------------------------------------------------------------
+# Analyze C.2 — playbook scenario trigger event-log
+# ---------------------------------------------------------------------------
+
+_TRIGGER_COLS = (
+    "symbol",
+    "trade_date",
+    "scenario_key",
+    "trigger_at",
+    "satisfied",
+    "condition_snapshot",
+    "computed_at",
+)
+
+# Probability mass that counts as "satisfied" for a named scenario
+_SCENARIO_SATISFY_THRESHOLD = 0.40
+
+_SCENARIO_KEYS = ("rangy", "bull", "bear", "squeeze")
+
+
+def _dominant_scenario(probs: ScenarioProbabilities) -> str:
+    n = probs.normalized()
+    return max(
+        (
+            ("rangy", n.rangy),
+            ("bull", n.bull),
+            ("bear", n.bear),
+            ("squeeze", n.squeeze),
+        ),
+        key=lambda x: x[1],
+    )[0]
+
+
+def _prob_map(probs: ScenarioProbabilities) -> dict[str, float]:
+    n = probs.normalized()
+    return {
+        "rangy": n.rangy,
+        "bull": n.bull,
+        "bear": n.bear,
+        "squeeze": n.squeeze,
+    }
+
+
+def evaluate_playbook_triggers(
+    *,
+    symbol: str,
+    trade_date: date,
+    trigger_at: datetime,
+    scenarios: ScenarioProbabilities,
+    regime: str,
+    prev_dominant: str | None = None,
+    prev_probs: Mapping[str, float] | None = None,
+    threshold: float = _SCENARIO_SATISFY_THRESHOLD,
+) -> list[dict[str, Any]]:
+    """Build trigger event rows when dominant scenario changes or a prob crosses threshold.
+
+    Returns dicts ready for upsert (not yet written).
+    """
+    probs = _prob_map(scenarios)
+    dominant = _dominant_scenario(scenarios)
+    now = datetime.now(timezone.utc)
+    events: list[dict[str, Any]] = []
+
+    # First observation of the series: emit snapshot of dominant + satisfied scenarios
+    if prev_dominant is None and prev_probs is None:
+        events.append(
+            {
+                "symbol": symbol.upper(),
+                "trade_date": trade_date,
+                "scenario_key": f"dominant:{dominant}",
+                "trigger_at": trigger_at,
+                "satisfied": True,
+                "condition_snapshot": {
+                    "event": "snapshot",
+                    "regime": regime,
+                    "dominant": dominant,
+                    "probs": probs,
+                    "threshold": threshold,
+                },
+                "computed_at": now,
+            }
+        )
+        for key in _SCENARIO_KEYS:
+            p = float(probs.get(key) or 0.0)
+            if p >= threshold:
+                events.append(
+                    {
+                        "symbol": symbol.upper(),
+                        "trade_date": trade_date,
+                        "scenario_key": key,
+                        "trigger_at": trigger_at,
+                        "satisfied": True,
+                        "condition_snapshot": {
+                            "event": "threshold_satisfied",
+                            "prob": p,
+                            "threshold": threshold,
+                            "regime": regime,
+                            "dominant": dominant,
+                            "probs": probs,
+                        },
+                        "computed_at": now,
+                    }
+                )
+        return events
+
+    # Subsequent: dominant change and threshold crosses
+    if prev_dominant is not None and prev_dominant != dominant:
+        events.append(
+            {
+                "symbol": symbol.upper(),
+                "trade_date": trade_date,
+                "scenario_key": f"dominant:{dominant}",
+                "trigger_at": trigger_at,
+                "satisfied": True,
+                "condition_snapshot": {
+                    "event": "dominant_change",
+                    "from": prev_dominant,
+                    "to": dominant,
+                    "regime": regime,
+                    "probs": probs,
+                    "threshold": threshold,
+                },
+                "computed_at": now,
+            }
+        )
+
+    for key in _SCENARIO_KEYS:
+        p = float(probs.get(key) or 0.0)
+        prev_p = float((prev_probs or {}).get(key) or 0.0)
+        crossed_up = p >= threshold and prev_p < threshold
+        crossed_down = p < threshold and prev_p >= threshold
+        if crossed_up or crossed_down:
+            events.append(
+                {
+                    "symbol": symbol.upper(),
+                    "trade_date": trade_date,
+                    "scenario_key": key,
+                    "trigger_at": trigger_at,
+                    "satisfied": crossed_up,
+                    "condition_snapshot": {
+                        "event": "threshold_cross",
+                        "direction": "up" if crossed_up else "down",
+                        "prob": p,
+                        "prev_prob": prev_p,
+                        "threshold": threshold,
+                        "regime": regime,
+                        "dominant": dominant,
+                        "probs": probs,
+                    },
+                    "computed_at": now,
+                }
+            )
+
+    return events
+
+
+def upsert_playbook_triggers(conn: Any, events: Sequence[dict[str, Any]]) -> int:
+    """Upsert trigger event rows into features.stock_signal_playbook_trigger_intraday."""
+    if not events:
+        return 0
+    rows = [
+        (
+            e["symbol"],
+            e["trade_date"],
+            e["scenario_key"],
+            e["trigger_at"],
+            bool(e.get("satisfied")),
+            e.get("condition_snapshot") or {},
+            e.get("computed_at") or datetime.now(timezone.utc),
+        )
+        for e in events
+    ]
+    return batch_upsert(
+        conn,
+        "features.stock_signal_playbook_trigger_intraday",
+        _TRIGGER_COLS,
+        rows,
+        conflict_keys=("symbol", "trade_date", "scenario_key", "trigger_at"),
+        set_fetched_at=False,
+    )
+
+
+def emit_triggers_for_session(
+    conn: Any,
+    session: ForecastSession,
+    *,
+    trigger_at: datetime | None = None,
+) -> int:
+    """Compare session scenarios to latest prior trigger / session and upsert events."""
+    at = trigger_at or datetime.now(timezone.utc)
+    prev_dominant: str | None = None
+    prev_probs: dict[str, float] | None = None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT regime, prob_rangy, prob_bull, prob_bear, prob_squeeze
+                FROM features.stock_forecast_session
+                WHERE symbol = %s AND trade_date = %s AND session_id <> %s
+                ORDER BY computed_at DESC
+                LIMIT 1
+                """,
+                (session.symbol, session.trade_date, session.session_id),
+            )
+            row = cur.fetchone()
+            if row is not None:
+                if isinstance(row, Mapping):
+                    prev_probs = {
+                        "rangy": float(row.get("prob_rangy") or 0),
+                        "bull": float(row.get("prob_bull") or 0),
+                        "bear": float(row.get("prob_bear") or 0),
+                        "squeeze": float(row.get("prob_squeeze") or 0),
+                    }
+                else:
+                    prev_probs = {
+                        "rangy": float(row[1] or 0),
+                        "bull": float(row[2] or 0),
+                        "bear": float(row[3] or 0),
+                        "squeeze": float(row[4] or 0),
+                    }
+                prev_dominant = max(prev_probs, key=lambda k: prev_probs[k])
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        prev_dominant = None
+        prev_probs = None
+
+    events = evaluate_playbook_triggers(
+        symbol=session.symbol,
+        trade_date=session.trade_date,
+        trigger_at=at,
+        scenarios=session.scenarios,
+        regime=str(session.regime),
+        prev_dominant=prev_dominant,
+        prev_probs=prev_probs,
+    )
+    return upsert_playbook_triggers(conn, events)
+
+
+def emit_triggers_for_terrain_intraday(
+    conn: Any,
+    *,
+    symbol: str,
+    trade_date: date,
+    asof_ts: datetime,
+    regime: str,
+    prob_rangy: float,
+    prob_bull: float,
+    prob_bear: float,
+    prob_squeeze: float,
+) -> int:
+    """Emit triggers from an intraday terrain probability snapshot."""
+    scenarios = ScenarioProbabilities(
+        rangy=prob_rangy,
+        bull=prob_bull,
+        bear=prob_bear,
+        squeeze=prob_squeeze,
+    ).normalized()
+    prev_dominant: str | None = None
+    prev_probs: dict[str, float] | None = None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT regime, prob_rangy, prob_bull, prob_bear, prob_squeeze
+                FROM features.stock_forecast_terrain_intraday
+                WHERE symbol = %s AND trade_date = %s AND asof_ts < %s
+                ORDER BY asof_ts DESC
+                LIMIT 1
+                """,
+                (symbol.upper(), trade_date, asof_ts),
+            )
+            row = cur.fetchone()
+            if row is not None:
+                if isinstance(row, Mapping):
+                    prev_probs = {
+                        "rangy": float(row.get("prob_rangy") or 0),
+                        "bull": float(row.get("prob_bull") or 0),
+                        "bear": float(row.get("prob_bear") or 0),
+                        "squeeze": float(row.get("prob_squeeze") or 0),
+                    }
+                    # derive dominant from probs
+                else:
+                    prev_probs = {
+                        "rangy": float(row[1] or 0),
+                        "bull": float(row[2] or 0),
+                        "bear": float(row[3] or 0),
+                        "squeeze": float(row[4] or 0),
+                    }
+                prev_dominant = max(prev_probs, key=lambda k: prev_probs[k])
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        prev_dominant = None
+        prev_probs = None
+
+    events = evaluate_playbook_triggers(
+        symbol=symbol,
+        trade_date=trade_date,
+        trigger_at=asof_ts,
+        scenarios=scenarios,
+        regime=regime,
+        prev_dominant=prev_dominant,
+        prev_probs=prev_probs,
+    )
+    return upsert_playbook_triggers(conn, events)
+

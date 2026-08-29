@@ -1,10 +1,10 @@
-"""ATM IV daily compute: market.v_option_snapshot_with_stock → features.option_metric_atm_iv_daily.
+"""ATM IV daily compute: unified reconstructed IV + snapshot fallback → features.option_metric_atm_iv_daily.
+
+IDS-4: prefer ``features.option_iv_reconstructed_daily``,
+then fall back to ``raw_market.v_option_snapshot_with_stock`` (Polygon live path).
 
 Algorithm independently reimplemented from bifrost_api.research.iv_atm
 (no bifrost-core / trade-api pip dependency).
-
-D10=A: use ``market.v_option_snapshot_with_stock`` (underlying_price JOIN already).
-Black-box: ``iv`` is Polygon precomputed — we select ATM strike but cannot verify the IV model.
 
 Per (symbol, expiry): nearest strikes to spot; avg call+put IV when both exist; iv in (0, 10).
 """
@@ -28,7 +28,9 @@ _COLS = (
     "computed_at",
 )
 
-IV_SOURCE = "snapshot"
+IV_SOURCE_SNAPSHOT = "snapshot"
+IV_SOURCE_RECONSTRUCTED = "reconstructed"
+IV_SOURCE = IV_SOURCE_SNAPSHOT  # back-compat
 
 
 def _row_to_dict(row: Any, columns: Sequence[str]) -> Dict[str, Any]:
@@ -65,10 +67,7 @@ def _valid_iv(value: Any) -> float | None:
 def atm_iv_from_side_items(
     items: List[Tuple[float, Optional[float], Optional[float], float]],
 ) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
-    """Return (atm_iv, iv_call, iv_put, best_strike) using nearest strikes with IV.
-
-    items: (distance_to_spot, iv_call, iv_put, strike) — one side populated per entry.
-    """
+    """Return (atm_iv, iv_call, iv_put, best_strike) using nearest strikes with IV."""
     if not items:
         return None, None, None, None
     items_sorted = sorted(items, key=lambda x: x[0])
@@ -101,7 +100,6 @@ def build_expiry_side_items(
     rows: Sequence[Mapping[str, Any]],
     spot: float,
 ) -> List[Tuple[float, Optional[float], Optional[float], float]]:
-    """Build (dist, iv_call, iv_put, strike) list from snapshot+contract rows for one expiry."""
     items: List[Tuple[float, Optional[float], Optional[float], float]] = []
     for r in rows:
         try:
@@ -123,7 +121,6 @@ def build_expiry_side_items(
 
 
 def representative_spot(rows: Sequence[Mapping[str, Any]]) -> float | None:
-    """Median positive underlying_price across rows."""
     spots: list[float] = []
     for r in rows:
         up = r.get("underlying_price")
@@ -140,13 +137,45 @@ def representative_spot(rows: Sequence[Mapping[str, Any]]) -> float | None:
     return float(median(spots))
 
 
+def fetch_reconstructed_iv_rows_for_date(
+    conn: Any,
+    trade_date: date,
+    *,
+    underlyings: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    cols = (
+        "option_ticker",
+        "underlying",
+        "iv",
+        "underlying_price",
+        "expiry",
+        "strike",
+        "option_right",
+    )
+    syms = [str(s).strip().upper() for s in (underlyings or []) if str(s).strip()]
+    base = """
+        SELECT option_ticker, symbol AS underlying, iv, spot AS underlying_price,
+               expiry, strike, option_right
+        FROM features.option_iv_reconstructed_daily
+        WHERE trade_date = %s
+          AND iv IS NOT NULL AND iv > 0
+          AND spot IS NOT NULL AND spot > 0
+    """
+    with conn.cursor() as cur:
+        if syms:
+            cur.execute(base + " AND UPPER(TRIM(symbol)) = ANY(%s)", (trade_date, syms))
+        else:
+            cur.execute(base, (trade_date,))
+        raw = cur.fetchall() if hasattr(cur, "fetchall") else []
+    return [_row_to_dict(r, cols) for r in (raw or [])]
+
+
 def fetch_snapshot_iv_rows_for_date(
     conn: Any,
     trade_date: date,
     *,
     underlyings: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Last snapshot of NY day per option_ticker with contract strike/expiry/right (D10=A)."""
     cols = (
         "option_ticker",
         "underlying",
@@ -195,20 +224,47 @@ def fetch_snapshot_iv_rows_for_date(
     return [_row_to_dict(r, cols) for r in (raw or [])]
 
 
+def fetch_unified_iv_rows_for_date(
+    conn: Any,
+    trade_date: date,
+    *,
+    underlyings: Sequence[str] | None = None,
+) -> tuple[list[dict[str, Any]], str]:
+    """Prefer reconstructed IV; fall back to live snapshot."""
+    try:
+        rows = fetch_reconstructed_iv_rows_for_date(
+            conn, trade_date, underlyings=underlyings
+        )
+        if rows:
+            return rows, IV_SOURCE_RECONSTRUCTED
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    return (
+        fetch_snapshot_iv_rows_for_date(conn, trade_date, underlyings=underlyings),
+        IV_SOURCE_SNAPSHOT,
+    )
+
+
 def compute_atm_iv_for_date(
     conn: Any,
     *,
     trade_date: date,
     underlyings: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Compute ATM IV for all (underlying, expiry) with snapshots on ``trade_date`` and upsert."""
-    snap_rows = fetch_snapshot_iv_rows_for_date(conn, trade_date, underlyings=underlyings)
+    """Compute ATM IV for all (underlying, expiry) on ``trade_date`` and upsert."""
+    snap_rows, iv_source = fetch_unified_iv_rows_for_date(
+        conn, trade_date, underlyings=underlyings
+    )
     if not snap_rows:
         return {
             "trade_date": trade_date.isoformat(),
             "groups": 0,
             "rows_written": 0,
             "symbols": 0,
+            "iv_source": iv_source,
         }
 
     groups: dict[tuple[str, date], list[dict[str, Any]]] = {}
@@ -237,7 +293,7 @@ def compute_atm_iv_for_date(
                 float(best_strike),
                 float(atm_iv),
                 float(spot),
-                IV_SOURCE,
+                iv_source,
                 now,
             )
         )
@@ -263,4 +319,5 @@ def compute_atm_iv_for_date(
         "groups": len(upsert_rows),
         "rows_written": n,
         "symbols": len(symbols),
+        "iv_source": iv_source,
     }

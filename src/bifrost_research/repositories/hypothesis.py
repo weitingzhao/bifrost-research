@@ -2,6 +2,11 @@
 
 D-RS-a locked: table lives in Golden Source ``research`` schema. All rows are
 soft-deletable via ``retired_at``.
+
+``origin_ref`` (jsonb) documented keys (Wave 13+; extra keys allowed):
+  - ``watchlist_contract_key``: Trade watchlist contract key, e.g. ``STK:NVDA``
+  - ``trajectory_summary``: summary dict from refresh-trajectory
+  - lens snapshot fields (symbol, date, vrp_pct, …) from Analyze promote
 """
 
 from __future__ import annotations
@@ -17,6 +22,9 @@ from typing import Any, Protocol
 from bifrost_research.schema.schemas import TABLE_RESEARCH_HYPOTHESIS
 
 _ALLOWED_STATUSES = frozenset({"active", "validated", "rejected", "archived"})
+
+# Soft pattern for Trade stock watchlist keys (OPT:… also accepted as opaque string).
+_WATCHLIST_CONTRACT_KEY_RE = re.compile(r"^(STK|OPT):[A-Z0-9.\-^]+", re.IGNORECASE)
 
 _HYPOTHESIS_COLUMNS: tuple[str, ...] = (
     "id",
@@ -115,6 +123,49 @@ def _serialize_json(value: Any) -> Any:
     return json.dumps(value)
 
 
+def normalize_origin_ref(origin_ref: Any) -> Any:
+    """Soft-validate ``origin_ref``; allow arbitrary extra keys.
+
+    If ``watchlist_contract_key`` is present:
+      - strip whitespace
+      - leave value unchanged when it fails the soft ``STK:|OPT:`` pattern
+        (do not reject create/patch — callers may store provisional keys)
+    """
+    if origin_ref is None:
+        return None
+    if isinstance(origin_ref, str):
+        try:
+            origin_ref = json.loads(origin_ref)
+        except Exception:
+            return origin_ref
+    if not isinstance(origin_ref, Mapping):
+        return origin_ref
+    out = dict(origin_ref)
+    raw_key = out.get("watchlist_contract_key")
+    if raw_key is not None and raw_key != "":
+        key = str(raw_key).strip()
+        out["watchlist_contract_key"] = key
+        # Soft check only — no raise
+        _ = bool(_WATCHLIST_CONTRACT_KEY_RE.match(key))
+    return out
+
+
+def merge_origin_ref(existing: Any, patch: Mapping[str, Any]) -> dict[str, Any]:
+    """Shallow-merge ``patch`` into existing origin_ref dict."""
+    base: dict[str, Any] = {}
+    if isinstance(existing, Mapping):
+        base = dict(existing)
+    elif isinstance(existing, str):
+        try:
+            parsed = json.loads(existing)
+            if isinstance(parsed, Mapping):
+                base = dict(parsed)
+        except Exception:
+            pass
+    base.update(dict(patch))
+    return normalize_origin_ref(base)  # type: ignore[return-value]
+
+
 def _iso(dt: Any) -> str | None:
     if dt is None:
         return None
@@ -181,6 +232,7 @@ def create_hypothesis(
     hid = (hypothesis_id or generate_hypothesis_id(title)).strip()
     if not hid:
         raise ValueError("hypothesis id is required")
+    origin_ref = normalize_origin_ref(origin_ref)
 
     sql = f"""
         INSERT INTO {TABLE_RESEARCH_HYPOTHESIS} (
@@ -300,7 +352,7 @@ def patch_hypothesis(
         elif key in {"tags", "linked_opportunity_ids", "linked_backtest_ids"}:
             updates[key] = _prepare_string_array(value)
         elif key == "origin_ref":
-            updates[key] = _serialize_json(value)
+            updates[key] = _serialize_json(normalize_origin_ref(value))
         elif key in {"title", "thesis"}:
             if not value or not str(value).strip():
                 raise ValueError(f"{key} cannot be empty")

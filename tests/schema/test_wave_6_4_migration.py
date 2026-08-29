@@ -15,7 +15,17 @@ def test_canonical_table_constants_use_features_schema() -> None:
     assert TABLE_STOCK_SIGNAL_MOMENTUM_DAILY == "features.stock_signal_momentum_daily"
 
 
-def test_canonical_feature_table_registry_has_nineteen_tables() -> None:
-    assert len(CANONICAL_FEATURE_TABLES) == 19
+def test_canonical_feature_table_registry_has_twenty_five_tables() -> None:
+    # Wave 6.4 baseline (19) + VRP + Canonical PnL + IDS option_iv_reconstructed_daily
+    # + Analyze C.2 stock_signal_playbook_trigger_intraday
+    # + Analyze Wave D stock_signal_scan_daily.
+    # + Analyze Wave I stock_signal_lens_hit_daily.
+    assert len(CANONICAL_FEATURE_TABLES) == 26
     for qualified in CANONICAL_FEATURE_TABLES:
         assert qualified.startswith(f"{SCHEMA_FEATURES}.")
+    assert (
+        f"{SCHEMA_FEATURES}.stock_signal_playbook_trigger_intraday"
+        in CANONICAL_FEATURE_TABLES
+    )
+    assert f"{SCHEMA_FEATURES}.stock_signal_scan_daily" in CANONICAL_FEATURE_TABLES
+    assert f"{SCHEMA_FEATURES}.stock_signal_lens_hit_daily" in CANONICAL_FEATURE_TABLES
