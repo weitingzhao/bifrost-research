@@ -20,13 +20,17 @@ from bifrost_research.orchestration import runners
 plugin_market_ingest = AssetSpec(
     key=AssetKey(["external", "plugin_market_ingest"]),
     description=(
-        "External: Market Data Plugin Polygon ingest → market.* on "
+        "External: Market Data Plugin Polygon ingest → market.* / raw_market.* on "
         "bifrost_golden_source. Research reads only; Plugin owns writes."
     ),
     group_name="external",
 )
 
-_MARKET = AssetKey(["external", "plugin_market_ingest"])
+# Batch enqueue assets (Dagster schedules; workers still execute).
+_MARKET_EOD = AssetKey(["batch", "market_eod"])
+_GATE = AssetKey(["batch", "husbandry_gate"])
+_SEPA = AssetKey(["features", "sepa_projection"])
+_MARKET = [_MARKET_EOD, _GATE]
 
 
 def _metadata(result: dict[str, Any]) -> dict[str, Any]:
@@ -45,7 +49,7 @@ def _metadata(result: dict[str, Any]) -> dict[str, Any]:
 
 @asset(
     key=AssetKey(["engines", "volatility"]),
-    deps=[_MARKET],
+    deps=_MARKET,
     group_name="python_analytics",
     description="Volatility engines (max pain / ATM IV / PCR / IV percentile) → features.option_metric_*_daily",
 )
@@ -57,7 +61,7 @@ def volatility(context: AssetExecutionContext) -> MaterializeResult:
 
 @asset(
     key=AssetKey(["engines", "momentum"]),
-    deps=[_MARKET],
+    deps=_MARKET,
     group_name="python_analytics",
     description="Momentum Radar → features.stock_signal_momentum_daily",
 )
@@ -69,7 +73,7 @@ def momentum(context: AssetExecutionContext) -> MaterializeResult:
 
 @asset(
     key=AssetKey(["engines", "gex"]),
-    deps=[_MARKET],
+    deps=_MARKET,
     group_name="python_analytics",
     description="GEX Engine → features.option_metric_gex_daily / option_metric_gex_levels_daily",
 )
@@ -81,7 +85,7 @@ def gex(context: AssetExecutionContext) -> MaterializeResult:
 
 @asset(
     key=AssetKey(["engines", "surface"]),
-    deps=[_MARKET],
+    deps=_MARKET,
     group_name="python_analytics",
     description="IV Surface / vol cone → features.option_surface_iv_daily",
 )
@@ -93,7 +97,7 @@ def surface(context: AssetExecutionContext) -> MaterializeResult:
 
 @asset(
     key=AssetKey(["engines", "flow"]),
-    deps=[_MARKET],
+    deps=_MARKET,
     group_name="python_analytics",
     description="Order Flow / sentiment → features.option_flow_sentiment_daily",
 )
@@ -134,7 +138,7 @@ def forecast(context: AssetExecutionContext) -> MaterializeResult:
 
 @asset(
     key=AssetKey(["engines", "event_radar"]),
-    deps=[_MARKET],
+    deps=_MARKET,
     group_name="ai_forecast",
     description="Event Radar 5-step pipeline → features.event_signal_radar_daily",
 )
@@ -158,11 +162,11 @@ def backtest(context: AssetExecutionContext) -> MaterializeResult:
 
 @asset(
     key=AssetKey(["engines", "canonical_pnl"]),
-    deps=[_MARKET],
+    deps=_MARKET,
     group_name="python_analytics",
     description=(
         "Canonical structure hypothetical PnL → features.stock_signal_canonical_pnl_daily "
-        "+ dw_stock.mart_canonical_pnl_daily (stub until Dagster prod; CronJob is live path)"
+        "+ dw_stock.mart_canonical_pnl_daily (Cron path retained for weekly; Dagster optional)"
     ),
 )
 def canonical_pnl(context: AssetExecutionContext) -> MaterializeResult:
@@ -178,12 +182,12 @@ def canonical_pnl(context: AssetExecutionContext) -> MaterializeResult:
         AssetKey(["engines", "gex"]),
         AssetKey(["engines", "surface"]),
         AssetKey(["engines", "terrain"]),
+        _SEPA,
     ],
     group_name="python_analytics",
     description=(
         "Materialized multi-lens scanner → features.stock_signal_scan_daily. "
-        "VRP and OpEx CronJobs are not Dagster assets — ensure "
-        "research-vrp / research-opex-cycle finish before scan Cron schedule."
+        "VRP / OpEx run on dedicated Dagster schedules (research_vrp / research_opex)."
     ),
 )
 def scan(context: AssetExecutionContext) -> MaterializeResult:

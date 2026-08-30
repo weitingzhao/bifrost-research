@@ -1,4 +1,4 @@
-.PHONY: install-dev install-orchestration dbt-deps dbt-run dbt-test dbt-docs dbt-clean dbt-parse lint test test-mcp build-image build-image-dagster run-api run-mcp db-init-analytics db-init-research db-migrate-6-4 db-migrate-6-6 dagster-dev dagster-defs event-radar-ingest smoke-agents-sdk sync-openai-secret
+.PHONY: install-dev install-orchestration dbt-deps dbt-run dbt-test dbt-docs dbt-clean dbt-parse lint test test-mcp build-image build-image-dagster run-api run-mcp db-init-analytics db-init-research db-init-ops-dagster db-migrate-6-4 db-migrate-6-6 dagster-dev dagster-defs dagster-ensure-schedule verify-husbandry-schedulers event-radar-ingest smoke-agents-sdk sync-openai-secret
 
 DBT_DIR := src/bifrost_research/dbt
 DBT_PROFILES := $(DBT_DIR)
@@ -32,6 +32,20 @@ dagster-dev:
 
 dagster-defs:
 	python -c "from bifrost_research.orchestration.definitions import defs; print('assets=', len(defs.resolve_all_asset_keys()))"
+
+# Instance DB may keep STOPPED even when DefaultScheduleStatus.RUNNING — flip explicitly.
+dagster-ensure-schedule:
+	@kubectl -n research exec deploy/dagster-daemon -- \
+	  dagster schedule list -m bifrost_research.orchestration.definitions 2>/dev/null \
+	  | awk '/Schedule:/{print $$2}' \
+	  | while read -r name; do \
+	      echo "start $$name"; \
+	      kubectl -n research exec deploy/dagster-daemon -- \
+	        dagster schedule start "$$name" -m bifrost_research.orchestration.definitions || true; \
+	    done
+
+verify-husbandry-schedulers:
+	bash scripts/verify_husbandry_schedulers.sh
 
 lint:
 	ruff check src/ tests/ || true
@@ -81,7 +95,7 @@ EVENT_RADAR_INPUT_DIR ?= $(HOME)/Desktop/stocks/Research-workspace/事件雷达�
 event-radar-ingest:
 	EVENT_RADAR_INPUT_DIR="$(EVENT_RADAR_INPUT_DIR)" python -m bifrost_research.scheduler.event_radar
 
-IMAGE_VERSION ?= 0.48.4
+IMAGE_VERSION ?= 0.50.0
 REGISTRY ?= 192.168.10.73:30500
 
 build-image:
@@ -93,4 +107,10 @@ build-image:
 	docker push $(REGISTRY)/bifrost-research:latest
 
 build-image-dagster:
-	docker build --platform linux/amd64 --target orchestration -t bifrost-research:0.8.0-dagster -f Dockerfile .
+	docker build --platform linux/amd64 --target orchestration -t bifrost-research:$(IMAGE_VERSION)-dagster -f Dockerfile .
+	docker tag bifrost-research:$(IMAGE_VERSION)-dagster $(REGISTRY)/bifrost-research:$(IMAGE_VERSION)-dagster
+	docker push $(REGISTRY)/bifrost-research:$(IMAGE_VERSION)-dagster
+
+db-init-ops-dagster:
+	@echo "Apply scripts/ops_dagster_schema.sql on Golden Source (ops_dagster schema for Dagster instance storage)"
+	@echo "Example: psql \$$ANALYTICS_PG_* -f scripts/ops_dagster_schema.sql"

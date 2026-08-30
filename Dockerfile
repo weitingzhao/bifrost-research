@@ -5,8 +5,8 @@
 #   orchestration      — base + Dagster ([orchestration] extra)
 #
 # Build:
-#   docker build --target base -t bifrost-research:0.5.0 -f Dockerfile .
-#   docker build --target orchestration -t bifrost-research:0.5.0-dagster -f Dockerfile .
+#   docker build --target base -t bifrost-research:0.49.0 -f Dockerfile .
+#   docker build --target orchestration -t bifrost-research:0.49.0-dagster -f Dockerfile .
 #
 # Optional: run `make dbt-parse` before build so dbt/target/manifest.json is
 # available for dagster-dbt (gitignored; absent → dbt assets skipped at runtime).
@@ -36,5 +36,9 @@ CMD ["python", "scripts/run_api.py"]
 FROM base AS orchestration
 
 RUN pip install --no-cache-dir ".[orchestration]"
+
+# Prefer baking a pre-parsed dbt manifest when present in build context.
+# Local: `make dbt-parse` then `make build-image-dagster`.
+ENV DAGSTER_HOME=/opt/dagster/home
 
 CMD ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "/app/workspace.yaml"]

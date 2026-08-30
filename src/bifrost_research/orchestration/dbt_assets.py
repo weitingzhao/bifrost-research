@@ -36,7 +36,7 @@ def load_dbt_assets() -> List[Any]:
         context: AssetExecutionContext,
         dbt: DbtCliResource,
     ):
-        """SEPA dbt project — staging / intermediate / marts → analytics.*."""
+        """SEPA dbt project — staging / intermediate / marts → dw_stock.*."""
         yield from dbt.cli(["build"], context=context).stream()
 
     return [bifrost_research_dbt_assets]

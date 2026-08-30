@@ -1,0 +1,17 @@
+# Mounted as $DAGSTER_HOME/dagster.yaml — Postgres instance storage on Golden Source.
+# Requires schema ops_dagster (scripts/ops_dagster_schema.sql).
+storage:
+  postgres:
+    postgres_db:
+      username:
+        env: ANALYTICS_PG_USER
+      password:
+        env: ANALYTICS_PG_PASSWORD
+      hostname:
+        env: ANALYTICS_PG_HOST
+      db_name:
+        env: ANALYTICS_PG_DATABASE
+      port:
+        env: ANALYTICS_PG_PORT
+      params:
+        options: "-c search_path=ops_dagster,public"

@@ -1,4 +1,4 @@
-"""Smoke tests for Dagster Definitions (Wave 5.1).
+"""Smoke tests for Dagster Definitions (Data Husbandry + Wave 5.1).
 
 Skipped when ``dagster`` is not installed (optional ``[orchestration]`` extra).
 """
@@ -30,6 +30,10 @@ def test_definitions_load_without_dbt_manifest() -> None:
     assert isinstance(defs, Definitions)
     keys = {k.to_user_string() for k in defs.resolve_all_asset_keys()}
     assert "external/plugin_market_ingest" in keys
+    assert "batch/market_eod" in keys
+    assert "batch/flex_trades" in keys
+    assert "batch/husbandry_gate" in keys
+    assert "features/sepa_projection" in keys
     for engine in (
         "volatility",
         "momentum",
@@ -42,6 +46,20 @@ def test_definitions_load_without_dbt_manifest() -> None:
         "backtest",
     ):
         assert f"engines/{engine}" in keys
+
+
+def test_definitions_include_schedule() -> None:
+    from bifrost_research.orchestration.definitions import build_definitions
+
+    with patch(
+        "bifrost_research.orchestration.dbt_assets.dbt_manifest_exists",
+        return_value=False,
+    ):
+        defs = build_definitions()
+    names = {s.name for s in defs.schedules}
+    assert "research_trading_day_schedule" in names
+    job_names = {j.name for j in defs.jobs}
+    assert "research_trading_day" in job_names
 
 
 def test_definitions_include_dbt_when_manifest_present() -> None:
@@ -69,3 +87,8 @@ def test_module_entrypoint_defs() -> None:
     forecast_key = AssetKey(["engines", "forecast"])
     parents = graph.get(forecast_key).parent_keys
     assert AssetKey(["engines", "terrain"]) in parents
+    # Volatility gated on husbandry batch
+    vol_key = AssetKey(["engines", "volatility"])
+    vol_parents = graph.get(vol_key).parent_keys
+    assert AssetKey(["batch", "market_eod"]) in vol_parents
+    assert AssetKey(["batch", "husbandry_gate"]) in vol_parents

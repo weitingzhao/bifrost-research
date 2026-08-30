@@ -13,6 +13,8 @@ metadata:
 spec:
   schedule: "30 23 * * 1-5"
   timeZone: UTC
+  # Suspended: Dagster research_trading_day / plugin_batch owns this slot
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -88,6 +90,8 @@ metadata:
 spec:
   schedule: "35 23 * * 1-5"
   timeZone: UTC
+  # Suspended: Dagster research_trading_day / plugin_batch owns this slot
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -163,6 +167,8 @@ metadata:
 spec:
   schedule: "40 23 * * 1-5"
   timeZone: UTC
+  # Suspended: Dagster research_trading_day / plugin_batch owns this slot
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -238,6 +244,8 @@ metadata:
 spec:
   schedule: "45 23 * * 1-5"
   timeZone: UTC
+  # Suspended: Dagster research_trading_day / plugin_batch owns this slot
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -313,6 +321,8 @@ metadata:
 spec:
   schedule: "50 23 * * 1-5"
   timeZone: UTC
+  # Suspended: Dagster research_trading_day / plugin_batch owns this slot
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -388,6 +398,8 @@ metadata:
 spec:
   schedule: "55 23 * * 1-5"
   timeZone: UTC
+  # Suspended: Dagster research_trading_day / plugin_batch owns this slot
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3

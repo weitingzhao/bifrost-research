@@ -1,6 +1,6 @@
 [project]
 name = "bifrost-research"
-version = "0.48.4"
+version = "0.50.0"
 description = "Bifrost Research Engine — OLAP analytics, engines, and Research API"
 requires-python = ">=3.11"
 dependencies = [
@@ -16,9 +16,10 @@ dependencies = [
 
 [project.optional-dependencies]
 orchestration = [
-    "dagster>=1.9,<2.0",
-    "dagster-dbt>=0.25,<1.0",
-    "dagster-webserver>=1.9,<2.0",
+    "dagster>=1.12,<2.0",
+    "dagster-dbt>=0.28,<1.0",
+    "dagster-webserver>=1.12,<2.0",
+    "dagster-postgres>=0.28,<1.0",
 ]
 copilot = [
     "anthropic>=0.30",

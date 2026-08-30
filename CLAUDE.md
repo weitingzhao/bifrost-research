@@ -26,9 +26,10 @@
 | dbt | `src/bifrost_research/dbt/` — SEPA 宽表管线（原 bifrost-analytics） |
 | Engines | `src/bifrost_research/engines/` — volatility · momentum · gex · flow（W3）· **forecast / event_radar / backtest（W4）** |
 | API | `src/bifrost_research/api/` — Research API `:8795`（SEPA + options + `/research/*` W3–W4 + elementary） |
-| 编排 | `src/bifrost_research/orchestration/` — **Dagster Wave 5.1**（dbt + engines + AI） |
-| K8s | namespace `research`（`k8s/api/`；`k8s/engines/` CronJobs；`k8s/orchestration/` Dagster stub replicas:0） |
+| 编排 | `src/bifrost_research/orchestration/` — **Dagster**（批式养库：Plugin enqueue + dbt + projection + engines；`ops_dagster` instance storage） |
+| K8s | namespace `research`（`k8s/api/`；`k8s/engines/` 剩余 Cron；`k8s/orchestration/dagster.yaml` replicas:1） |
 | D10 | **BLOCKED** — 不写交易执行路径 |
+| 养库边界 | 批式 Golden Source（Market / Flex / Research 全槽）→ Dagster multi-schedule；IB Client / 实时总线 → Deployment。Ground truth = signal-health asof，不是 Cron Complete。**全部养库 CronJob `suspend: true`**。 |
 
 ### Wave 2–4 所有权（Wave 6.4+ 统一 `features.*`）
 
@@ -40,37 +41,37 @@
 - CronJobs：`k8s/engines/cronjob-volatility.yaml` + `k8s/engines/cronjob-engines.yaml` + `k8s/engines/cronjob-intraday.yaml` + **`cronjob-event-radar.yaml`**（W3–W4 + news ingest；镜像 tag `0.5.7`）
 - LLM：`engines/forecast/llm.py` 可插拔（OpenAI/Anthropic/Ollama）；默认 **heuristic** 离线可测
 
-### Wave 5.1 — Dagster 编排
+### Wave 5.1+ — Dagster 批调度（Data Husbandry）
 
-依赖链（文档化）：
+依赖链：
 
 ```
-Plugin market ingest (external) → dbt (dw_stock.*) → Python analytics → AI forecast
+Dagster market_eod / flex_* (HTTP enqueue) → Plugin workers (ops_jobs.*)
+  → husbandry_gate → dbt (dw_stock.*) → sepa_projection → engines → scan
 ```
 
 | 项 | 说明 |
 |----|------|
 | Definitions | `bifrost_research.orchestration.definitions:defs` |
-| dbt | `dagster-dbt` 读 `src/bifrost_research/dbt/target/manifest.json`（缺失则跳过 dbt assets） |
-| Engines | volatility · momentum · gex · surface · flow · terrain · forecast · event_radar · backtest |
-| Extra | `pip install -e ".[orchestration]"`（dagster + dagster-dbt + dagster-webserver） |
+| Schedule | `research_trading_day_schedule` Mon–Fri 22:30 America/New_York |
+| Instance | Golden Source schema `ops_dagster`（`scripts/ops_dagster_schema.sql`） |
+| Extra | `pip install -e ".[orchestration]"`（dagster + dagster-dbt + dagster-webserver + dagster-postgres） |
 | 本地 UI | `make dagster-dev` → http://127.0.0.1:3000 |
-| K8s | `k8s/orchestration/dagster.yaml` — webserver/daemon **replicas: 0** stub |
-| 版本 | **`0.7.0`** — Feature Store `features.*` unify + SEPA projection (Waves 6.4–6.6) |
+| K8s | `k8s/orchestration/dagster.yaml` — webserver/daemon **replicas: 1** · image `0.50.0-dagster` |
+| 版本 | **`0.50.0`** — Full husbandry multi-schedule migrate (Massive UTC + Research aux); all Cron suspended |
 
-**Runtime Ignition 2026-08-21 DONE**：`research` NS + `research-api:8795` + dbt/volatility/engines/intraday CronJobs 已在 k3s 出数；platform-api `/api/v1/research/status` reachable。Dagster 仍 `replicas: 0`。
+**仍留 Cron**：**无**（养库已全部迁 Dagster）。IB Gateway / Client / realtime WS = Deployment，不进 asset graph。
 
-**Event Radar news ingest (decision A) DONE**：Research-workspace `事件雷达工作流/input/` → Cron `research-engines-event-radar` → `features.event_signal_radar_daily`。文档：`docs/EVENT_RADAR_INGEST.md`。
+**已 suspend（由 Dagster 接管）**：Massive 全部 SLOT Cron；Flex trades/transactions；Research dbt / volatility / engines / scan / VRP / OpEx / SVI / intraday / settlement / event-radar / alert / signal-hit / canonical-pnl / agents / ensure-partitions / vol-weekly-backfill。
 
-**Wave 5 foundation（已到位）**：Dagster 为 **optional** extra（`[orchestration]`）+ K8s stub（replicas:0）；Ops Console 侧 Research / 管线治理 catalog 已接通。生产启用仍见下方 blockers。
+**生产点火步骤**：
 
-**生产 Dagster 部署 blockers**：
+1. Apply `scripts/ops_dagster_schema.sql` on Golden Source
+2. `make dbt-parse && make build-image-dagster`；注入 write tokens 到 `bifrost-research-secrets`
+3. `kubectl apply -f k8s/orchestration/dagster.yaml`
+4. 确认 overlapping Cron 仍为 `suspend: true`（禁止与 Dagster 双写同一 `features.*` 日表）
 
-1. 需 Postgres / SQLite **Dagster instance storage**（run history / schedules）— 尚未配置
-2. 镜像需含 `[orchestration]` 依赖；当前 Dockerfile 可能未装 dagster
-3. `dbt parse` 产物 `manifest.json` 需进镜像或 init container
-4. Secret / PG 凭证、daemon + webserver 联调；replicas 仍为 0
-5. CronJob → Dagster schedules 迁移与 Owner 验收
+**Event Radar news ingest (decision A) DONE**：Research-workspace `事件雷达工作流/input/` → Dagster `research_event_radar_schedule`（Cron suspended）→ `features.event_signal_radar_daily`。文档：`docs/EVENT_RADAR_INGEST.md`。
 
 ### SEPA 数据流 (Wave 6.5+)
 
@@ -176,7 +177,12 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
-- 版本：`0.48.4`（Loop Smartness 下一刀 — Approve-all 复用 Inbox `apply_draft_approval`（policy merge）；`candidate_batch` approve 建轻量 hypothesis + `promote_candidate`；harness `top_scan_symbols` 应用 `resolve_preset`；flag→decay lens 映射，unmapped/无 decay 行 skip 不当 failing；本机 research-api 加载工作区源码）
+- 版本：`0.50.0`（Full husbandry multi-schedule — Massive UTC slots + Research aux; Cron all suspended）
+- 历史：`0.49.3`（schedule default RUNNING；husbandry closed-loop）
+- 历史：`0.49.2`（orchestration 探测分级 schema/permission/empty；ops_dagster SELECT GRANT）
+- 历史：`0.49.1`（Research health layers — `GET /research/orchestration/status`；signal-health overall 含 stale；Console 三层 Pipeline health + 侧栏 research_olap 灯）
+- 历史：`0.49.0`（Data Husbandry — Dagster batch schedule + plugin enqueue assets + sepa_projection；ops_dagster instance；重叠日批 Cron suspend）
+- 历史：`0.48.4`（Loop Smartness 下一刀 — Approve-all 复用 Inbox `apply_draft_approval`（policy merge）；`candidate_batch` approve 建轻量 hypothesis + `promote_candidate`；harness `top_scan_symbols` 应用 `resolve_preset`；flag→decay lens 映射，unmapped/无 decay 行 skip 不当 failing；本机 research-api 加载工作区源码）
 - 历史：`0.48.3`（Wave Z Loop Cleanup — harness/{gate,suggestion}.py 从 runtime.py 拆出（runtime 再 re-export 保兼容）；FE `components/research/harness/{CandidateBatchBody,PolicySuggestionBody}` 从 `cockpit/DraftCard.tsx` 抽出（308→147 行）；D10/D13 边界审计：harness/* 无 `ib:operator:cmd` / `place_order` / Trade DB 写入；写路径限定 `research.*` + `features.*`；新增 `tests/copilot/test_policy_suggestion_contract.py` 锁死 `plan_llm.POLICY_SUGGESTION_KEYS` == `objective_repo.POLICY_SUGGESTION_WHITELIST`）
 - 历史：`0.48.2`（Wave Y.3 Loop Smartness — filter-scoped hit-rate gate（B3）+ awaiting_approval 不阻断 + candidate_batch draft 带 `hit_rate_warn`（C3）；`policy_suggestion` 独立 Decision Inbox draft，approve 时 `objective_repo.patch_policy_json` jsonb `||` merge 到 `objective.policy_json`（A1）；whitelist = `{preset, flag_filter, min_composite_score, min_hit_rate, max_candidates}`；LLM policy_suggestion 二重过滤（pydantic + repositories）；D10 BLOCKED — 仍不触交易执行）
 - 历史：`0.48.1`（Wave Y.2 Loop Smartness — harness LLM plan step：`plan_llm.generate_plan_llm()` DeepSeek OpenAI-compat + Pydantic `LLMPlanResponse` schema（op 白名单 scan_universe/signal_decay_check/propose_candidates/await_approval）+ 15s timeout + 全 fail-soft；`plan.generated_by = "llm" | "heuristic"`；`policy_suggestion` advisory（不改 objective.policy_json）；env `BIFROST_HARNESS_LLM_PLAN=1` 或 `policy.use_llm_plan` 触发；`policy.llm_model` 可覆盖默认 `deepseek-reasoner`；D10 BLOCKED — plan 只描述路径不下单）

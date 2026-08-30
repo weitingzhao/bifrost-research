@@ -225,6 +225,17 @@ def _iv_reconstruction(conn: Any) -> dict[str, Any]:
         }
 
 
+def _overall_from_freshness(freshness: list[dict[str, Any]]) -> str:
+    """Roll up table freshness rows — stale and missing both degrade."""
+    if not freshness:
+        return "empty"
+    if all(f.get("status") in ("empty", "missing") for f in freshness):
+        return "empty"
+    if any(f.get("status") in ("missing", "stale") for f in freshness):
+        return "degraded"
+    return "ok"
+
+
 @router.get("")
 def signal_health() -> dict[str, Any]:
     conn = _connect_or_503()
@@ -252,11 +263,7 @@ def signal_health() -> dict[str, Any]:
 
         iv_recon = _iv_reconstruction(conn)
 
-        overall = "ok"
-        if any(f.get("status") == "missing" for f in freshness):
-            overall = "degraded"
-        if all(f.get("status") in ("empty", "missing") for f in freshness):
-            overall = "empty"
+        overall = _overall_from_freshness(freshness)
 
         return _ok(
             {
@@ -284,4 +291,4 @@ def signal_health() -> dict[str, Any]:
             pass
 
 
-__all__ = ["router"]
+__all__ = ["router", "_overall_from_freshness"]

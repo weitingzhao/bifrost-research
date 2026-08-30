@@ -1,15 +1,14 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: research-eod-review
+  name: research-canonical-pnl
   namespace: research
   labels:
-    app.kubernetes.io/name: research-eod-review
+    app.kubernetes.io/name: research-canonical-pnl
     app.kubernetes.io/part-of: bifrost-research
-    bifrost.research/slot: eod-review
+    bifrost.research/slot: canonical-pnl
 spec:
-  # 16:30 ET ≈ 21:30 UTC (EST)
-  schedule: "30 21 * * MON-FRI"
+  schedule: "40 23 * * MON-FRI"
   timeZone: UTC
   # Suspended: Dagster multi-schedule owns this slot
   suspend: true
@@ -22,8 +21,8 @@ spec:
       template:
         metadata:
           labels:
-            app.kubernetes.io/name: research-eod-review
-            bifrost.research/slot: eod-review
+            app.kubernetes.io/name: research-canonical-pnl
+            bifrost.research/slot: canonical-pnl
         spec:
           restartPolicy: Never
           initContainers:
@@ -41,12 +40,17 @@ spec:
                   done
                   exit 1
           containers:
-            - name: eod-review
-              image: 192.168.10.73:30500/bifrost-research:0.17.2
+            - name: compute
+              image: 192.168.10.73:30500/bifrost-research:0.35.0
               imagePullPolicy: Always
               args:
                 - python
-                - /app/scripts/run_eod_agent.py
+                - -m
+                - bifrost_research.engines.canonical_pnl.entry
+                - --lookback-months
+                - "6"
+                - --entry-stride-days
+                - "5"
               envFrom:
                 - secretRef:
                     name: bifrost-research-secrets
@@ -60,10 +64,12 @@ spec:
                   value: "bifrost_golden_source"
                 - name: ANALYTICS_PG_USER
                   value: "analytics_writer"
+                - name: RESEARCH_WATCHLIST
+                  value: "SPY,QQQ,IWM,SPX,NVDA,AAPL,META,GOOG,AMZN,MSFT,TSLA,PLTR,MU,MRVL,ANET,CAVA,CBRS,DAVE,DDOG,ECHO,HIMS,NBIS,NNE,RKLB,SATS,SPCX"
               resources:
                 requests:
-                  cpu: 50m
-                  memory: 128Mi
+                  cpu: 100m
+                  memory: 256Mi
                 limits:
-                  cpu: 500m
-                  memory: 512Mi
+                  cpu: "1"
+                  memory: 2Gi

@@ -10,6 +10,8 @@ spec:
   # After market close + Massive ingest; Elementary report written to PVC
   schedule: "0 3 * * 1-5"
   timeZone: "America/New_York"
+  # Suspended: Dagster research_trading_day / plugin_batch owns this slot
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3

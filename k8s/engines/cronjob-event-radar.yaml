@@ -35,6 +35,8 @@ spec:
   # Every 30 minutes on weekdays — Owner drops files into input/; Cron drains.
   schedule: "*/30 * * * 1-5"
   timeZone: America/New_York
+  # Suspended: Dagster multi-schedule owns this slot
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3

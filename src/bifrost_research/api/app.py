@@ -30,6 +30,7 @@ from bifrost_research.api.scan import router as scan_router
 from bifrost_research.api.signal_decay import router as signal_decay_router
 from bifrost_research.api.sepa import router as sepa_router
 from bifrost_research.api.signal_health import router as signal_health_router
+from bifrost_research.api.orchestration import router as orchestration_router
 from bifrost_research.api.similar_regime import router as similar_regime_router
 from bifrost_research.api.vol_surface import router as vol_surface_router
 from bifrost_research.api.vrp import router as vrp_router
@@ -71,6 +72,7 @@ def create_app() -> FastAPI:
     app.include_router(vrp_router)
     app.include_router(canonical_pnl_router)
     app.include_router(signal_health_router)
+    app.include_router(orchestration_router)
     app.include_router(similar_regime_router)
     app.include_router(scan_router)
     app.include_router(signal_decay_router)

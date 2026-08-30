@@ -1,31 +1,31 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: research-eod-review
+  name: research-scan
   namespace: research
   labels:
-    app.kubernetes.io/name: research-eod-review
+    app.kubernetes.io/name: research-scan
     app.kubernetes.io/part-of: bifrost-research
-    bifrost.research/slot: eod-review
+    bifrost.research/slot: scan
 spec:
-  # 16:30 ET ≈ 21:30 UTC (EST)
-  schedule: "30 21 * * MON-FRI"
+  schedule: "35 22 * * 1-5"
   timeZone: UTC
-  # Suspended: Dagster multi-schedule owns this slot
+  # Suspended: Dagster research_trading_day / plugin_batch owns this slot
   suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      backoffLimit: 2
+      backoffLimit: 3
       template:
         metadata:
           labels:
-            app.kubernetes.io/name: research-eod-review
-            bifrost.research/slot: eod-review
+            app.kubernetes.io/name: research-scan
+            bifrost.research/slot: scan
         spec:
           restartPolicy: Never
+
           initContainers:
             - name: wait-pg
               image: busybox:1.36
@@ -41,12 +41,15 @@ spec:
                   done
                   exit 1
           containers:
-            - name: eod-review
-              image: 192.168.10.73:30500/bifrost-research:0.17.2
+            - name: compute
+              image: 192.168.10.73:30500/bifrost-research:0.40.0
               imagePullPolicy: Always
               args:
                 - python
-                - /app/scripts/run_eod_agent.py
+                - -m
+                - bifrost_research.engines.scan.entry
+                - --lookback-days
+                - "3"
               envFrom:
                 - secretRef:
                     name: bifrost-research-secrets
@@ -60,6 +63,8 @@ spec:
                   value: "bifrost_golden_source"
                 - name: ANALYTICS_PG_USER
                   value: "analytics_writer"
+                - name: RESEARCH_WATCHLIST
+                  value: "SPY,QQQ,IWM,SPX,NVDA,AAPL,META,GOOG,AMZN,MSFT,TSLA,PLTR,MU,MRVL,ANET,CAVA,CBRS,DAVE,DDOG,ECHO,HIMS,NBIS,NNE,RKLB,SATS,SPCX"
               resources:
                 requests:
                   cpu: 50m

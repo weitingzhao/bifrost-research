@@ -11,6 +11,8 @@ spec:
   # 06:30 ET ≈ 11:30 UTC (EST); adjust for EDT as needed
   schedule: "30 11 * * MON-FRI"
   timeZone: UTC
+  # Suspended: Dagster multi-schedule owns this slot
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3

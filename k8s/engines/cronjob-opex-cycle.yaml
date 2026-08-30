@@ -10,6 +10,8 @@ metadata:
 spec:
   schedule: "30 23 * * MON-FRI"
   timeZone: UTC
+  # Suspended: Dagster multi-schedule owns this slot
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3

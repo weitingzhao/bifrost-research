@@ -1,6 +1,6 @@
-# Minimal Dagster webserver / daemon stubs for research NS.
-# Primary local path remains: `make dagster-dev` (dagster UI on :3000).
-# Production deploy blockers: see CLAUDE.md § Dagster / Wave 5.1.
+# Dagster webserver / daemon for research NS — batch husbandry scheduler.
+# Instance storage: Golden Source schema ops_dagster (scripts/ops_dagster_schema.sql).
+# Image: orchestration target (dagster + dagster-dbt + dagster-postgres).
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -17,6 +17,32 @@ data:
           module_name: bifrost_research.orchestration.definitions
           attribute: defs
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dagster-instance
+  namespace: research
+  labels:
+    app.kubernetes.io/part-of: bifrost-research
+    bifrost.research/role: orchestration
+data:
+  dagster.yaml: |
+    storage:
+      postgres:
+        postgres_db:
+          username:
+            env: ANALYTICS_PG_USER
+          password:
+            env: ANALYTICS_PG_PASSWORD
+          hostname:
+            env: ANALYTICS_PG_HOST
+          db_name:
+            env: ANALYTICS_PG_DATABASE
+          port:
+            env: ANALYTICS_PG_PORT
+          params:
+            options: "-c search_path=ops_dagster,public"
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,7 +53,7 @@ metadata:
     app.kubernetes.io/part-of: bifrost-research
     bifrost.research/role: orchestration
 spec:
-  replicas: 0
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: dagster-webserver
@@ -39,9 +65,18 @@ spec:
     spec:
       containers:
         - name: webserver
-          image: 192.168.10.73:30500/bifrost-research:0.5.0-dagster
+          image: 192.168.10.73:30500/bifrost-research:0.50.0-dagster
           imagePullPolicy: IfNotPresent
-          command: ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "/opt/dagster/workspace.yaml"]
+          command:
+            [
+              "dagster-webserver",
+              "-h",
+              "0.0.0.0",
+              "-p",
+              "3000",
+              "-w",
+              "/opt/dagster/workspace.yaml",
+            ]
           ports:
             - name: http
               containerPort: 3000
@@ -50,6 +85,8 @@ spec:
                 name: bifrost-research-secrets
                 optional: true
           env:
+            - name: DAGSTER_HOME
+              value: /opt/dagster/home
             - name: ANALYTICS_PG_HOST
               value: "bifrost-postgres-rw.data.svc.cluster.local"
             - name: ANALYTICS_PG_PORT
@@ -58,9 +95,31 @@ spec:
               value: "bifrost_golden_source"
             - name: ANALYTICS_PG_USER
               value: "analytics_writer"
+            - name: MARKET_DATA_API_URL
+              value: "http://market-data-api.plugin-market-data.svc.cluster.local:8790"
+            - name: FLEX_QUERY_API_URL
+              value: "http://flex-query-api.plugin-flex-query.svc.cluster.local:8791"
+            - name: MARKET_DATA_WRITE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bifrost-research-secrets
+                  key: market-data-write-token
+                  optional: true
+            - name: FLEX_QUERY_WRITE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bifrost-research-secrets
+                  key: flex-query-write-token
+                  optional: true
           volumeMounts:
             - name: workspace
-              mountPath: /opt/dagster
+              mountPath: /opt/dagster/workspace.yaml
+              subPath: workspace.yaml
+            - name: dagster-home
+              mountPath: /opt/dagster/home
+            - name: instance
+              mountPath: /opt/dagster/home/dagster.yaml
+              subPath: dagster.yaml
           resources:
             requests:
               cpu: 100m
@@ -72,6 +131,11 @@ spec:
         - name: workspace
           configMap:
             name: dagster-workspace
+        - name: dagster-home
+          emptyDir: {}
+        - name: instance
+          configMap:
+            name: dagster-instance
 ---
 apiVersion: v1
 kind: Service
@@ -82,12 +146,14 @@ metadata:
     app.kubernetes.io/name: dagster-webserver
     bifrost.research/role: orchestration
 spec:
+  type: NodePort
   selector:
     app.kubernetes.io/name: dagster-webserver
   ports:
     - name: http
       port: 3000
       targetPort: 3000
+      nodePort: 30301
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -99,7 +165,7 @@ metadata:
     app.kubernetes.io/part-of: bifrost-research
     bifrost.research/role: orchestration
 spec:
-  replicas: 0
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: dagster-daemon
@@ -111,7 +177,7 @@ spec:
     spec:
       containers:
         - name: daemon
-          image: 192.168.10.73:30500/bifrost-research:0.5.0-dagster
+          image: 192.168.10.73:30500/bifrost-research:0.50.0-dagster
           imagePullPolicy: IfNotPresent
           command: ["dagster-daemon", "run", "-w", "/opt/dagster/workspace.yaml"]
           envFrom:
@@ -119,6 +185,8 @@ spec:
                 name: bifrost-research-secrets
                 optional: true
           env:
+            - name: DAGSTER_HOME
+              value: /opt/dagster/home
             - name: ANALYTICS_PG_HOST
               value: "bifrost-postgres-rw.data.svc.cluster.local"
             - name: ANALYTICS_PG_PORT
@@ -127,9 +195,31 @@ spec:
               value: "bifrost_golden_source"
             - name: ANALYTICS_PG_USER
               value: "analytics_writer"
+            - name: MARKET_DATA_API_URL
+              value: "http://market-data-api.plugin-market-data.svc.cluster.local:8790"
+            - name: FLEX_QUERY_API_URL
+              value: "http://flex-query-api.plugin-flex-query.svc.cluster.local:8791"
+            - name: MARKET_DATA_WRITE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bifrost-research-secrets
+                  key: market-data-write-token
+                  optional: true
+            - name: FLEX_QUERY_WRITE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bifrost-research-secrets
+                  key: flex-query-write-token
+                  optional: true
           volumeMounts:
             - name: workspace
-              mountPath: /opt/dagster
+              mountPath: /opt/dagster/workspace.yaml
+              subPath: workspace.yaml
+            - name: dagster-home
+              mountPath: /opt/dagster/home
+            - name: instance
+              mountPath: /opt/dagster/home/dagster.yaml
+              subPath: dagster.yaml
           resources:
             requests:
               cpu: 100m
@@ -141,3 +231,8 @@ spec:
         - name: workspace
           configMap:
             name: dagster-workspace
+        - name: dagster-home
+          emptyDir: {}
+        - name: instance
+          configMap:
+            name: dagster-instance
