@@ -58,7 +58,7 @@ Dagster market_eod / flex_* (HTTP enqueue) → Plugin workers (ops_jobs.*)
 | Extra | `pip install -e ".[orchestration]"`（dagster + dagster-dbt + dagster-webserver + dagster-postgres） |
 | 本地 UI | `make dagster-dev` → http://127.0.0.1:3000 |
 | K8s | `k8s/orchestration/dagster.yaml` — webserver/daemon **replicas: 1** · image `0.50.0-dagster` |
-| 版本 | **`0.50.0`** — Full husbandry multi-schedule migrate (Massive UTC + Research aux); all Cron suspended |
+| 版本 | **`0.50.1`** — orchestration/status multi-schedule observe (`schedules_*` / `recent_failures`); 0.50.0 = Full husbandry multi-schedule migrate |
 
 **仍留 Cron**：**无**（养库已全部迁 Dagster）。IB Gateway / Client / realtime WS = Deployment，不进 asset graph。
 
@@ -177,7 +177,8 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
-- 版本：`0.50.0`（Full husbandry multi-schedule — Massive UTC slots + Research aux; Cron all suspended）
+- 版本：`0.50.1`（orchestration/status multi-schedule observe for Ops Console）
+- 历史：`0.50.0`（Full husbandry multi-schedule — Massive UTC slots + Research aux; Cron all suspended）
 - 历史：`0.49.3`（schedule default RUNNING；husbandry closed-loop）
 - 历史：`0.49.2`（orchestration 探测分级 schema/permission/empty；ops_dagster SELECT GRANT）
 - 历史：`0.49.1`（Research health layers — `GET /research/orchestration/status`；signal-health overall 含 stale；Console 三层 Pipeline health + 侧栏 research_olap 灯）

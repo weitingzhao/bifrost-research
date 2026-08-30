@@ -15,6 +15,8 @@ from fastapi import APIRouter
 
 from bifrost_research.db.conn import connect
 
+from bifrost_research.api.orchestration_schedules import attach_schedules_from_conn
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/research/orchestration", tags=["research-orchestration"])
 
@@ -370,6 +372,7 @@ def orchestration_status() -> dict[str, Any]:
                 data = compute_orchestration_status(last_run=None)
             else:
                 data = compute_orchestration_status(last_run=last)
+            data = attach_schedules_from_conn(conn, data)
         except Exception as exc:
             logger.warning("orchestration status probe failed: %s", exc)
             try:
@@ -380,6 +383,7 @@ def orchestration_status() -> dict[str, Any]:
                 data = compute_orchestration_status(permission_denied=True)
             else:
                 data = compute_orchestration_status(error=str(exc))
+            data = attach_schedules_from_conn(conn, data)
         return _ok(data)
     finally:
         try:
