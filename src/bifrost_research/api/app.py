@@ -55,7 +55,7 @@ def create_app() -> FastAPI:
             "Bifrost Research Engine API (port 8795). "
             "SEPA analytics, options features.* metrics, Wave 3 engines "
             "(momentum / GEX / IV surface / order flow), Wave 4 AI Intelligence "
-            "(terrain / forecast / event radar / backtest), and Elementary status."
+            "(terrain / forecast / event radar / backtest), and Elementary report files."
         ),
         lifespan=_lifespan,
     )

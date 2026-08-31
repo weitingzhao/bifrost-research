@@ -21,3 +21,5 @@ def test_research_routes_registered() -> None:
     assert "/research/forecast/terrain/compute" in paths
     assert "/research/event-radar/run" in paths
     assert "/research/backtest/settle" in paths
+    assert "/analytics/elementary" in paths
+    assert "/analytics/elementary/files/{asset_path}" in paths
