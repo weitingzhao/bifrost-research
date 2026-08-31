@@ -1,10 +1,19 @@
-.PHONY: install-dev install-orchestration dbt-deps dbt-run dbt-test dbt-docs dbt-clean dbt-parse lint test test-mcp build-image build-image-dagster run-api run-mcp db-init-analytics db-init-research db-init-ops-dagster db-migrate-6-4 db-migrate-6-6 dagster-dev dagster-defs dagster-ensure-schedule verify-husbandry-schedulers event-radar-ingest smoke-agents-sdk sync-openai-secret
+.PHONY: install-dev install-orchestration dbt-deps dbt-run dbt-test dbt-docs dbt-clean dbt-parse lint test test-mcp build-image build-image-dagster run-api run-mcp db-init-analytics db-init-research db-init-ops-dagster db-migrate-6-4 db-migrate-6-6 dagster-dev dagster-defs dagster-ensure-schedule verify-husbandry-schedulers event-radar-ingest smoke-agents-sdk sync-openai-secret check-code-health install-hooks
 
 DBT_DIR := src/bifrost_research/dbt
 DBT_PROFILES := $(DBT_DIR)
 
 install-dev:
 	pip install -e ".[dev]"
+	@$(MAKE) install-hooks
+
+install-hooks:
+	@git config core.hooksPath .githooks
+	@chmod +x .githooks/pre-commit
+	@echo "git hooksPath -> .githooks (code-health pre-commit)"
+
+check-code-health:
+	bash ../scripts/code-health/scan.sh --repo bifrost-research
 
 install-orchestration:
 	pip install -e ".[dev,orchestration]"

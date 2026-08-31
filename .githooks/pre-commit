@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Code-health ratchet — refuse commit when value > baseline.
+# Enable once per clone: make install-hooks
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+bash "${ROOT}/../scripts/code-health/scan.sh" --repo bifrost-research
