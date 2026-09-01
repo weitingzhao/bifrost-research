@@ -33,7 +33,7 @@ spec:
               exit 1
       containers:
         - name: compute
-          image: 192.168.10.73:30500/bifrost-research:0.62.1
+          image: 192.168.10.73:30500/bifrost-research:0.63.0
           imagePullPolicy: Always
           args:
             - python
