@@ -88,8 +88,13 @@ def test_the_three_causes_are_all_distinguishable() -> None:
 
 
 def test_a_non_batch_token_still_uses_the_per_tool_validator() -> None:
-    """The batch branch must not swallow ordinary Owner tokens."""
-    err = _gate("not-a-batch-pass", run_env=RUN)
+    """The batch branch must not swallow ordinary Owner tokens.
+
+    The env var is set only inside the curator's own in-process agent run, so an
+    Owner token never arrives while it is set — outside that window the per-tool
+    validator stays the reporter.
+    """
+    err = _gate("not-a-batch-pass", run_env=None)
     assert "malformed approval token" in err
 
 
@@ -100,3 +105,20 @@ def test_dry_run_needs_no_token_at_all() -> None:
         )
         is None
     )
+
+
+def test_wrong_token_during_a_curator_run_names_the_transcription_problem() -> None:
+    """The case that actually fired: curator running, token is not its pass.
+
+    Reported as an ordinary `malformed approval token`, which points at the
+    token's format rather than at the model having failed to carry it across.
+    """
+    err = _gate("some-owner-token", run_env=RUN)
+    assert "curator run is in context" in err
+    assert "no curator-batch prefix" in err
+
+
+def test_wrong_token_without_a_curator_run_is_still_a_token_problem() -> None:
+    """Outside a curator run the per-tool validator is the right reporter."""
+    err = _gate("some-owner-token", run_env=None)
+    assert "malformed approval token" in err

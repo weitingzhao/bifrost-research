@@ -64,6 +64,22 @@ def require_approval_or_error(
             "error": "403: approval token required",
             "status": 403,
         }
+    if curator_run_id:
+        # A curator run was in context but what arrived was not the batch pass
+        # it was handed. The pass is a ~110-character HMAC containing pipes that
+        # the model has to copy out of its prompt into a tool argument, so it
+        # goes missing far more readily than a design that never asked it to.
+        # Falling through to the per-tool validator here reports a token problem
+        # and hides the transcription one.
+        return {
+            "ok": False,
+            "error": (
+                "403: batch pass rejected — a curator run is in context but the "
+                f"token supplied is not its batch pass (got {len(str(approval_token).strip())} "
+                "chars with no curator-batch prefix)"
+            ),
+            "status": 403,
+        }
     try:
         validate_token(
             str(approval_token).strip(),

@@ -177,7 +177,8 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
-- 版本：`0.61.0`（W5 — batch pass 拒绝原因分因报错：无 curator 上下文 / token 被改 / 截断 / 过期 / 错 run
+- 版本：`0.61.1`（curator 在跑但 token 不是它的 batch pass —— 单独报错，指向转抄失败而非 token 格式）
+- 历史：`0.61.0`（W5 — batch pass 拒绝原因分因报错：无 curator 上下文 / token 被改 / 截断 / 过期 / 错 run
  此前五种情况同报 `400: malformed approval token`，headless curator 无法诊断自己被挡的原因）
 - 历史：`0.60.0`（W4 证据链 — 每个候选带「为什么选它 / 价格位置 / 期权视图 / 该来源历史命中率 / 失效条件」；
  `analyze_symbol` 进 op 白名单，且 **plan 第一次真正驱动执行**（此前 plan 写进 trace 后从不被读）；
