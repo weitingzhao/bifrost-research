@@ -78,8 +78,9 @@ market_reference = _make_slot_asset(
 )
 market_universe_calendar = _make_slot_asset(
     "market_universe_calendar",
-    ("universe-daily", "calendar"),
-    "UTC 22:00 — universe-daily + calendar (eod-pipeline on research_trading_day)",
+    ("universe-daily", "calendar", "eod-pipeline"),
+    "UTC 22:00 — universe-daily + calendar + eod-pipeline "
+    "(market_eod on research_trading_day remains catch-up)",
 )
 market_related = _make_slot_asset(
     "market_related",
@@ -150,7 +151,7 @@ _MARKET_SPECS: list[tuple[str, str, Any, str, str]] = [
         "market_universe_calendar_job",
         market_universe_calendar,
         "0 22 * * *",
-        "universe-daily+calendar",
+        "universe-daily+calendar+eod-pipeline",
     ),
     ("market_related_schedule", "market_related_job", market_related, "30 22 * * *", "related-rotate"),
     ("market_option_bars_schedule", "market_option_bars_job", market_option_bars, "45 22 * * *", "option-bars"),
