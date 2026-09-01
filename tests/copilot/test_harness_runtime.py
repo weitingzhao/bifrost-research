@@ -165,9 +165,12 @@ def _patch_repos(monkeypatch: pytest.MonkeyPatch, *, run_id: str = "run_1") -> d
 
     counter = {"n": 0}
 
-    def _create_candidate(conn, *, symbol, source, lens_snapshot, tags, source_ref):
+    def _create_candidate(
+        conn, *, symbol, source, lens_snapshot, tags, source_ref, score=None
+    ):
         counter["n"] += 1
         captured["candidate_syms"].append((symbol, lens_snapshot.get("data_source"), tags))
+        captured.setdefault("candidate_scores", []).append(score)
         return {"id": f"cand_{counter['n']}", "symbol": symbol}
 
     monkeypatch.setattr(rt.cand_repo, "create_candidate", _create_candidate)
