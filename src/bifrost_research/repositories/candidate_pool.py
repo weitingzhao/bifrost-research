@@ -120,6 +120,55 @@ def create_candidate(
     ttl_at = datetime.now(timezone.utc) + timedelta(days=max(1, ttl_days))
     tag_list = [t.strip() for t in (tags or []) if t and str(t).strip()]
 
+    # Proposing the same symbol again on the same day from the same source is a
+    # refresh, not a second candidate. Without this the pool grew to 104 rows
+    # across 16 symbols — 85% duplicates — and the page became a wall of repeats
+    # with the same name eleven times over.
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT {", ".join(_COLUMNS)}
+            FROM {TABLE_RESEARCH_CANDIDATE_POOL}
+            WHERE symbol = %s AND trade_date = %s AND source = %s AND owner_id = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (sym, td, src, owner_id),
+        )
+        existing = _row_to_dict(cur.fetchone())
+
+    if existing is not None:
+        if existing.get("status") != "open":
+            # Already decided today. Re-proposing must not resurrect something
+            # the Owner dismissed or already promoted.
+            return existing
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {TABLE_RESEARCH_CANDIDATE_POOL}
+                SET source_ref = %s::jsonb,
+                    score = %s,
+                    lens_snapshot = %s::jsonb,
+                    tags = %s,
+                    ttl_at = %s
+                WHERE id = %s
+                RETURNING {", ".join(_COLUMNS)}
+                """,
+                (
+                    _serialize_json(dict(source_ref or {})),
+                    score,
+                    _serialize_json(dict(lens_snapshot or {})),
+                    tag_list,
+                    ttl_at,
+                    existing["id"],
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        refreshed = _row_to_dict(row)
+        assert refreshed is not None
+        return refreshed
+
     sql = f"""
         INSERT INTO {TABLE_RESEARCH_CANDIDATE_POOL} (
             id, trade_date, symbol, source, source_ref, score,
