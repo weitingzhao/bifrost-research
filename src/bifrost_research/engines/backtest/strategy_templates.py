@@ -267,7 +267,58 @@ def covered_call_1sd(
     ]
 
 
+def long_stock_event(
+    *,
+    entry_offset_days: int = -1,
+    exit_offset_days: int = 2,
+    quantity: int = 100,
+) -> list[LegSpec]:
+    """Hold the underlying across the event — no option leg.
+
+    Every other template prices against ``raw_market.option_daily``, which today
+    holds a few weeks of history, so a multi-year event study returns nothing at
+    all. ``raw_market.stock_daily`` covers 15 months and ~15k symbols, and the
+    first question about an event thesis is whether the underlying moves at all
+    — before any question about structure or IV.
+    """
+    return [
+        LegSpec(
+            kind="stock",
+            side="buy",
+            quantity=quantity,
+            entry_offset_days=entry_offset_days,
+            exit_offset_days=exit_offset_days,
+            label="long stock",
+        ),
+    ]
+
+
+def short_stock_event(
+    *,
+    entry_offset_days: int = -1,
+    exit_offset_days: int = 2,
+    quantity: int = 100,
+) -> list[LegSpec]:
+    """Short the underlying across the event — the mirror of ``long_stock_event``.
+
+    Kept as its own template rather than a flag so a fade thesis reads as a fade
+    in the run record, instead of a long with a negated sign.
+    """
+    return [
+        LegSpec(
+            kind="stock",
+            side="sell",
+            quantity=quantity,
+            entry_offset_days=entry_offset_days,
+            exit_offset_days=exit_offset_days,
+            label="short stock",
+        ),
+    ]
+
+
 TEMPLATES: Mapping[str, TemplateFn] = {
+    "long_stock_event": long_stock_event,
+    "short_stock_event": short_stock_event,
     "long_atm_straddle": long_atm_straddle,
     "short_atm_straddle": short_atm_straddle,
     "long_atm_call": long_atm_call,
