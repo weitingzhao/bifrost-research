@@ -1,5 +1,5 @@
-# Research harness CronJob — Wave A+O (propose-only; D10 BLOCKED).
-# Suspended by default — enable manually in DEV after Owner sign-off / image roll.
+# Research harness CronJob — Wave A+O + LO-0 Loop Orchestrator.
+# DEV: unsuspended after Owner sign-off; STG/PROD remain suspended until Trust L0 verified.
 # Schedule filter: --schedule=daily_open matches research.objective.schedule.
 apiVersion: batch/v1
 kind: CronJob
@@ -14,7 +14,7 @@ spec:
   # Pre-open Mon-Fri (UTC); adjust when unsuspended
   schedule: "30 13 * * 1-5"
   timeZone: UTC
-  suspend: true
+  suspend: false
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -44,13 +44,15 @@ spec:
                   exit 1
           containers:
             - name: compute
-              image: 192.168.10.73:30500/bifrost-research:0.51.0
+              image: 192.168.10.73:30500/bifrost-research:0.56.2
               imagePullPolicy: Always
               args:
                 - python
                 - -m
                 - bifrost_research.copilot.harness.entry
                 - --schedule=daily_open
+                - --require-sepa-fresh
+                - --batch-mode
               envFrom:
                 - secretRef:
                     name: bifrost-research-secrets
@@ -64,6 +66,14 @@ spec:
                   value: "bifrost_golden_source"
                 - name: ANALYTICS_PG_USER
                   value: "analytics_writer"
+                - name: BIFROST_LOOP_OBJECTIVE_ID
+                  value: "obj-daily-loop-stock"
+                - name: BIFROST_HARNESS_LLM_PLAN
+                  value: "1"
+                - name: BIFROST_LOOP_BATCH_MODE
+                  value: "1"
+                - name: PLATFORM_API_URL
+                  value: "http://platform-api.platform.svc.cluster.local:8780"
               resources:
                 requests:
                   cpu: 50m

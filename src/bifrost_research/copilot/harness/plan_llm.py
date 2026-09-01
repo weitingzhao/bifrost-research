@@ -37,7 +37,16 @@ VALID_OPS = frozenset(
 # Wave Y.3: whitelist of keys the LLM is allowed to suggest for policy_json.
 # Must stay a subset of the policy_json fields the runtime actually honors.
 POLICY_SUGGESTION_KEYS = frozenset(
-    {"preset", "flag_filter", "min_composite_score", "min_hit_rate", "max_candidates"}
+    {
+        "preset",
+        "flag_filter",
+        "min_composite_score",
+        "min_hit_rate",
+        "max_candidates",
+        "universe_mode",
+        "layers",
+        "option_overlay",
+    }
 )
 
 DEFAULT_TIMEOUT_SECONDS = 15.0
@@ -117,9 +126,13 @@ def _build_messages(objective: dict[str, Any]) -> list[dict[str, str]]:
         "STRICT OUTPUT: Reply with a single JSON object (no markdown fences), matching this schema:\n"
         '  {"steps": [{"op": <op>, "note": <string>}, ...],\n'
         '   "reasoning": <optional short string, <=400 chars>,\n'
-        '   "policy_suggestion": <optional object with keys among preset, flag_filter, min_composite_score, min_hit_rate>}\n\n'
+        '   "policy_suggestion": <optional object with keys among preset, flag_filter, '
+        "min_composite_score, min_hit_rate, max_candidates, universe_mode, layers, option_overlay>}\n\n"
         f"Allowed op values (whitelist): {sorted(VALID_OPS)}.\n"
         "Recommended order: scan_universe → signal_decay_check → propose_candidates → await_approval.\n"
+        "For universe_mode stock_composite/sepa/momentum/events: describe SEPA/momentum/event layers; "
+        "do NOT mention IV hot watchlist unless option_overlay.enabled is true.\n"
+        "signal_decay_check applies only to scan_legacy (option scan) mode.\n"
         "You may drop / reorder steps if the objective calls for it, but you must include propose_candidates and await_approval.\n"
         "policy_suggestion is advisory only; the Owner still has to update the objective policy.\n"
         "D10 BLOCKED — you are proposing research candidates only, never orders."

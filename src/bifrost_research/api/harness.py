@@ -5,6 +5,7 @@ Routes:
     POST /research/objectives
     POST /research/objectives/{id}/run
     GET  /research/objective-runs
+    POST /research/objective-runs/{id}/curate
     POST /research/objective-runs/{id}/approve-all
 
 D-Research-Harness: write research.* only; D10 BLOCKED — no trade execution.
@@ -19,7 +20,6 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from bifrost_research.db.conn import connect
-from bifrost_research.repositories import ai_draft as draft_repo
 from bifrost_research.repositories import objective as obj_repo
 
 logger = logging.getLogger(__name__)
@@ -103,6 +103,24 @@ def run_objective(objective_id: str) -> dict[str, Any]:
     return _ok(result)
 
 
+@router.get("/objective-runs/{run_id}")
+def get_objective_run(run_id: str) -> dict[str, Any]:
+    """Single run detail for white-box pipeline UI (LS-3)."""
+    conn = _connect_or_503()
+    try:
+        run = obj_repo.get_run(conn, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        obj = obj_repo.get_objective(conn, str(run.get("objective_id")))
+        payload = dict(run)
+        if obj:
+            payload["objective_title"] = obj.get("title")
+            payload["objective_policy_json"] = obj.get("policy_json")
+    finally:
+        conn.close()
+    return _ok(payload)
+
+
 @router.get("/objective-runs")
 def list_objective_runs(
     status: str | None = Query(default=None),
@@ -122,53 +140,59 @@ def list_objective_runs(
     return _ok({"items": rows, "count": len(rows)})
 
 
+@router.post("/objective-runs/{run_id}/curate")
+def curate_run(run_id: str) -> dict[str, Any]:
+    """Headless CuratorRun for an objective run (LO-1)."""
+    from bifrost_research.copilot.curator.runtime import run_curator_for_run
+
+    conn = _connect_or_503()
+    try:
+        run = obj_repo.get_run(conn, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        if run.get("status") not in {"awaiting_approval", "running", "completed"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"run status {run.get('status')!r} not eligible for curate",
+            )
+        try:
+            result = run_curator_for_run(conn, run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("curate failed")
+            raise HTTPException(status_code=500, detail=f"curate failed: {exc}") from exc
+    finally:
+        conn.close()
+    return _ok(result)
+
+
 @router.post("/objective-runs/{run_id}/approve-all")
-def approve_all_for_run(run_id: str) -> dict[str, Any]:
+def approve_all_for_run_endpoint(run_id: str) -> dict[str, Any]:
     """Approve pending drafts for this run using Inbox ``apply_draft_approval``.
 
     Same side effects as Decision Inbox Approve (policy merge, candidate
     promote + hypotheses, action status). Per-draft HTTP errors are collected
     so one bad draft does not 500 the batch.
     """
-    from bifrost_research.api.agents import apply_draft_approval
+    from bifrost_research.copilot.harness.batch import approve_all_for_run as batch_approve
 
     conn = _connect_or_503()
-    approved: list[str] = []
-    executed: list[dict[str, Any]] = []
-    errors: list[dict[str, Any]] = []
     try:
         run = obj_repo.get_run(conn, run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
-        outputs = run.get("outputs") or {}
-        draft_ids = list(outputs.get("draft_ids") or [])
-        for did in draft_ids:
-            draft = draft_repo.get_draft(conn, did)
-            if draft is None or draft.get("status") != "pending":
-                continue
-            try:
-                result = apply_draft_approval(
-                    conn, draft, approved_by="owner", owner_id="owner"
-                )
-                approved.append(did)
-                if isinstance(result.get("executed"), dict):
-                    executed.append(result["executed"])
-            except HTTPException as exc:
-                errors.append(
-                    {
-                        "draft_id": did,
-                        "status": exc.status_code,
-                        "detail": exc.detail,
-                    }
-                )
-        obj_repo.update_run_status(conn, run_id, status="completed")
+        obj = obj_repo.get_objective(conn, str(run.get("objective_id")))
+        policy = (obj or {}).get("policy_json") or {}
+        auto_validate = bool(policy.get("auto_validate", False))
+        result = batch_approve(
+            conn,
+            run_id,
+            approved_by="owner",
+            owner_id="owner",
+            kinds_whitelist=None,
+            auto_validate=auto_validate,
+        )
     finally:
         conn.close()
-    return _ok(
-        {
-            "approved": approved,
-            "count": len(approved),
-            "executed": executed,
-            "errors": errors,
-        }
-    )
+    return _ok(result)

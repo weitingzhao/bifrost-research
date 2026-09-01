@@ -1,30 +1,4 @@
-"""Harness runtime — Wave A Stage 3 + Wave Y.1/Y.2/Y.3 Loop Smartness.
-
-Plan → scan → decay-check → gate → propose → wait_approval.
-
-Data source priority (spine `D-Loop-Smartness-Y1`):
-  1. `features.stock_signal_scan_daily` top-N by composite_score (+ optional flag filter)
-  2. Fallback to policy.seed_symbols[:max_n] (heuristic) when scan is empty
-  3. `status=failed` only when both sources yield zero symbols
-
-Plan step (spine `D-Loop-Smartness-Y2`):
-  * LLM-driven plan when env `BIFROST_HARNESS_LLM_PLAN=1` (or policy override);
-    fail-soft to heuristic 4-step template on any error/timeout/schema failure.
-  * Plan carries `generated_by = "llm" | "heuristic"` and optional
-    `policy_suggestion` (advisory).
-
-Hit-rate gate + suggestion loop (spine `D-Loop-Smartness-Y3`):
-  * When `policy.min_hit_rate` and `policy.flag_filter` are both set, the
-    filter-scoped lenses' `hit_rate_20d` from `global_signal_decay_summary`
-    are checked (B3).  Failing lenses do NOT block the run (C3); the
-    candidate_batch draft carries `hit_rate_warn: true` so Owner can
-    override in Decision Inbox.
-  * When the LLM plan yields a non-empty `policy_suggestion`, an
-    independent ``policy_suggestion`` draft is inserted; Owner approves it
-    to merge the suggestion onto ``objective.policy_json`` (A1).
-
-D10 BLOCKED — never touches Trade write paths or the IB operator command stream.
-"""
+"""Harness runtime — Wave A + Y + LS-2 Stock-first universe."""
 
 from __future__ import annotations
 
@@ -37,14 +11,14 @@ from bifrost_research.copilot.harness.gate import (
     apply_hit_rate_gate,
     lenses_from_flag_filter,
 )
+from bifrost_research.copilot.harness.policy_schema import LoopPolicy, parse_policy
 from bifrost_research.copilot.harness.suggestion import policy_suggestion_from_plan
+from bifrost_research.copilot.harness.universe.registry import resolve_universe
 from bifrost_research.repositories import ai_action_log as action_repo
 from bifrost_research.repositories import ai_draft as draft_repo
 from bifrost_research.repositories import candidate_pool as cand_repo
 from bifrost_research.repositories import objective as obj_repo
 
-# Re-exports for backward compatibility — existing tests and callers may
-# still import these private aliases from `runtime`.
 _apply_hit_rate_gate = apply_hit_rate_gate
 _lenses_from_flag_filter = lenses_from_flag_filter
 _policy_suggestion_from_plan = policy_suggestion_from_plan
@@ -60,47 +34,68 @@ class _Connection(Protocol):
     def rollback(self) -> None: ...
 
 
+def _scan_universe_note(loop_policy: LoopPolicy) -> str:
+    mode = loop_policy.universe_mode
+    if mode == "scan_legacy":
+        return (
+            f"Read features.stock_signal_scan_daily preset={loop_policy.preset} "
+            f"(flag_filter={loop_policy.flag_filter_str() or 'none'})"
+        )
+    if mode == "stock_composite":
+        layers = loop_policy.layers
+        return (
+            f"Stock composite funnel: SEPA path={layers.sepa.stage} min_score={layers.sepa.min_score}; "
+            f"momentum required={layers.momentum.required}; events required={layers.events.required}; "
+            f"option_overlay enabled={loop_policy.option_overlay.enabled} "
+            f"required={loop_policy.option_overlay.required}"
+        )
+    return f"Universe mode {mode} from Golden Source stock features"
+
+
 def _heuristic_plan(objective: dict[str, Any]) -> dict[str, Any]:
     """Static 4-step template used as fallback when the LLM plan is unavailable."""
-    policy = objective.get("policy_json") or {}
-    max_candidates = int(policy.get("max_candidates") or 3)
-    preset = str(policy.get("preset") or "neutral")
-    flag_filter = policy.get("flag_filter") or None
-    return {
-        "steps": [
-            {
-                "op": "scan_universe",
-                "note": (
-                    f"Read features.stock_signal_scan_daily with preset={preset} "
-                    f"weights (flag_filter={flag_filter or 'none'})"
-                ),
-            },
+    policy_raw = objective.get("policy_json") or {}
+    loop_policy = parse_policy(policy_raw)
+    max_candidates = loop_policy.max_candidates
+    decay_note = (
+        "Fetch global lens hit-rate summary (scan_legacy only)"
+        if loop_policy.universe_mode == "scan_legacy"
+        else "Skipped in stock-first modes — option lens gate not applied"
+    )
+    steps: list[dict[str, Any]] = [
+        {"op": "scan_universe", "note": _scan_universe_note(loop_policy)},
+    ]
+    if loop_policy.universe_mode == "scan_legacy":
+        steps.append(
             {
                 "op": "signal_decay_check",
                 "note": (
                     "Fetch global lens hit-rate summary; min_hit_rate + "
                     "flag_filter apply the Y.3 hit-rate gate"
                 ),
-            },
+            }
+        )
+    else:
+        steps.append({"op": "signal_decay_check", "note": decay_note})
+    steps.extend(
+        [
             {
                 "op": "propose_candidates",
                 "max": max_candidates,
-                "note": "Propose top candidates into pool + draft (scan first; fallback seed_symbols)",
+                "note": "Propose top candidates into pool + draft (universe first; fallback seed_symbols)",
             },
             {"op": "await_approval", "note": "Owner approves drafts in Decision Inbox"},
-        ],
+        ]
+    )
+    return {
+        "steps": steps,
         "persona": objective.get("persona") or "loop_curator",
-        "policy": policy,
+        "policy": policy_raw,
         "generated_by": "heuristic",
     }
 
 
 def _plan_for_objective(objective: dict[str, Any]) -> dict[str, Any]:
-    """Choose LLM plan when enabled+valid; else fall back to heuristic template.
-
-    LLM plan is always merged onto the heuristic scaffold so downstream code
-    (persona, policy snapshot) stays stable regardless of LLM behavior.
-    """
     heuristic = _heuristic_plan(objective)
     policy = objective.get("policy_json") or {}
     enabled, reason = plan_llm.is_llm_plan_enabled(policy)
@@ -124,27 +119,61 @@ def _plan_for_objective(objective: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _symbols_from_scan(rows: list[dict[str, Any]]) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for r in rows:
-        sym = r.get("symbol")
-        if not isinstance(sym, str):
-            continue
-        s = sym.strip().upper()
-        if s and s not in seen:
-            seen.add(s)
-            out.append(s)
-    return out
+def _primary_score(meta: dict[str, Any] | None) -> float | None:
+    if not meta:
+        return None
+    for key in ("sepa_score", "option_composite", "composite_score", "momentum_score", "score"):
+        val = meta.get(key)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _build_lens_snapshot(
+    *,
+    objective_id: str,
+    run_id: str,
+    data_source: str,
+    meta: dict[str, Any] | None,
+) -> dict[str, Any]:
+    snap: dict[str, Any] = {
+        "objective_id": objective_id,
+        "run_id": run_id,
+        "data_source": data_source,
+    }
+    if not meta:
+        return snap
+    for key in (
+        "sepa_score",
+        "momentum_score",
+        "score",
+        "option_composite",
+        "composite_score",
+        "iv_rank_1y",
+        "vrp_pct_252d",
+        "terrain_regime",
+        "lens_flags",
+        "event_importance",
+        "grade",
+        "path",
+        "stage",
+        "trade_date",
+        "event_date",
+    ):
+        if key in meta and meta[key] is not None:
+            val = meta[key]
+            if hasattr(val, "isoformat"):
+                snap[key] = val.isoformat()
+            else:
+                snap[key] = val
+    return snap
 
 
 def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, Any]:
-    """Execute a harness run: scan → decay check → propose.
-
-    Produces candidate rows and a candidate_batch draft for Owner approval.
-    Ends with `awaiting_approval` on success, `failed` when both scan and
-    seed_symbols yield zero symbols.
-    """
+    """Execute a harness run: universe → decay (legacy) → propose."""
     plan = _plan_for_objective(objective)
     run = obj_repo.create_run(conn, objective_id=objective["id"], plan_json=plan)
     run_id = run["id"]
@@ -153,65 +182,63 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
     draft_ids: list[str] = []
 
     try:
-        policy = objective.get("policy_json") or {}
-        seed_symbols_raw = policy.get("seed_symbols") or []
-        seed_symbols = [str(s).strip().upper() for s in seed_symbols_raw if str(s).strip()]
-        max_n = max(1, min(int(policy.get("max_candidates") or 3), 50))
-        source_label = str(policy.get("source") or "harness")
-        flag_filter = policy.get("flag_filter") or None
-        preset = str(policy.get("preset") or "neutral")
-        min_composite = policy.get("min_composite_score")
-        try:
-            min_composite_f = float(min_composite) if min_composite is not None else None
-        except (TypeError, ValueError):
-            min_composite_f = None
+        policy_raw = objective.get("policy_json") or {}
+        loop_policy = parse_policy(policy_raw)
+        seed_symbols = [s.strip().upper() for s in loop_policy.seed_symbols if s.strip()]
+        max_n = max(1, min(loop_policy.max_candidates, 50))
+        source_label = loop_policy.source or "harness"
+        flag_filter = loop_policy.flag_filter_str()
 
         trace.append({"step": "plan", "plan": plan})
 
-        # 1. Scan universe -----------------------------------------------------
-        scan_rows = ds.top_scan_symbols(
-            conn,
-            limit=max_n,
-            flag_filter=flag_filter,
-            min_composite_score=min_composite_f,
-            preset=preset,
-        )
-        scan_symbols = _symbols_from_scan(scan_rows)
+        # 1. Resolve universe --------------------------------------------------
+        universe = resolve_universe(conn, loop_policy, limit=max_n)
+        universe_symbols = list(universe.symbols)
+        row_meta_by_symbol = dict(universe.row_meta_by_symbol)
+
         trace.append(
             {
                 "step": "scan_universe",
-                "returned": len(scan_symbols),
-                "symbols": scan_symbols,
-                "flag_filter": flag_filter,
-                "min_composite_score": min_composite_f,
-                "preset": preset,
+                "returned": len(universe_symbols),
+                "symbols": universe_symbols,
+                "universe_mode": universe.universe_mode,
+                "funnel": universe.funnel_dicts(),
+                "layer_results": universe.layer_results,
+                "option_overlay_applied": universe.option_overlay_applied,
+                "policy_warnings": universe.policy_warnings,
+                "flag_filter": flag_filter if loop_policy.universe_mode == "scan_legacy" else None,
+                "min_composite_score": loop_policy.min_composite_score,
+                "preset": loop_policy.preset,
             }
         )
 
-        # 2. Signal decay summary (advisory trace) -----------------------------
-        decay_summary = ds.global_signal_decay_summary(conn)
-        trace.append({"step": "signal_decay_check", "summary": decay_summary})
-
-        # 2b. Hit-rate gate (Y.3 B3+C3) ---------------------------------------
-        gate = apply_hit_rate_gate(
-            policy=policy, decay_summary=decay_summary, flag_filter=flag_filter
-        )
+        # 2. Signal decay (scan_legacy only) -----------------------------------
+        if loop_policy.universe_mode == "scan_legacy":
+            decay_summary = ds.global_signal_decay_summary(conn)
+            trace.append({"step": "signal_decay_check", "summary": decay_summary})
+            gate = apply_hit_rate_gate(
+                policy=policy_raw, decay_summary=decay_summary, flag_filter=flag_filter
+            )
+        else:
+            decay_summary = {}
+            gate = {
+                "applied": False,
+                "ok": True,
+                "skipped": True,
+                "reason": "stock-first mode — option lens hit-rate gate not applied",
+            }
+            trace.append({"step": "signal_decay_check", **gate})
         trace.append({"step": "hit_rate_gate", **gate})
 
-        # 3. Choose data source (scan first; else seed_symbols; else failed) ---
-        if scan_symbols:
-            chosen_symbols = scan_symbols[:max_n]
-            data_source = "scan"
-            row_meta_by_symbol: dict[str, dict[str, Any]] = {}
-            for r in scan_rows:
-                sym = r.get("symbol")
-                if isinstance(sym, str):
-                    row_meta_by_symbol[sym.strip().upper()] = r
+        # 3. Choose data source ------------------------------------------------
+        if universe_symbols:
+            chosen_symbols = universe_symbols[:max_n]
+            data_source = universe.data_source
         elif seed_symbols:
             chosen_symbols = seed_symbols[:max_n]
             data_source = "fallback_seed_symbols"
             row_meta_by_symbol = {}
-            logger.info("harness run %s: scan empty; falling back to seed_symbols", run_id)
+            logger.info("harness run %s: universe empty; falling back to seed_symbols", run_id)
         else:
             data_source = "none"
             row_meta_by_symbol = {}
@@ -221,7 +248,7 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
             trace.append(
                 {
                     "step": "no_data",
-                    "reason": "scan empty and no seed_symbols configured",
+                    "reason": "universe empty and no seed_symbols configured",
                 }
             )
             empty_outputs = {
@@ -230,6 +257,7 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
                 "decision_draft_ids": [],
                 "draft_ids": [],
                 "data_source": data_source,
+                "universe_mode": loop_policy.universe_mode,
                 "policy_suggestion_draft_id": None,
                 "hit_rate_gate": gate,
             }
@@ -251,27 +279,13 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
         # 4. Propose candidates ------------------------------------------------
         proposed_items: list[dict[str, Any]] = []
         for sym in chosen_symbols:
-            scan_meta = row_meta_by_symbol.get(sym)
-            lens_snapshot: dict[str, Any] = {
-                "objective_id": objective["id"],
-                "run_id": run_id,
-                "data_source": data_source,
-            }
-            if scan_meta:
-                lens_snapshot.update(
-                    {
-                        "composite_score": scan_meta.get("composite_score"),
-                        "iv_rank_1y": scan_meta.get("iv_rank_1y"),
-                        "vrp_pct_252d": scan_meta.get("vrp_pct_252d"),
-                        "terrain_regime": scan_meta.get("terrain_regime"),
-                        "lens_flags": scan_meta.get("lens_flags"),
-                        "trade_date": (
-                            scan_meta["trade_date"].isoformat()
-                            if hasattr(scan_meta.get("trade_date"), "isoformat")
-                            else scan_meta.get("trade_date")
-                        ),
-                    }
-                )
+            sym_meta = row_meta_by_symbol.get(sym)
+            lens_snapshot = _build_lens_snapshot(
+                objective_id=objective["id"],
+                run_id=run_id,
+                data_source=data_source,
+                meta=sym_meta,
+            )
             row = cand_repo.create_candidate(
                 conn,
                 symbol=sym,
@@ -285,7 +299,7 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
                 {
                     "id": row["id"],
                     "symbol": row["symbol"],
-                    "score": (scan_meta or {}).get("composite_score") if scan_meta else None,
+                    "score": _primary_score(sym_meta),
                 }
             )
             trace.append({"step": "propose_candidate", "symbol": row["symbol"], "id": row["id"]})
@@ -299,6 +313,7 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
                 "objective_id": objective["id"],
                 "run_id": run_id,
                 "data_source": data_source,
+                "universe_mode": loop_policy.universe_mode,
             },
             output_payload={"candidate_ids": candidate_ids},
             status="proposed",
@@ -310,6 +325,8 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
             "title": objective.get("title"),
             "description": objective.get("description"),
             "data_source": data_source,
+            "universe_mode": loop_policy.universe_mode,
+            "funnel": universe.funnel_dicts(),
             "signal_decay": decay_summary,
             "hit_rate_gate": gate,
         }
@@ -326,9 +343,8 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
         draft_ids.append(draft["id"])
         trace.append({"step": "draft_candidate_batch", "draft_id": draft["id"]})
 
-        # 6. Optional policy_suggestion draft (Y.3 A1) -----------------------
         policy_suggestion_draft_id: str | None = None
-        suggestion_diff = policy_suggestion_from_plan(plan, policy)
+        suggestion_diff = policy_suggestion_from_plan(plan, policy_raw)
         if suggestion_diff:
             ps_action = action_repo.insert_action(
                 conn,
@@ -349,7 +365,7 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
                     "objective_id": objective["id"],
                     "run_id": run_id,
                     "suggestion": suggestion_diff,
-                    "current_policy": policy,
+                    "current_policy": policy_raw,
                     "source": "harness_llm_plan",
                     "llm_model": plan.get("llm_model"),
                     "llm_reasoning": plan.get("llm_reasoning"),
@@ -374,6 +390,9 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
             "decision_draft_ids": [],
             "draft_ids": draft_ids,
             "data_source": data_source,
+            "universe_mode": loop_policy.universe_mode,
+            "top_scan_symbols": universe_symbols,
+            "top_symbols": universe_symbols,
             "policy_suggestion_draft_id": policy_suggestion_draft_id,
             "hit_rate_gate": gate,
         }

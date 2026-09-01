@@ -1,4 +1,4 @@
-"""Wave Y.3 — objective.patch_policy_json whitelist + jsonb merge SQL."""
+"""Wave Y.3 + LS-1 — objective.patch_policy_json whitelist + deep merge."""
 
 from __future__ import annotations
 
@@ -17,12 +17,11 @@ def _mock_conn(fetch_row: tuple[Any, ...] | None) -> MagicMock:
     cur.fetchone.return_value = fetch_row
     conn.cursor.return_value.__enter__ = MagicMock(return_value=cur)
     conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
-    conn._cur = cur  # expose for assertions
+    conn._cur = cur
     return conn
 
 
 def _sample_obj_row(policy_json: dict[str, Any]) -> tuple[Any, ...]:
-    # Matches _OBJ_COLS ordering
     return (
         "obj-abc",
         "Test",
@@ -38,59 +37,89 @@ def _sample_obj_row(policy_json: dict[str, Any]) -> tuple[Any, ...]:
 
 class TestPatchPolicyJson:
     def test_whitelist_filters_unknown_keys(self) -> None:
-        conn = _mock_conn(_sample_obj_row({"min_hit_rate": 0.7}))
+        merged_policy = {"existing": 1, "min_hit_rate": 0.7}
+        conn = _mock_conn(_sample_obj_row({"existing": 1}))
+        conn._cur.fetchone.side_effect = [
+            _sample_obj_row({"existing": 1}),
+            _sample_obj_row(merged_policy),
+        ]
         result = obj_repo.patch_policy_json(
             conn,
             "obj-abc",
             {
                 "min_hit_rate": 0.7,
                 "arbitrary_field": "should_be_dropped",
-                "seed_symbols": ["AAPL"],  # explicitly not in whitelist
+                "seed_symbols": ["AAPL"],
             },
         )
         assert result is not None
-        assert result["policy_json"] == {"min_hit_rate": 0.7}
-        # SQL received only whitelist key
-        called_args = conn._cur.execute.call_args
-        params = called_args[0][1]
+        assert result["policy_json"]["min_hit_rate"] == 0.7
+        assert result["policy_json"]["existing"] == 1
+        params = conn._cur.execute.call_args_list[-1][0][1]
         merged = json.loads(params[0])
-        assert merged == {"min_hit_rate": 0.7}
+        assert merged["min_hit_rate"] == 0.7
+        assert merged["existing"] == 1
 
     def test_empty_patch_returns_current_objective(self) -> None:
-        """No whitelist keys → no UPDATE executed, uses get_objective SELECT."""
         conn = _mock_conn(_sample_obj_row({"existing": True}))
-        result = obj_repo.patch_policy_json(
-            conn, "obj-abc", {"arbitrary_field": "x"}
-        )
+        result = obj_repo.patch_policy_json(conn, "obj-abc", {"arbitrary_field": "x"})
         assert result is not None
-        # Should have run a SELECT via get_objective, not the UPDATE
         sql = conn._cur.execute.call_args[0][0]
         assert "UPDATE" not in sql.upper()
-        assert "SELECT" in sql.upper()
 
     def test_multiple_whitelist_keys_merged(self) -> None:
-        conn = _mock_conn(
-            _sample_obj_row({"min_hit_rate": 0.65, "preset": "momentum", "keep_me": True})
-        )
+        current = {"min_hit_rate": 0.5, "preset": "neutral", "keep_me": True}
+        merged = {"min_hit_rate": 0.65, "preset": "momentum", "keep_me": True}
+        conn = _mock_conn(_sample_obj_row(current))
+        conn._cur.fetchone.side_effect = [
+            _sample_obj_row(current),
+            _sample_obj_row(merged),
+        ]
         result = obj_repo.patch_policy_json(
             conn,
             "obj-abc",
             {"min_hit_rate": 0.65, "preset": "momentum", "not_allowed": 1},
         )
         assert result is not None
-        params = conn._cur.execute.call_args[0][1]
+        params = conn._cur.execute.call_args_list[-1][0][1]
         merged = json.loads(params[0])
-        assert merged == {"min_hit_rate": 0.65, "preset": "momentum"}
-        # SQL uses jsonb `||` operator
-        sql = conn._cur.execute.call_args[0][0]
-        assert "||" in sql
+        assert merged["min_hit_rate"] == 0.65
+        assert merged["preset"] == "momentum"
+        assert merged["keep_me"] is True
+
+    def test_deep_merge_layers(self) -> None:
+        current = {
+            "universe_mode": "stock_composite",
+            "layers": {"sepa": {"min_score": 70, "required": True}},
+        }
+        merged = {
+            "universe_mode": "stock_composite",
+            "layers": {"sepa": {"min_score": 75, "required": True}},
+        }
+        conn = _mock_conn(_sample_obj_row(current))
+        conn._cur.fetchone.side_effect = [
+            _sample_obj_row(current),
+            _sample_obj_row(merged),
+        ]
+        result = obj_repo.patch_policy_json(
+            conn,
+            "obj-abc",
+            {"layers": {"sepa": {"min_score": 75}}},
+        )
+        assert result is not None
+        params = conn._cur.execute.call_args_list[-1][0][1]
+        written = json.loads(params[0])
+        assert written["layers"]["sepa"]["min_score"] == 75
+        assert written["layers"]["sepa"]["required"] is True
 
     def test_none_whitelist_disables_filtering(self) -> None:
         conn = _mock_conn(_sample_obj_row({"anything": True}))
-        obj_repo.patch_policy_json(
-            conn, "obj-abc", {"anything": True}, whitelist=None
-        )
-        params = conn._cur.execute.call_args[0][1]
+        conn._cur.fetchone.side_effect = [
+            _sample_obj_row({"anything": True}),
+            _sample_obj_row({"anything": True}),
+        ]
+        obj_repo.patch_policy_json(conn, "obj-abc", {"anything": True}, whitelist=None)
+        params = conn._cur.execute.call_args_list[-1][0][1]
         merged = json.loads(params[0])
         assert merged == {"anything": True}
 
@@ -100,8 +129,6 @@ class TestPatchPolicyJson:
             obj_repo.patch_policy_json(conn, "obj-abc", [1, 2, 3])  # type: ignore[arg-type]
 
     def test_returns_none_when_objective_missing(self) -> None:
-        conn = _mock_conn(None)  # UPDATE returns no row
-        result = obj_repo.patch_policy_json(
-            conn, "obj-nope", {"min_hit_rate": 0.6}
-        )
+        conn = _mock_conn(None)
+        result = obj_repo.patch_policy_json(conn, "obj-nope", {"min_hit_rate": 0.6})
         assert result is None

@@ -61,6 +61,33 @@ class _Connection(Protocol):
     def cursor(self) -> Any: ...
 
 
+def latest_scan_trade_date(conn: _Connection) -> date | None:
+    """Most recent ``trade_date`` in ``features.stock_signal_scan_daily``."""
+    sql = f"SELECT MAX(trade_date) FROM {TABLE_STOCK_SIGNAL_SCAN_DAILY}"
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            row = cur.fetchone()
+            if not row or row[0] is None:
+                return None
+            val = row[0]
+            if isinstance(val, date):
+                return val
+            return date.fromisoformat(str(val)[:10])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("latest_scan_trade_date failed: %s", exc)
+        return None
+
+
+def scan_stale_days(conn: _Connection, *, today: date | None = None) -> int | None:
+    """Calendar days since latest scan snapshot; None when table empty."""
+    latest = latest_scan_trade_date(conn)
+    if latest is None:
+        return None
+    ref = today or date.today()
+    return max(0, (ref - latest).days)
+
+
 def parse_flag_filter(raw: str | None) -> list[tuple[str, str]]:
     """Parse ``iv_rank:hot,vrp:hot`` into ANDed (key, value) pairs.
 

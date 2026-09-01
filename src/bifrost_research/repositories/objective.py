@@ -168,8 +168,42 @@ def get_objective(conn: _Connection, objective_id: str) -> dict[str, Any] | None
 
 
 POLICY_SUGGESTION_WHITELIST: frozenset[str] = frozenset(
-    {"preset", "flag_filter", "min_composite_score", "min_hit_rate", "max_candidates"}
+    {
+        "preset",
+        "flag_filter",
+        "min_composite_score",
+        "min_hit_rate",
+        "max_candidates",
+        "universe_mode",
+        "layers",
+        "option_overlay",
+    }
 )
+
+_NESTED_POLICY_KEYS = frozenset({"layers", "option_overlay"})
+
+
+def _deep_merge_policy_patch(
+    current: dict[str, Any],
+    patch: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge whitelist-filtered patch onto current policy (nested layers/overlay)."""
+    merged = dict(current)
+    for key, value in patch.items():
+        if key in _NESTED_POLICY_KEYS and isinstance(value, dict):
+            base_nested = merged.get(key)
+            if not isinstance(base_nested, dict):
+                base_nested = {}
+            nested_out = dict(base_nested)
+            for sub_key, sub_val in value.items():
+                if isinstance(sub_val, dict) and isinstance(nested_out.get(sub_key), dict):
+                    nested_out[sub_key] = {**nested_out[sub_key], **sub_val}
+                else:
+                    nested_out[sub_key] = sub_val
+            merged[key] = nested_out
+        else:
+            merged[key] = value
+    return merged
 
 
 def patch_policy_json(
@@ -181,13 +215,7 @@ def patch_policy_json(
 ) -> dict[str, Any] | None:
     """Merge ``patch`` (whitelist-filtered) onto ``objective.policy_json``.
 
-    Wave Y.3: used when Owner approves a ``policy_suggestion`` draft — the
-    merge is jsonb-level (`||`) so only keys in ``patch`` are overwritten;
-    everything else in ``policy_json`` is preserved.
-
-    Returns the updated objective row (or None if objective not found).
-    Silently drops keys outside ``whitelist``.  Pass ``whitelist=None`` to
-    disable filtering (only for internal callers with full trust).
+    Wave Y.3 + LS-1: nested ``layers`` / ``option_overlay`` merge deeply.
     """
     if not isinstance(patch, Mapping):
         raise TypeError("patch must be a mapping")
@@ -200,14 +228,23 @@ def patch_policy_json(
                 filtered[k] = v
     if not filtered:
         return get_objective(conn, objective_id)
+
+    current = get_objective(conn, objective_id)
+    if current is None:
+        return None
+    current_policy = current.get("policy_json") or {}
+    if not isinstance(current_policy, dict):
+        current_policy = {}
+    merged_policy = _deep_merge_policy_patch(current_policy, filtered)
+
     sql = f"""
         UPDATE {TABLE_RESEARCH_OBJECTIVE}
-        SET policy_json = COALESCE(policy_json, '{{}}'::jsonb) || %s::jsonb
+        SET policy_json = %s::jsonb
         WHERE id = %s
         RETURNING {", ".join(_OBJ_COLS)}
     """
     with conn.cursor() as cur:
-        cur.execute(sql, (_serialize_json(filtered), objective_id))
+        cur.execute(sql, (_serialize_json(merged_policy), objective_id))
         row = cur.fetchone()
     conn.commit()
     return _obj_row(row)
@@ -335,3 +372,22 @@ def finish_run(
 
 def update_run_status(conn: _Connection, run_id: str, *, status: str) -> dict[str, Any] | None:
     return finish_run(conn, run_id, status=status)
+
+
+def patch_run_outputs(
+    conn: _Connection,
+    run_id: str,
+    patch: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Merge ``patch`` into ``objective_run.outputs`` (jsonb ||)."""
+    sql = f"""
+        UPDATE {TABLE_RESEARCH_OBJECTIVE_RUN}
+        SET outputs = COALESCE(outputs, '{{}}'::jsonb) || %s::jsonb
+        WHERE id = %s
+        RETURNING {", ".join(_RUN_COLS)}
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (_serialize_json(dict(patch)), run_id))
+        row = cur.fetchone()
+    conn.commit()
+    return _run_row(row)

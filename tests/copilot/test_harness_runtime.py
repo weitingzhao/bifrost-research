@@ -46,8 +46,8 @@ def test_plan_for_objective_returns_steps(monkeypatch: pytest.MonkeyPatch) -> No
     assert "not yet gating" not in decay_note
     assert "gate" in decay_note.lower()
     scan_note = next(s["note"] for s in plan["steps"] if s.get("op") == "scan_universe")
+    assert "stock_signal_scan_daily" in scan_note
     assert "preset=momentum" in scan_note
-    assert "weights" in scan_note
 
 
 def test_plan_for_objective_uses_llm_when_available(
@@ -212,15 +212,18 @@ def test_run_objective_uses_scan_when_available(
         objective={
             "id": "obj-a",
             "title": "Scan Path",
-            "policy_json": {"max_candidates": 2, "flag_filter": "iv_rank:hot"},
+            "policy_json": {
+                "universe_mode": "scan_legacy",
+                "max_candidates": 2,
+                "flag_filter": "iv_rank:hot",
+            },
         },
     )
-    assert result["outputs"]["data_source"] == "scan"
+    assert result["outputs"]["data_source"] == "scan_legacy"
     assert result["outputs"]["candidate_ids"] == ["cand_1", "cand_2"]
     assert captured["finish_status"][-1][1] == "awaiting_approval"
-    # candidate uses data_source=scan tag
     assert all(
-        ("scan" in tags) for _sym, _src, tags in captured["candidate_syms"]
+        ("scan_legacy" in tags) for _sym, _src, tags in captured["candidate_syms"]
     )
     # draft payload embeds signal_decay
     assert captured["draft_payloads"][-1]["signal_decay"]["iv_rank"]["hit_rate_5d"] == 0.6
@@ -244,7 +247,11 @@ def test_run_objective_falls_back_to_seed_symbols(
         objective={
             "id": "obj-b",
             "title": "Fallback Path",
-            "policy_json": {"max_candidates": 3, "seed_symbols": ["nvda", "amd", "tsla"]},
+            "policy_json": {
+                "universe_mode": "scan_legacy",
+                "max_candidates": 3,
+                "seed_symbols": ["nvda", "amd", "tsla"],
+            },
         },
     )
     assert result["outputs"]["data_source"] == "fallback_seed_symbols"
@@ -267,7 +274,11 @@ def test_run_objective_failed_when_both_sources_empty(
 
     result = run_objective(
         fake_conn,
-        objective={"id": "obj-c", "title": "Empty", "policy_json": {"max_candidates": 3}},
+        objective={
+            "id": "obj-c",
+            "title": "Empty",
+            "policy_json": {"universe_mode": "scan_legacy", "max_candidates": 3},
+        },
     )
     assert result["outputs"]["data_source"] == "none"
     assert result["outputs"]["candidate_ids"] == []

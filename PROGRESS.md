@@ -1,3 +1,33 @@
+## Loop Stock-first + Whitebox Pipeline — LS-1…LS-4 — 0.56.2
+
+**Status:** ✅ Package **0.56.2** (2026-08-31). Stock-first harness + pipeline UI; D10 BLOCKED.
+
+| Wave | Deliverable |
+|------|-------------|
+| LS-1 | `policy_schema.py` · whitelist `universe_mode/layers/option_overlay` · RUNBOOK · seed `--profile stock` · FE `RECOMMENDED_LOOP_POLICY_STOCK` |
+| LS-2a–d | `copilot/harness/universe/*` · runtime routes stock_composite · trace funnel · readiness · Cron `obj-daily-loop-stock` |
+| LS-3 | `GET /research/objective-runs/{id}` · FE `/research/loop/runs/:runId` · Harness/LoopBanner/Inbox links |
+| LS-4 | Copilot prefill funnel · plan_llm stock-first · loop_curator instructions |
+| Spine | `D-Loop-StockFirst-1` … `D-Loop-StockFirst-4` (Ops register) |
+
+---
+
+## Loop Orchestrator — Waves LO-0…LO-5 — 0.55.0
+
+**Status:** ✅ Package **0.55.0** (2026-08-31). Mode 3 batch pipeline; D10 BLOCKED.
+
+| Wave | Deliverable |
+|------|-------------|
+| LO-0 | `seed_loop_objective.py` · Cron unsuspend DEV · `--require-scan-fresh` · RUNBOOK |
+| LO-1 | `copilot/curator/*` headless CuratorRun · `POST .../curate` · FE Run Curator |
+| LO-2 | `research.loop.propose_order_intent` MCP · loop_curator instructions |
+| LO-3 | `validate_hook.py` stock-leg backtest · approve-all auto_validate · FE Evidence tag |
+| LO-4 | `research-loop-batch` Trust skill · `--batch-mode` · L0 gate · whitelist auto-accept |
+| LO-5 | market-data option backfill Cron stub (Owner Polygon tier decision) |
+| Spine | `D-Loop-Orchestrator-0` … `D-Loop-Orchestrator-4` · `D-Market-Option-History` |
+
+---
+
 ## Loop Smartness 下一刀 — 0.48.4
 
 **Status:** ✅ Package **0.48.4** (2026-08-29). Five live-path closures; no new tables/RPCs; D10 BLOCKED.

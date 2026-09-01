@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from bifrost_research.copilot.approvals import ApprovalError, validate_token
+from bifrost_research.copilot.curator.batch_token import validate_batch_pass
 from bifrost_research.mcp.tools._common import err
 
 WRITE_SUFFIX = (
@@ -24,6 +26,7 @@ WRITE_TOOL_NAMES: tuple[str, ...] = (
     "research.loop.promote_to_hypothesis",
     "research.loop.attach_backtest_evidence",
     "research.loop.draft_decision",
+    "research.loop.propose_order_intent",
 )
 
 
@@ -36,6 +39,13 @@ def require_approval_or_error(
 ) -> dict[str, Any] | None:
     """Return an error envelope if execute is not allowed; else None (proceed)."""
     if dry_run:
+        return None
+    curator_run_id = os.environ.get("BIFROST_CURATOR_RUN_ID", "").strip()
+    if (
+        curator_run_id
+        and approval_token
+        and validate_batch_pass(approval_token, curator_run_id)
+    ):
         return None
     if not approval_token or not str(approval_token).strip():
         return {
