@@ -808,6 +808,8 @@ def run_event_query(
 
         runs: list[EventRun] = []
         skipped = 0
+        skipped_no_option = 0
+        skipped_no_stock = 0
         for symbol, event_date in resolved.events[: max(1, int(max_events))]:
             leg_pricings: list[LegPricing] = []
             entry_dates: list[date] = []
@@ -824,6 +826,13 @@ def run_event_query(
                         conn, symbol, entry_date, exit_date, leg, fill_config=fill_config
                     )
                 if pricing is None:
+                    # Which data was missing decides whether an empty result means
+                    # "no edge" or "no history". Reporting only the count lets the
+                    # UI render the second as the first.
+                    if leg.kind == "stock":
+                        skipped_no_stock += 1
+                    else:
+                        skipped_no_option += 1
                     skip_run = True
                     break
                 leg_pricings.append(pricing)
@@ -855,6 +864,10 @@ def run_event_query(
                 pass
 
     summary = _summarize(runs)
+    summary["skipped_events"] = skipped
+    summary["skipped_no_option"] = skipped_no_option
+    summary["skipped_no_stock"] = skipped_no_stock
+    summary["event_source"] = resolved.source
     return {
         "runs": [_run_to_dict(r) for r in runs],
         "summary": summary,
