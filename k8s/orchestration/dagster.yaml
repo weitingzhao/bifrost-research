@@ -65,7 +65,7 @@ spec:
     spec:
       containers:
         - name: webserver
-          image: 192.168.10.73:30500/bifrost-research:0.61.1-dagster
+          image: 192.168.10.73:30500/bifrost-research:0.62.0-dagster
           imagePullPolicy: IfNotPresent
           command:
             [
@@ -177,7 +177,7 @@ spec:
     spec:
       containers:
         - name: daemon
-          image: 192.168.10.73:30500/bifrost-research:0.61.1-dagster
+          image: 192.168.10.73:30500/bifrost-research:0.62.0-dagster
           imagePullPolicy: IfNotPresent
           command: ["dagster-daemon", "run", "-w", "/opt/dagster/workspace.yaml"]
           envFrom:
