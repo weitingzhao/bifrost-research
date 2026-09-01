@@ -6,7 +6,10 @@ import os
 from typing import Any
 
 from bifrost_research.copilot.approvals import ApprovalError, validate_token
-from bifrost_research.copilot.curator.batch_token import validate_batch_pass
+from bifrost_research.copilot.curator.batch_token import (
+    batch_pass_failure,
+    looks_like_batch_pass,
+)
 from bifrost_research.mcp.tools._common import err
 
 WRITE_SUFFIX = (
@@ -41,12 +44,20 @@ def require_approval_or_error(
     if dry_run:
         return None
     curator_run_id = os.environ.get("BIFROST_CURATOR_RUN_ID", "").strip()
-    if (
-        curator_run_id
-        and approval_token
-        and validate_batch_pass(approval_token, curator_run_id)
-    ):
-        return None
+    if approval_token and looks_like_batch_pass(approval_token):
+        # A batch pass gets its own verdict. Falling through to the per-tool
+        # validator turned "no curator run in context", "the model mis-copied
+        # the token" and "the pass expired" into one indistinguishable
+        # "malformed approval token" — an unattended failure nobody could
+        # diagnose after the fact.
+        reason = batch_pass_failure(approval_token, curator_run_id or None)
+        if reason is None:
+            return None
+        return {
+            "ok": False,
+            "error": f"403: batch pass rejected — {reason}",
+            "status": 403,
+        }
     if not approval_token or not str(approval_token).strip():
         return {
             "ok": False,

@@ -33,29 +33,55 @@ def issue_batch_pass(run_id: str, *, ttl_sec: int = 300) -> str:
     return f"{_PREFIX}{msg}|{sig}"
 
 
-def validate_batch_pass(token: str | None, run_id: str | None) -> bool:
-    if not token or not run_id:
-        return False
+def looks_like_batch_pass(token: str | None) -> bool:
+    """Whether this was meant to be a batch pass at all."""
+    return bool(token) and str(token).strip().startswith(_PREFIX)
+
+
+def batch_pass_failure(token: str | None, run_id: str | None) -> str | None:
+    """Why a batch pass was rejected, or None when it is valid.
+
+    A single "malformed approval token" covered three unrelated situations — no
+    curator run in context, a token the model mis-copied, and an expired pass —
+    and the headless curator spent an entire run reasoning about a governance
+    problem it had no way to identify. Naming the cause is what makes an
+    unattended failure diagnosable after the fact.
+    """
+    if not token:
+        return "no approval token supplied"
+    if not run_id:
+        return "no curator run in context (BIFROST_CURATOR_RUN_ID unset)"
     raw = str(token).strip()
     if not raw.startswith(_PREFIX):
-        return False
+        return "not a batch pass"
     parts = raw[len(_PREFIX) :].split("|")
     if len(parts) != 4:
-        return False
+        return "batch pass is truncated or reshaped"
     tok_run, exp_s, nonce, sig = parts
     if tok_run != str(run_id).strip():
-        return False
+        return f"batch pass belongs to run {tok_run!r}, not {str(run_id).strip()!r}"
     try:
         exp = int(exp_s)
     except ValueError:
-        return False
+        return "batch pass expiry is unreadable"
     if int(time.time()) > exp:
-        return False
+        return f"batch pass expired {int(time.time()) - exp}s ago"
     expected_msg = f"{tok_run}|{exp}|{nonce}"
     expected_sig = hmac.new(
         _secret_bytes(), expected_msg.encode("utf-8"), hashlib.sha256
     ).hexdigest()
-    return hmac.compare_digest(expected_sig, sig)
+    if not hmac.compare_digest(expected_sig, sig):
+        return "batch pass signature does not verify — the token was altered in transit"
+    return None
 
 
-__all__ = ["issue_batch_pass", "validate_batch_pass"]
+def validate_batch_pass(token: str | None, run_id: str | None) -> bool:
+    return batch_pass_failure(token, run_id) is None
+
+
+__all__ = [
+    "batch_pass_failure",
+    "issue_batch_pass",
+    "looks_like_batch_pass",
+    "validate_batch_pass",
+]
