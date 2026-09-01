@@ -49,8 +49,10 @@ def env(monkeypatch: pytest.MonkeyPatch) -> _Env:
         "bifrost_research.api.harness.obj_repo.update_run_status",
         lambda conn, run_id, *, status: {"id": run_id, "status": status},
     )
+    # approve-all moved out of api/harness.py into copilot/harness/batch.py, which
+    # is where draft_repo is bound now — api.harness no longer imports it.
     monkeypatch.setattr(
-        "bifrost_research.api.harness.draft_repo.get_draft",
+        "bifrost_research.copilot.harness.batch.draft_repo.get_draft",
         lambda conn, draft_id: e.drafts.get(draft_id),
     )
     monkeypatch.setattr(

@@ -54,7 +54,33 @@ _SCAN_COLUMNS = (
     "pin_score",
 )
 
+# The columns that actually feed `composite_score`.  A row with none of them
+# still gets a score — the neutral 50 — and a neutral 50 outranks every honestly
+# computed score below it.  Measured 2026-09-01 over the full scan table: all 318
+# zero-input rows carry composite_score = 50 exactly, and on 2026-08-31 such a row
+# (SPX, 0/8 inputs) ranked second out of 26.  `close` is deliberately excluded —
+# it is a price field, not a scoring input, and gating on it would empty 20 of 61
+# trading days rather than 2.
+_SCAN_INPUT_COLUMNS = (
+    "iv_rank_1y",
+    "vrp_pct_252d",
+    "atm_slope_30d",
+    "pin_pct_distance",
+    "gex_notional",
+    "pin_score",
+    "tail_risk",
+    "trend_release",
+)
+
+# Default floor: a row must carry at least one real scoring input to be ranked.
+DEFAULT_MIN_SCAN_INPUTS = 1
+
 _PRESET_FETCH_LIMIT = 500
+
+
+def _scan_inputs_expr() -> str:
+    """SQL counting how many scoring inputs a scan row actually has."""
+    return " + ".join(f"({col} IS NOT NULL)::int" for col in _SCAN_INPUT_COLUMNS)
 
 
 class _Connection(Protocol):
@@ -148,6 +174,7 @@ def top_scan_symbols(
     min_composite_score: float | None = None,
     as_of: date | None = None,
     preset: str | None = None,
+    min_inputs: int = DEFAULT_MIN_SCAN_INPUTS,
 ) -> list[dict[str, Any]]:
     """Return top-N symbols from the most recent scan snapshot.
 
@@ -180,6 +207,9 @@ def top_scan_symbols(
     )
     if as_of is not None:
         params.append(as_of)
+
+    if min_inputs > 0:
+        where.append(f"({_scan_inputs_expr()}) >= {int(min_inputs)}")
 
     for key, value in pairs:
         where.append("lens_flags ->> %s = %s")
@@ -232,6 +262,91 @@ def top_scan_symbols(
             row.setdefault("composite_source", "stored")
 
     return rows
+
+
+def scan_universe_funnel(
+    conn: _Connection,
+    *,
+    flag_filter: str | None = None,
+    min_composite_score: float | None = None,
+    as_of: date | None = None,
+    min_inputs: int = DEFAULT_MIN_SCAN_INPUTS,
+) -> dict[str, Any]:
+    """Stage-by-stage counts for the scan universe on one trade date.
+
+    ``top_scan_symbols`` queries with ``LIMIT``, so the rows it returns cannot
+    say how many symbols were considered — a funnel built from them reports
+    ``3 -> 3`` no matter how large the universe was.  This counts the same
+    predicates over the whole day instead, so the harness can report
+    ``28 considered -> 3 proposed``.
+
+    Mirrors ``top_scan_symbols`` filter-for-filter; keep the two in step.
+    Fails soft: returns zeroed counts on any DB error.
+    """
+    empty = {
+        "trade_date": None,
+        "total": 0,
+        "with_inputs": 0,
+        "flag_passed": 0,
+        "score_passed": 0,
+    }
+    try:
+        pairs = parse_flag_filter(flag_filter)
+    except ValueError:
+        logger.warning("scan_universe_funnel: invalid flag_filter %r; ignoring", flag_filter)
+        pairs = []
+
+    inputs_pred = f"({_scan_inputs_expr()}) >= {int(min_inputs)}" if min_inputs > 0 else "TRUE"
+    flag_pred = " AND ".join("lens_flags ->> %s = %s" for _ in pairs) if pairs else "TRUE"
+    score_pred = (
+        "composite_score IS NOT NULL AND composite_score >= %s"
+        if min_composite_score is not None
+        else "TRUE"
+    )
+    day_pred = (
+        "trade_date = ("
+        f"SELECT MAX(trade_date) FROM {TABLE_STOCK_SIGNAL_SCAN_DAILY} "
+        + ("WHERE trade_date <= %s" if as_of else "")
+        + ")"
+    )
+
+    # Placeholders bind in SQL text order: the SELECT list runs before WHERE, and
+    # flag_pred appears in two FILTER clauses, so its params are supplied twice.
+    flag_params: list[Any] = []
+    for key, value in pairs:
+        flag_params.extend([key, value])
+    params: list[Any] = [*flag_params, *flag_params]
+    if min_composite_score is not None:
+        params.append(float(min_composite_score))
+    if as_of is not None:
+        params.append(as_of)
+
+    sql = (
+        "SELECT MAX(trade_date) AS trade_date, "
+        "count(*) AS total, "
+        f"count(*) FILTER (WHERE {inputs_pred}) AS with_inputs, "
+        f"count(*) FILTER (WHERE {inputs_pred} AND ({flag_pred})) AS flag_passed, "
+        f"count(*) FILTER (WHERE {inputs_pred} AND ({flag_pred}) AND ({score_pred})) AS score_passed "
+        f"FROM {TABLE_STOCK_SIGNAL_SCAN_DAILY} "
+        f"WHERE {day_pred}"
+    )
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            row = cur.fetchone()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("scan_universe_funnel: query failed (%s); returning zeros", exc)
+        return empty
+    if not row:
+        return empty
+    return {
+        "trade_date": row[0],
+        "total": int(row[1] or 0),
+        "with_inputs": int(row[2] or 0),
+        "flag_passed": int(row[3] or 0),
+        "score_passed": int(row[4] or 0),
+    }
 
 
 def global_signal_decay_summary(

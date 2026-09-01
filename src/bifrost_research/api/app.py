@@ -27,6 +27,7 @@ from bifrost_research.api.order_intents import router as order_intents_router
 from bifrost_research.api.playbook import router as playbook_router
 from bifrost_research.api.research_engines import router as research_engines_router
 from bifrost_research.api.scan import router as scan_router
+from bifrost_research.api.universe_reach import router as universe_reach_router
 from bifrost_research.api.signal_decay import router as signal_decay_router
 from bifrost_research.api.sepa import router as sepa_router
 from bifrost_research.api.signal_health import router as signal_health_router
@@ -75,6 +76,7 @@ def create_app() -> FastAPI:
     app.include_router(orchestration_router)
     app.include_router(similar_regime_router)
     app.include_router(scan_router)
+    app.include_router(universe_reach_router)
     app.include_router(signal_decay_router)
     app.include_router(alerts_router)
     app.include_router(exhibit_router)
