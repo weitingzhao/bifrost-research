@@ -175,3 +175,20 @@ def test_runtime_reads_the_plan_rather_than_ignoring_it() -> None:
     src = inspect.getsource(runtime.run_objective)
     assert "plan_ops" in src
     assert "want_evidence = OP_ANALYZE_SYMBOL in plan_ops" in src
+
+
+def test_the_pool_row_carries_the_same_score_as_the_draft() -> None:
+    """The number shown in two places must come from one.
+
+    create_candidate was called without `score`, so Candidate Pool rendered an
+    em dash for every harness candidate while the Inbox card for the same symbol
+    showed 82.8.
+    """
+    import inspect
+
+    from bifrost_research.copilot.harness import runtime
+
+    src = inspect.getsource(runtime.run_objective)
+    call = src[src.index("cand_repo.create_candidate") :]
+    call = call[: call.index(")\n")]
+    assert "score=_primary_score(sym_meta)" in call

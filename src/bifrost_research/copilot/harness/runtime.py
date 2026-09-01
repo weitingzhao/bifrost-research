@@ -319,6 +319,10 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
                 conn,
                 symbol=sym,
                 source=source_label,
+                # The score reached the draft payload but never the pool row, so
+                # Candidate Pool showed an em dash for every harness candidate
+                # while the Inbox card for the same symbol showed 82.8.
+                score=_primary_score(sym_meta),
                 lens_snapshot=lens_snapshot,
                 tags=["harness", data_source],
                 source_ref={"objective_id": objective["id"], "run_id": run_id},
