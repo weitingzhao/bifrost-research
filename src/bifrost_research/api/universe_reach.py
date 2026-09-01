@@ -82,7 +82,7 @@ def _count_symbols(conn: Any, table: str, column: str) -> int | None:
     """
     try:
         with conn.cursor() as cur:
-            cur.execute(f"SELECT count(DISTINCT {column}) FROM {table}")  # noqa: S608
+            cur.execute(f"SELECT count(DISTINCT {column}) FROM {table}")
             row = cur.fetchone()
     except Exception as exc:  # noqa: BLE001
         logger.warning("universe_reach: count failed for %s (%s)", table, exc)

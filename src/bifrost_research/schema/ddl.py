@@ -531,6 +531,51 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         """
     )
 
+    # --- Wave W2: research.candidate_outcome ---
+    # One row per (candidate, horizon) so 1d / 5d / 20d coexist instead of
+    # widening candidate_pool once per horizon.
+    #
+    # `hit` is "beat the benchmark", not "went up".  Candidates carry no
+    # direction — they are "look at this symbol", not a long or a short — and an
+    # absolute win rate mostly measures the market: over 2026-08-23..28 every
+    # liquid symbol averaged a 40.2% 3-day win rate regardless of any signal.
+    # The raw legs stay on the row, so an absolute rate is still derivable.
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.candidate_outcome (
+            id               text        PRIMARY KEY,
+            candidate_id     text        NOT NULL
+                             REFERENCES {SCHEMA_RESEARCH}.candidate_pool(id)
+                             ON DELETE CASCADE,
+            symbol           text        NOT NULL,
+            trade_date       date        NOT NULL,
+            horizon_days     integer     NOT NULL CHECK (horizon_days > 0),
+            entry_close      numeric,
+            exit_close       numeric,
+            exit_date        date,
+            forward_return   numeric,
+            benchmark_symbol text,
+            benchmark_return numeric,
+            excess_return    numeric,
+            hit              boolean,
+            settled_at       timestamptz NOT NULL DEFAULT now(),
+            UNIQUE (candidate_id, horizon_days)
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS candidate_outcome_horizon
+        ON {SCHEMA_RESEARCH}.candidate_outcome (horizon_days, trade_date DESC)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS candidate_outcome_symbol
+        ON {SCHEMA_RESEARCH}.candidate_outcome (symbol, trade_date DESC)
+        """
+    )
+
     # --- Wave Harness: research.objective + objective_run ---
     cur.execute(
         f"""

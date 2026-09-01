@@ -161,3 +161,17 @@ def run_scan(*, lookback_days: int = 3) -> dict[str, Any]:
     result["engine"] = "scan"
     result["advisory"] = "D10 BLOCKED"
     return result
+
+
+def run_candidate_outcome(*, lookback_days: int = 90) -> dict[str, Any]:
+    """Settle what happened to candidates the Loop proposed.
+
+    Runs after `scan` so a candidate produced today is picked up on the next
+    materialization, once its forward window has actually elapsed.
+    """
+    from bifrost_research.engines.candidate_outcome.entry import run
+
+    result = run(lookback_days=lookback_days)
+    result["engine"] = "candidate_outcome"
+    result["advisory"] = "D10 BLOCKED"
+    return result

@@ -177,7 +177,10 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
-- 版本：`0.57.0`（Loop 可信度 W1 — scan_legacy 漏斗在截断前计数（原来永远报 `3 → 3`）；
+- 版本：`0.58.0`（Loop 可信度 W2 — 新建 `research.candidate_outcome`：候选被提出后到底怎么样了；
+ 结算引擎复用 signal_hit 形状，命中定义为「跑赢 SPY 同窗口」而非「涨了」（候选无方向，绝对胜率主要在量市场）；
+ 未到期的横期跳过而非写 0；`GET /research/candidate-outcome/{summary,rows}`；Dagster asset 接入 trading-day job）
+- 历史：`0.57.0`（Loop 可信度 W1 — scan_legacy 漏斗在截断前计数（原来永远报 `3 → 3`）；
  零打分输入的行不得进入排名（该类行 100% 带中性默认 50，会压过真实算出的低分）；
  新增 `GET /research/universe/reach` 数据触达口径，某层不可读报 NOT MEASURED 而非 0）
 - 历史：`0.56.2`（Waves LO-0…LO-4 + LS Stock-first — stock_composite 宇宙、白盒 FunnelStep、Curator、validate_hook）

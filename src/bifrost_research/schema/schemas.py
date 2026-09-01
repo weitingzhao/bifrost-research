@@ -27,6 +27,11 @@ TABLE_RESEARCH_AGENT_PERSONA = f"{SCHEMA_RESEARCH}.agent_persona"
 # Wave Loop v1 — Candidate Pool (Discover → Analyze bridge).
 TABLE_RESEARCH_CANDIDATE_POOL = f"{SCHEMA_RESEARCH}.candidate_pool"
 
+# Wave W2 — what happened to a candidate after it was proposed.  Without this
+# the Loop can propose forever and never learn: "is this any good?" has no
+# answer anywhere in the system.
+TABLE_RESEARCH_CANDIDATE_OUTCOME = f"{SCHEMA_RESEARCH}.candidate_outcome"
+
 # Wave Harness — Objective + run audit (Stage 3).
 TABLE_RESEARCH_OBJECTIVE = f"{SCHEMA_RESEARCH}.objective"
 TABLE_RESEARCH_OBJECTIVE_RUN = f"{SCHEMA_RESEARCH}.objective_run"

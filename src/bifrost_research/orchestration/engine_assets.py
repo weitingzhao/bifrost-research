@@ -196,6 +196,21 @@ def scan(context: AssetExecutionContext) -> MaterializeResult:
     return MaterializeResult(metadata=_metadata(result))
 
 
+@asset(
+    key=AssetKey(["engines", "candidate_outcome"]),
+    deps=[AssetKey(["engines", "scan"])],
+    group_name="python_analytics",
+    description=(
+        "Settle proposed candidates against forward prices → research.candidate_outcome. "
+        "Horizons that have not elapsed are skipped, not written as zero."
+    ),
+)
+def candidate_outcome(context: AssetExecutionContext) -> MaterializeResult:
+    result = runners.run_candidate_outcome()
+    context.log.info("candidate_outcome result=%s", result)
+    return MaterializeResult(metadata=_metadata(result))
+
+
 ENGINE_ASSETS = [
     volatility,
     momentum,
@@ -208,4 +223,5 @@ ENGINE_ASSETS = [
     backtest,
     canonical_pnl,
     scan,
+    candidate_outcome,
 ]
