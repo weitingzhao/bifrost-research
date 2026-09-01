@@ -6,6 +6,7 @@ import logging
 from datetime import date
 from typing import Any, Protocol
 
+from bifrost_research.db.conn import rollback_quietly
 from bifrost_research.copilot.harness.policy_schema import LoopPolicy, MomentumLayerPolicy
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ def _latest_trade_date(conn: _Connection) -> date | None:
             val = row[0]
             return val if isinstance(val, date) else date.fromisoformat(str(val)[:10])
     except Exception as exc:  # noqa: BLE001
+        rollback_quietly(conn)
         logger.warning("momentum latest_trade_date failed: %s", exc)
         return None
 
@@ -75,6 +77,7 @@ def fetch_momentum_symbols(
             cols = [d[0] for d in cur.description]
             rows = [dict(zip(cols, r)) for r in cur.fetchall() or []]
     except Exception as exc:  # noqa: BLE001
+        rollback_quietly(conn)
         logger.warning("fetch_momentum_symbols failed: %s", exc)
         return [], {}, f"query failed: {exc}"
 

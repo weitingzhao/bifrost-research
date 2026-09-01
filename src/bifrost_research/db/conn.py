@@ -68,3 +68,18 @@ def get_conn() -> Generator[Any, None, None]:
             conn.close()
         except Exception:
             pass
+
+
+def rollback_quietly(conn: Any) -> None:
+    """Reset a connection after a caught query error.
+
+    Postgres aborts the whole transaction on the first failed statement: every
+    later query returns InFailedSqlTransaction until someone rolls back. A
+    fail-soft handler that returns an empty list without this does not degrade
+    gracefully — it takes down every query that follows while logging as though
+    the error were contained.
+    """
+    try:
+        conn.rollback()
+    except Exception:  # noqa: BLE001, S110
+        pass

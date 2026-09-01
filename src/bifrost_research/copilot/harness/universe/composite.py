@@ -70,6 +70,24 @@ def _apply_layer(
     else:
         out = _intersect_ordered(current, layer_symbols)
 
+    if not required and current and not out:
+        # An optional layer may narrow the universe but never empty it.
+        # Otherwise `required: false` protects only against the layer having no
+        # rows at all — the moment it has rows that happen not to overlap, it
+        # silently wipes out everything upstream. Measured 2026-09-01: SEPA
+        # produced 47 candidates and the optional events layer, holding one
+        # unrelated symbol, cut them to zero.
+        step = FunnelStep(
+            name=name,
+            in_count=in_count,
+            out_count=in_count,
+            filter_summary=filter_summary,
+            optional=True,
+            skipped=True,
+            skip_reason="no overlap with upstream layers",
+        )
+        return current, step
+
     dropped = [s for s in current if s not in set(out)] if current else []
     step = FunnelStep(
         name=name,

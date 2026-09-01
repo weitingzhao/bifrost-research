@@ -77,3 +77,51 @@ def test_option_overlay_not_required_keeps_missing_scan() -> None:
     assert "AAPL" in kept
     assert applied is True
     assert step is not None
+
+
+def test_apply_layer_optional_non_overlapping_keeps_current() -> None:
+    """`required: false` must survive a layer that has rows but shares none.
+
+    The empty-layer case was already covered; this one was not, and it is the
+    one that fired in production: SEPA produced 47 candidates and the optional
+    events layer — holding a single unrelated symbol — cut them to zero.
+    """
+    out, step = composite_mod._apply_layer(
+        name="events",
+        current=["AAPL", "MSFT"],
+        layer_symbols=["ZZZZ"],
+        required=False,
+        filter_summary="test",
+    )
+    assert out == ["AAPL", "MSFT"]
+    assert step.skipped is True
+    assert step.skip_reason == "no overlap with upstream layers"
+    assert step.out_count == 2
+
+
+def test_apply_layer_required_non_overlapping_still_empties() -> None:
+    """The relaxation above must not leak into required layers."""
+    out, step = composite_mod._apply_layer(
+        name="sepa",
+        current=["AAPL", "MSFT"],
+        layer_symbols=["ZZZZ"],
+        required=True,
+        filter_summary="test",
+    )
+    assert out == []
+    assert step.out_count == 0
+    assert step.skipped is False
+
+
+def test_apply_layer_optional_partial_overlap_still_narrows() -> None:
+    """Optional means "may not empty", not "may not filter"."""
+    out, step = composite_mod._apply_layer(
+        name="momentum",
+        current=["AAPL", "MSFT", "NVDA"],
+        layer_symbols=["MSFT", "NVDA", "ZZZZ"],
+        required=False,
+        filter_summary="test",
+    )
+    assert out == ["MSFT", "NVDA"]
+    assert step.skipped is False
+    assert step.out_count == 2

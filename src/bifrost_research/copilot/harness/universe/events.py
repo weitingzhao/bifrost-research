@@ -7,6 +7,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any, Protocol
 
+from bifrost_research.db.conn import rollback_quietly
 from bifrost_research.copilot.harness.policy_schema import EventsLayerPolicy, LoopPolicy
 
 logger = logging.getLogger(__name__)
@@ -52,13 +53,24 @@ def fetch_event_symbols(
         WHERE (dropped IS NULL OR dropped = false)
           AND importance >= %s
           AND (
-            event_date >= %s
+            -- event_date is text on purpose: the radar records values like
+            -- '待定' for events with no announced date, so ::date would throw.
+            -- ISO strings order correctly as text, so filter to those and
+            -- compare lexicographically.
+            (event_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' AND event_date >= %s)
             OR collected_at >= %s
           )
         ORDER BY importance DESC NULLS LAST, collected_at DESC NULLS LAST
         LIMIT %s
     """
-    params = (layer.min_importance, cutoff, cutoff, max(1, min(limit * 3, 2000)))
+    # First cutoff is compared against the text column, so pass it as text;
+    # the second is compared against collected_at (timestamptz) as a date.
+    params = (
+        layer.min_importance,
+        cutoff.isoformat(),
+        cutoff,
+        max(1, min(limit * 3, 2000)),
+    )
 
     try:
         with conn.cursor() as cur:
@@ -66,6 +78,7 @@ def fetch_event_symbols(
             cols = [d[0] for d in cur.description]
             rows = [dict(zip(cols, r)) for r in cur.fetchall() or []]
     except Exception as exc:  # noqa: BLE001
+        rollback_quietly(conn)
         logger.warning("fetch_event_symbols failed: %s", exc)
         return [], {}, f"query failed: {exc}"
 

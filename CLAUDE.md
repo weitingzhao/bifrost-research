@@ -177,7 +177,10 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
-- 版本：`0.58.1`（dbt 管线修复 — dbt 项目随包安装（此前非 editable 安装完全没有它，容器里从未生效）；
+- 版本：`0.59.0`（W3 stock_composite 可用 — events 层 text/date 比较修复（该列存 '待定' 故为 text）；
+ 10 处 fail-soft 处理器补 `rollback_quietly`（捕获 SQL 错误却不回滚 = 污染整个事务）；
+ optional 层不得清空宇宙（仅在「层返回空」时生效，交集为空时照样清零）；Loop 宇宙 28 → 3,472）
+- 历史：`0.58.1`（dbt 管线修复 — dbt 项目随包安装（此前非 editable 安装完全没有它，容器里从未生效）；
  镜像构建内 `dbt deps && dbt parse` 并断言 `load_dbt_assets()` 非空；Dagster 镜像获得独立构建流水线）
 - 历史：`0.58.0`（Loop 可信度 W2 — 新建 `research.candidate_outcome`：候选被提出后到底怎么样了；
  结算引擎复用 signal_hit 形状，命中定义为「跑赢 SPY 同窗口」而非「涨了」（候选无方向，绝对胜率主要在量市场）；

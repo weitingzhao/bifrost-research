@@ -15,6 +15,7 @@ import logging
 from datetime import date
 from typing import Any, Protocol
 
+from bifrost_research.db.conn import rollback_quietly
 from bifrost_research.api.scan import (
     load_adaptive_weights,
     recompute_composite,
@@ -101,6 +102,7 @@ def latest_scan_trade_date(conn: _Connection) -> date | None:
                 return val
             return date.fromisoformat(str(val)[:10])
     except Exception as exc:  # noqa: BLE001
+        rollback_quietly(conn)
         logger.warning("latest_scan_trade_date failed: %s", exc)
         return None
 
@@ -156,6 +158,7 @@ def _resolve_preset_weights(
         try:
             weights = load_adaptive_weights(conn, window_days=30)
         except Exception as exc:  # noqa: BLE001
+            rollback_quietly(conn)
             logger.warning(
                 "top_scan_symbols: adaptive weights failed (%s); using stored scores",
                 exc,
@@ -234,6 +237,7 @@ def top_scan_symbols(
             cols = [d[0] for d in cur.description]
             rows = [dict(zip(cols, r)) for r in cur.fetchall() or []]
     except Exception as exc:  # noqa: BLE001
+        rollback_quietly(conn)
         logger.warning("top_scan_symbols: query failed (%s); returning empty", exc)
         return []
 
@@ -336,6 +340,7 @@ def scan_universe_funnel(
             cur.execute(sql, tuple(params))
             row = cur.fetchone()
     except Exception as exc:  # noqa: BLE001
+        rollback_quietly(conn)
         logger.warning("scan_universe_funnel: query failed (%s); returning zeros", exc)
         return empty
     if not row:
@@ -402,6 +407,7 @@ def global_signal_decay_summary(
                     "hit_rate_20d": round(float(ok20) / eval20, 4) if eval20 else None,
                 }
     except Exception as exc:  # noqa: BLE001
+        rollback_quietly(conn)
         logger.warning("global_signal_decay_summary: query failed (%s); returning empty", exc)
 
     return result
