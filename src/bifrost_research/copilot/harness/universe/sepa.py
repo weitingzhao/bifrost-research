@@ -45,6 +45,33 @@ def _latest_trade_date(conn: _Connection) -> date | None:
         return None
 
 
+def sepa_universe_size(conn: _Connection) -> int | None:
+    """How many symbols SEPA covers on its latest trade date.
+
+    The composite funnel used to open at whatever SEPA returned — 47 — because
+    the path and score filters run inside the query. Every run therefore read as
+    watchlist-sized, which is the exact confusion the funnel exists to prevent:
+    3,472 narrowed to 47 is a screen; 47 narrowed to 8 on its own is not evidence
+    of one.
+    """
+    trade_date = _latest_trade_date(conn)
+    if trade_date is None:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(DISTINCT symbol) FROM features.stock_signal_sepa_daily "
+                "WHERE trade_date = %s",
+                (trade_date,),
+            )
+            row = cur.fetchone()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sepa_universe_size failed: %s", exc)
+        rollback_quietly(conn)
+        return None
+    return int(row[0]) if row and row[0] is not None else None
+
+
 def fetch_sepa_symbols(
     conn: _Connection,
     *,

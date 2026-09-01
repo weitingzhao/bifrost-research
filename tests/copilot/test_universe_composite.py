@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from unittest.mock import MagicMock
 
 from bifrost_research.copilot.harness.policy_schema import (
@@ -10,6 +12,10 @@ from bifrost_research.copilot.harness.policy_schema import (
     MomentumLayerPolicy,
     OptionOverlayPolicy,
     SepaLayerPolicy,
+)
+from bifrost_research.copilot.harness.policy_schema import (
+    default_stock_composite_policy,
+    parse_policy,
 )
 from bifrost_research.copilot.harness.universe import composite as composite_mod
 from bifrost_research.copilot.harness.universe import option_overlay as overlay_mod
@@ -125,3 +131,61 @@ def test_apply_layer_optional_partial_overlap_still_narrows() -> None:
     assert out == ["MSFT", "NVDA"]
     assert step.skipped is False
     assert step.out_count == 2
+
+
+def test_composite_funnel_opens_at_the_universe_not_at_sepa_output(
+    monkeypatch: Any,
+) -> None:
+    """`3472 -> 47` is a screen; `47 -> 47` is not evidence of one.
+
+    SEPA's path and score filters run inside its query, so the funnel used to
+    open at whatever came back. Every composite run then read as watchlist-sized
+    on the console — the exact confusion the funnel exists to prevent.
+    """
+    from bifrost_research.copilot.harness.universe import sepa as sepa_mod
+
+    monkeypatch.setattr(sepa_mod, "sepa_universe_size", lambda conn: 3472)
+    monkeypatch.setattr(
+        sepa_mod,
+        "fetch_sepa_symbols",
+        lambda conn, **kw: (["AAPL", "MSFT"], {}, "path IN [SETUP]"),
+    )
+    from bifrost_research.copilot.harness.universe import events as events_mod
+    from bifrost_research.copilot.harness.universe import momentum as momentum_mod
+
+    monkeypatch.setattr(
+        momentum_mod, "fetch_momentum_symbols", lambda conn, **kw: ([], {}, "")
+    )
+    monkeypatch.setattr(events_mod, "fetch_event_symbols", lambda conn, **kw: ([], {}, ""))
+
+    result = composite_mod.resolve_stock_composite(
+        object(), parse_policy(default_stock_composite_policy()), limit=8
+    )
+    first = result.funnel[0]
+    assert first.name == "sepa"
+    assert first.in_count == 3472
+    assert first.out_count == 2
+
+
+def test_composite_funnel_falls_back_when_the_universe_is_unreadable(
+    monkeypatch: Any,
+) -> None:
+    """An unreadable count must not report the universe as zero."""
+    from bifrost_research.copilot.harness.universe import sepa as sepa_mod
+
+    monkeypatch.setattr(sepa_mod, "sepa_universe_size", lambda conn: None)
+    monkeypatch.setattr(
+        sepa_mod, "fetch_sepa_symbols", lambda conn, **kw: (["AAPL"], {}, "f")
+    )
+    from bifrost_research.copilot.harness.universe import events as events_mod
+    from bifrost_research.copilot.harness.universe import momentum as momentum_mod
+
+    monkeypatch.setattr(
+        momentum_mod, "fetch_momentum_symbols", lambda conn, **kw: ([], {}, "")
+    )
+    monkeypatch.setattr(events_mod, "fetch_event_symbols", lambda conn, **kw: ([], {}, ""))
+
+    result = composite_mod.resolve_stock_composite(
+        object(), parse_policy(default_stock_composite_policy()), limit=8
+    )
+    assert result.funnel[0].in_count == 1

@@ -119,10 +119,14 @@ def resolve_stock_composite(
     )
     symbols = sepa_syms
     meta = dict(sepa_meta)
+    # Open the funnel at the universe SEPA covers, not at what it returned: the
+    # path and score filters run inside the query, so `47 -> 47` looked like no
+    # screen had happened at all.
+    sepa_universe = sepa_mod.sepa_universe_size(conn)
     funnel.append(
         FunnelStep(
             name="sepa",
-            in_count=len(sepa_syms),
+            in_count=sepa_universe if sepa_universe is not None else len(sepa_syms),
             out_count=len(symbols),
             filter_summary=sepa_filt,
             optional=not policy.layers.sepa.required,

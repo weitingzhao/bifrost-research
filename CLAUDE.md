@@ -177,7 +177,8 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
-- 版本：`0.62.1`（候选行写入 score —— 此前 draft 卡显示 82.8 而候选池同一标的显示 —）
+- 版本：`0.63.0`（composite 漏斗从宇宙规模起算（3472→47）而非 SEPA 输出（47→47）—— 后者让每次运行都读作 watchlist 规模）
+- 历史：`0.62.1`（候选行写入 score —— 此前 draft 卡显示 82.8 而候选池同一标的显示 —）
 - 历史：`0.62.0`（候选池去重 —— 同日同源同标的再次提出是刷新而非新候选；已决定的不被复活。此前 104 行 / 16 标的 = 85% 重复）
 - 历史：`0.61.1`（curator 在跑但 token 不是它的 batch pass —— 单独报错，指向转抄失败而非 token 格式）
 - 历史：`0.61.0`（W5 — batch pass 拒绝原因分因报错：无 curator 上下文 / token 被改 / 截断 / 过期 / 错 run
