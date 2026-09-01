@@ -177,7 +177,8 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
-- 版本：`0.59.0`（W3 stock_composite 可用 — events 层 text/date 比较修复（该列存 '待定' 故为 text）；
+- 版本：`0.59.1`（`policy_suggestion` 补进 ai_draft `_ALLOWED_KINDS`（Y.3 遗漏，LLM plan 一开就炸）+ 从调用点推导的 draft kind 契约测试）
+- 历史：`0.59.0`（W3 stock_composite 可用 — events 层 text/date 比较修复（该列存 '待定' 故为 text）；
  10 处 fail-soft 处理器补 `rollback_quietly`（捕获 SQL 错误却不回滚 = 污染整个事务）；
  optional 层不得清空宇宙（仅在「层返回空」时生效，交集为空时照样清零）；Loop 宇宙 28 → 3,472）
 - 历史：`0.58.1`（dbt 管线修复 — dbt 项目随包安装（此前非 editable 安装完全没有它，容器里从未生效）；

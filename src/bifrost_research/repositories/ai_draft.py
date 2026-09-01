@@ -24,6 +24,12 @@ _ALLOWED_KINDS = frozenset(
         "hypothesis_draft",
         "decision_draft",
         "order_intent",
+        # Wave Y.3 shipped the policy_suggestion draft without adding it here.
+        # scan_legacy never reached that branch (use_llm_plan was off), so the
+        # first stock_composite run — which turns the LLM plan on — failed with
+        # "invalid ai_draft kind". tests/repositories/test_draft_kind_contract.py
+        # now derives this set from the call sites.
+        "policy_suggestion",
     }
 )
 
