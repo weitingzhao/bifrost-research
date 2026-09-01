@@ -143,6 +143,8 @@ def _resolve_earnings_events(
     """Resolve earnings events using best-available Golden Source data.
 
     Priority:
+      0. ``raw_market.stock_financials.filing_date`` — when the 10-Q / 10-K was
+         actually filed. ~15 years deep across ~4.4k symbols.
       1. ``raw_market.corporate_action`` filtered to an ``earnings`` action_type
          (currently only split/dividend rows exist — this branch simply falls
          through when zero rows match).
@@ -150,11 +152,47 @@ def _resolve_earnings_events(
          ILIKE '%earnings%' or '%财报%'.
       3. Hard-coded stub with the trailing 8 quarters (roughly every ~91 days)
          for the canonical universe.
+
+    The stub stays as the last rung: a run with no real dates should say so
+    rather than return nothing.
     """
     symbols = _params_symbols(params)
     universe = symbols or list(_STUB_EARNINGS_UNIVERSE)
 
     events: list[tuple[str, date]] = []
+
+    # (0) stock_financials.filing_date — the real reporting date.
+    #
+    # period_date is the fiscal period END; filing_date is when the report was
+    # filed, and the gap varies (24-31 days on NVDA), so the two are not
+    # interchangeable for an event study.
+    #
+    # DISTINCT: stock_financials is a view over six entity tables, so one filing
+    # surfaces once per statement kind. Fiscal-Q4 quarterly rows carry no
+    # filing_date — the matching annual row does — so both kinds are read.
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT UPPER(TRIM(symbol)), filing_date
+                FROM raw_market.stock_financials
+                WHERE filing_date IS NOT NULL
+                  AND filing_date BETWEEN %s AND %s
+                  AND (%s::text[] IS NULL OR UPPER(TRIM(symbol)) = ANY(%s::text[]))
+                ORDER BY filing_date
+                """,
+                (start, end, universe or None, universe or None),
+            )
+            rows = cur.fetchall() or []
+        filings: list[tuple[str, date]] = []
+        for sym, filed in rows:
+            if isinstance(filed, datetime):
+                filed = filed.date()
+            filings.append((str(sym), filed))
+        if filings:
+            return ResolvedEvents(events=filings, source="financials_filing")
+    except Exception as exc:  # pragma: no cover - depends on DB schema
+        logger.debug("earnings stock_financials fallback: %s", exc)
 
     # (1) corporate_action
     try:
