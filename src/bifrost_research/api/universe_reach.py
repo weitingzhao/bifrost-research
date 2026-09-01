@@ -2,11 +2,12 @@
 
 GET /research/universe/reach
 
-The Loop's candidate proposals come from ``features.stock_signal_scan_daily``,
-whose universe is assembled from option-derived feature tables — so it is bounded
-by the option data footprint, not by how many symbols were bought.  Measured
-2026-09-01: 14,836 symbols have daily bars and 28 reach the scan, which is 1 in
-530.  Nothing in the product said so; you had to query the warehouse to find out.
+How far the Loop reaches depends on the universe_mode its active objectives
+use.  ``scan_legacy`` proposes from ``features.stock_signal_scan_daily``, whose
+universe is assembled from option-derived feature tables and is therefore
+bounded by the option footprint — 28 symbols out of 14,836 with daily bars, or
+1 in 530.  ``stock_composite`` reads SEPA instead and reaches 3,472.  Nothing in
+the product said which was in play; you had to query the warehouse to find out.
 
 Read-only.  D13: reads ``raw_market.*`` and ``features.*``, writes nothing.
 """
@@ -19,7 +20,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from bifrost_research.db.conn import connect
+from bifrost_research.db.conn import connect, rollback_quietly
 from bifrost_research.schema.schemas import (
     TABLE_STOCK_SIGNAL_SCAN_DAILY,
     TABLE_STOCK_SIGNAL_SEPA_DAILY,
@@ -92,6 +93,38 @@ def _count_symbols(conn: Any, table: str, column: str) -> int | None:
     return int(row[0])
 
 
+# Which layer an objective's universe_mode actually draws from. Reporting the
+# scan count as "what the Loop sees" was right only while scan_legacy was the
+# only mode; once a stock_composite objective is active the Loop reaches the
+# SEPA universe, and a strip still saying 28 would be exactly the kind of stale
+# number this endpoint exists to prevent.
+_MODE_LAYER: dict[str, str] = {
+    "scan_legacy": "scan",
+    "stock_composite": "sepa",
+    "sepa": "sepa",
+    "momentum": "sepa",
+    "events": "sepa",
+}
+
+
+def _active_modes(conn: Any) -> list[str]:
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT COALESCE(policy_json ->> 'universe_mode', 'scan_legacy')
+                FROM research.objective
+                WHERE status = 'active'
+                """
+            )
+            rows = cur.fetchall() or []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("universe_reach: active modes unavailable (%s)", exc)
+        rollback_quietly(conn)
+        return []
+    return sorted({str(r[0]) for r in rows if r and r[0]})
+
+
 def build_reach(conn: Any) -> dict[str, Any]:
     """Layer counts plus the widest-to-Loop ratio."""
     layers: list[dict[str, Any]] = []
@@ -110,7 +143,14 @@ def build_reach(conn: Any) -> dict[str, Any]:
 
     by_key = {layer["key"]: layer["symbols"] for layer in layers}
     widest = by_key.get("stock_daily")
-    loop = by_key.get("scan")
+
+    # The Loop reaches as far as its widest active universe_mode, not as far as
+    # the scan table.
+    modes = _active_modes(conn)
+    reach_keys = {_MODE_LAYER.get(m, "scan") for m in modes} or {"scan"}
+    candidates = [by_key.get(k) for k in reach_keys if by_key.get(k) is not None]
+    loop = max(candidates) if candidates else None
+
     pct: float | None = None
     if widest and loop is not None and widest > 0:
         pct = round(100.0 * loop / widest, 2)
@@ -120,6 +160,7 @@ def build_reach(conn: Any) -> dict[str, Any]:
         "widest_symbols": widest,
         "loop_symbols": loop,
         "loop_pct_of_widest": pct,
+        "universe_modes": modes,
         "measured": all(layer["status"] == "ok" for layer in layers),
     }
 

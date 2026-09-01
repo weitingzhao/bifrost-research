@@ -122,3 +122,25 @@ def test_endpoint_caches_then_refreshes(monkeypatch: Any) -> None:
     third = ur.get_universe_reach(refresh=True)
     assert third["data"]["cached"] is False
     assert len(calls) == 2
+
+
+def test_reach_follows_the_active_universe_mode(monkeypatch: Any) -> None:
+    """A stock_composite objective moves the Loop's reach off the scan table."""
+    monkeypatch.setattr(ur, "_active_modes", lambda conn: ["stock_composite"])
+    d = ur.build_reach(_Conn(_FULL))
+    assert d["loop_symbols"] == 3472
+    assert d["loop_pct_of_widest"] == 23.4
+    assert d["universe_modes"] == ["stock_composite"]
+
+
+def test_reach_uses_the_widest_mode_when_several_are_active(monkeypatch: Any) -> None:
+    monkeypatch.setattr(ur, "_active_modes", lambda conn: ["scan_legacy", "stock_composite"])
+    d = ur.build_reach(_Conn(_FULL))
+    assert d["loop_symbols"] == 3472
+
+
+def test_reach_falls_back_to_scan_when_modes_unknown(monkeypatch: Any) -> None:
+    """An unreadable objective table must not silently widen the claim."""
+    monkeypatch.setattr(ur, "_active_modes", lambda conn: [])
+    d = ur.build_reach(_Conn(_FULL))
+    assert d["loop_symbols"] == 28
