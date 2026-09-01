@@ -42,7 +42,7 @@ spec:
                   exit 1
           containers:
             - name: eod-review
-              image: 192.168.10.73:30500/bifrost-research:0.59.2
+              image: 192.168.10.73:30500/bifrost-research:0.60.0
               imagePullPolicy: Always
               args:
                 - python
