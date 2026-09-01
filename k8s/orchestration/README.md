@@ -19,7 +19,7 @@ make dagster-ensure-schedule
 | `market_snapshot_schedule` | `5 21 * * *` UTC | stock-snapshot |
 | `market_movers_schedule` | `10 21 * * *` UTC | stock-movers |
 | `market_reference_schedule` | `30 21 * * *` UTC | reference |
-| `market_universe_calendar_schedule` | `0 22 * * *` UTC | universe-daily + calendar |
+| `market_universe_calendar_schedule` | `0 22 * * *` UTC (~17:00 America/Chicago) | universe-daily + calendar + stock-eod + eod-pipeline |
 | `market_related_schedule` | `30 22 * * *` UTC | related-rotate |
 | `market_option_bars_schedule` | `45 22 * * *` UTC | option-bars |
 | `market_corporate_trades_schedule` | `0 23 * * *` UTC | corporate + option-trades |

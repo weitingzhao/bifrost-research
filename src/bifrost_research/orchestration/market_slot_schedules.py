@@ -151,7 +151,7 @@ _MARKET_SPECS: list[tuple[str, str, Any, str, str]] = [
         "market_universe_calendar_job",
         market_universe_calendar,
         "0 22 * * *",
-        "universe-daily+calendar+eod-pipeline",
+        "universe-daily+calendar+stock-eod+eod-pipeline",
     ),
     ("market_related_schedule", "market_related_job", market_related, "30 22 * * *", "related-rotate"),
     ("market_option_bars_schedule", "market_option_bars_job", market_option_bars, "45 22 * * *", "option-bars"),
