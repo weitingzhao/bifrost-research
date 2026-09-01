@@ -45,6 +45,24 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The dbt project is part of the package, not a build artifact beside it.  A
+# non-editable install (i.e. every container) otherwise lands without it, and
+# orchestration/paths.py resolves DBT_PROJECT_DIR from the installed package —
+# so dagster-dbt found nothing and registered zero assets, silently.  Editable
+# installs hid this because __file__ points back at the source tree.
+[tool.setuptools.package-data]
+bifrost_research = [
+    "dbt/dbt_project.yml",
+    "dbt/profiles.yml",
+    "dbt/packages.yml",
+    "dbt/package-lock.yml",
+    "dbt/models/**/*.sql",
+    "dbt/models/**/*.yml",
+    "dbt/macros/**/*.sql",
+    "dbt/seeds/**/*",
+    "dbt/snapshots/**/*",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

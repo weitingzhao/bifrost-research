@@ -46,10 +46,16 @@ RUN pip install --no-cache-dir ".[orchestration]"
 #
 # Parse during the build instead. No database is touched: `deps` fetches the
 # packages pinned in package-lock.yml and `parse` only renders the project.
-RUN cd src/bifrost_research/dbt \
+# Parse inside the *installed* package: orchestration/paths.py resolves the
+# project from `bifrost_research.__file__`, which is site-packages here and the
+# source tree only under an editable install — which is why this worked on a
+# laptop and never once in a container.
+RUN DBT_DIR="$(python -c 'import bifrost_research, os; print(os.path.join(os.path.dirname(bifrost_research.__file__), "dbt"))')" \
+    && cd "$DBT_DIR" \
     && dbt deps \
     && dbt parse --profiles-dir . --no-partial-parse \
-    && test -s target/manifest.json
+    && test -s target/manifest.json \
+    && python -c "from bifrost_research.orchestration.dbt_assets import load_dbt_assets; assert load_dbt_assets(), 'dbt assets still empty'"
 
 ENV DAGSTER_HOME=/opt/dagster/home
 
