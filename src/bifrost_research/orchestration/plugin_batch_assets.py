@@ -24,8 +24,9 @@ from bifrost_research.orchestration.plugin_http import (
     key=AssetKey(["batch", "market_eod"]),
     group_name="plugin_batch",
     description=(
-        "Enqueue Market EOD slots (stock-eod + eod-pipeline) via Plugin "
-        "POST /market/ingest/enqueue-slot. Workers write raw_market.*"
+        "Catch-up enqueue for stock-eod + eod-pipeline (primary fire is "
+        "market_universe_calendar @ 22:00 UTC / ~17:00 America/Chicago). "
+        "POST /market/ingest/enqueue-slot → workers write raw_market.*"
     ),
 )
 def market_eod(context: AssetExecutionContext) -> MaterializeResult:

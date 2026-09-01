@@ -74,13 +74,13 @@ market_movers = _make_slot_asset(
 market_reference = _make_slot_asset(
     "market_reference",
     ("reference",),
-    "UTC 21:30 — reference (stock-eod remains on research_trading_day)",
+    "UTC 21:30 — reference",
 )
 market_universe_calendar = _make_slot_asset(
     "market_universe_calendar",
-    ("universe-daily", "calendar", "eod-pipeline"),
-    "UTC 22:00 — universe-daily + calendar + eod-pipeline "
-    "(market_eod on research_trading_day remains catch-up)",
+    ("universe-daily", "calendar", "stock-eod", "eod-pipeline"),
+    "UTC 22:00 (~17:00 America/Chicago) — universe-daily + calendar + "
+    "stock-eod + eod-pipeline (market_eod on research_trading_day remains catch-up)",
 )
 market_related = _make_slot_asset(
     "market_related",
