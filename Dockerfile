@@ -37,8 +37,20 @@ FROM base AS orchestration
 
 RUN pip install --no-cache-dir ".[orchestration]"
 
-# Prefer baking a pre-parsed dbt manifest when present in build context.
-# Local: `make dbt-parse` then `make build-image-dagster`.
+# dagster-dbt only produces assets when dbt/target/manifest.json is in the image.
+# `target/` is gitignored and builds run in-cluster from the Gitea mirror, so a
+# manifest parsed on a laptop never reaches the image — and `load_dbt_assets()`
+# returning empty is silent: the trading-day job still succeeds, sepa_projection
+# still materializes, and it copies a mart nothing has refreshed. That is how
+# dw_stock.mart_sepa_* sat frozen while every dashboard read green.
+#
+# Parse during the build instead. No database is touched: `deps` fetches the
+# packages pinned in package-lock.yml and `parse` only renders the project.
+RUN cd src/bifrost_research/dbt \
+    && dbt deps \
+    && dbt parse --profiles-dir . --no-partial-parse \
+    && test -s target/manifest.json
+
 ENV DAGSTER_HOME=/opt/dagster/home
 
 CMD ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "/app/workspace.yaml"]
