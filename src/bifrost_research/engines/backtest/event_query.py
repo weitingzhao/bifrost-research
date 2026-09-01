@@ -19,12 +19,19 @@ Notes on data source gaps (Wave RS-C1):
   ``fills.compute_fill_price`` layers a mid ± slippage model on top and
   degrades back to ``close`` when bid/ask are unavailable — keeping this
   entry point backward compatible.
-- No earnings calendar table exists in Golden Source. The ``earnings`` event
-  resolver falls back through: (a) ``raw_market.corporate_action`` (only if
-  it grows an ``earnings`` action_type — currently only splits/dividends);
-  (b) ``features.event_signal_radar_daily`` heuristics; and (c) a small
-  hard-coded stub for a canonical universe. The response ``summary`` and
-  each event record advertise which source produced the dates.
+- Earnings dates come from ``raw_market.stock_financials.filing_date`` — when
+  the 10-Q / 10-K was filed, ~15 years deep. The resolver falls back through:
+  (a) ``raw_market.corporate_action`` (only if it grows an ``earnings``
+  action_type — currently only splits/dividends); (b)
+  ``features.event_signal_radar_daily`` heuristics; and (c) a small hard-coded
+  stub for a canonical universe. The response ``summary`` and each event record
+  advertise which source produced the dates.
+- Option-leg templates cannot answer a multi-year study today:
+  ``raw_market.option_daily`` holds under a month of history, so those events
+  are skipped rather than priced. ``summary.skipped_no_option`` /
+  ``skipped_no_stock`` carry the reason so a caller never reads a missing
+  dataset as a losing strategy. Coverage numbers, backfill cost, and the
+  Polygon-tier decision behind it: ``docs/BACKTEST_DATA_COVERAGE.md``.
 """
 
 from __future__ import annotations
