@@ -5,6 +5,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol
 
+from bifrost_research.db.conn import rollback_quietly
+from bifrost_research.copilot.harness.evidence import build_candidate_evidence
+from bifrost_research.copilot.harness.plan_llm import OP_ANALYZE_SYMBOL
 from bifrost_research.copilot.harness import data_sources as ds
 from bifrost_research.copilot.harness import plan_llm
 from bifrost_research.copilot.harness.gate import (
@@ -79,6 +82,13 @@ def _heuristic_plan(objective: dict[str, Any]) -> dict[str, Any]:
         steps.append({"op": "signal_decay_check", "note": decay_note})
     steps.extend(
         [
+            {
+                "op": OP_ANALYZE_SYMBOL,
+                "note": (
+                    "Attach selection rationale, price context, option analytics "
+                    "(absent for most symbols) and this source's settled hit rate"
+                ),
+            },
             {
                 "op": "propose_candidates",
                 "max": max_candidates,
@@ -191,6 +201,25 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
 
         trace.append({"step": "plan", "plan": plan})
 
+        # The plan finally decides something. Until now run_objective ran a fixed
+        # sequence and the plan was narration written into the trace and never
+        # read — so an LLM "planner" could not change what happened. Optional
+        # stages are honoured from the plan; propose_candidates and
+        # await_approval stay outside its reach.
+        plan_ops = {
+            str(step.get("op"))
+            for step in (plan.get("steps") or [])
+            if isinstance(step, dict)
+        }
+        want_evidence = OP_ANALYZE_SYMBOL in plan_ops
+        trace.append(
+            {
+                "step": "plan_ops",
+                "ops": sorted(plan_ops),
+                "evidence_enabled": want_evidence,
+            }
+        )
+
         # 1. Resolve universe --------------------------------------------------
         universe = resolve_universe(conn, loop_policy, limit=max_n)
         universe_symbols = list(universe.symbols)
@@ -295,13 +324,37 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
                 source_ref={"objective_id": objective["id"], "run_id": run_id},
             )
             candidate_ids.append(row["id"])
-            proposed_items.append(
-                {
-                    "id": row["id"],
-                    "symbol": row["symbol"],
-                    "score": _primary_score(sym_meta),
-                }
-            )
+            item: dict[str, Any] = {
+                "id": row["id"],
+                "symbol": row["symbol"],
+                "score": _primary_score(sym_meta),
+            }
+            # A score with no reasoning is an opinion. Attach why it was picked,
+            # where the price sits, whether this source has ever been right, and
+            # what would make the call wrong — so the Inbox card can be judged
+            # instead of merely approved.
+            if want_evidence:
+                # Evidence enriches a proposal; it is not a precondition for
+                # making one. A failure here must not cost the Owner the whole
+                # batch — the card just says the chain could not be built.
+                try:
+                    item["evidence"] = build_candidate_evidence(
+                        conn,
+                        row["symbol"],
+                        source=source_label,
+                        min_score=loop_policy.layers.sepa.min_score
+                        if loop_policy.is_stock_mode()
+                        else loop_policy.min_composite_score,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("evidence build failed for %s: %s", row["symbol"], exc)
+                    rollback_quietly(conn)
+                    item["evidence"] = {
+                        "symbol": row["symbol"],
+                        "status": "not_measured",
+                        "reason": f"evidence build failed: {exc}",
+                    }
+            proposed_items.append(item)
             trace.append({"step": "propose_candidate", "symbol": row["symbol"], "id": row["id"]})
 
         # 5. Draft candidate_batch --------------------------------------------

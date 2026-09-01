@@ -177,7 +177,10 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
-- 版本：`0.59.2`（universe reach 按实际 active universe_mode 计算 —— 上线 stock_composite 后仍报 scan 的 28 就是新的陈旧指标）
+- 版本：`0.60.0`（W4 证据链 — 每个候选带「为什么选它 / 价格位置 / 期权视图 / 该来源历史命中率 / 失效条件」；
+ `analyze_symbol` 进 op 白名单，且 **plan 第一次真正驱动执行**（此前 plan 写进 trace 后从不被读）；
+ 期权分析对多数标的显式报 NOT MEASURED —— 空面板会被读成「这只股票没什么特别」）
+- 历史：`0.59.2`（universe reach 按实际 active universe_mode 计算 —— 上线 stock_composite 后仍报 scan 的 28 就是新的陈旧指标）
 - 历史：`0.59.1`（`policy_suggestion` 补进 ai_draft `_ALLOWED_KINDS`（Y.3 遗漏，LLM plan 一开就炸）+ 从调用点推导的 draft kind 契约测试）
 - 历史：`0.59.0`（W3 stock_composite 可用 — events 层 text/date 比较修复（该列存 '待定' 故为 text）；
  10 处 fail-soft 处理器补 `rollback_quietly`（捕获 SQL 错误却不回滚 = 污染整个事务）；

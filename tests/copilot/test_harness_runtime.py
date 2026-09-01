@@ -108,6 +108,10 @@ def test_plan_for_objective_falls_back_when_llm_returns_none(
     assert set(ops) == {
         "scan_universe",
         "signal_decay_check",
+        # W4: the heuristic plan asks for evidence by default. It is optional in
+        # the sense that a plan may drop it — not in the sense that a proposal
+        # without reasoning is the normal case.
+        "analyze_symbol",
         "propose_candidates",
         "await_approval",
     }

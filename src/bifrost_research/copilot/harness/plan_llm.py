@@ -30,8 +30,18 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 logger = logging.getLogger(__name__)
 
+# The op the runtime actually branches on. Adding an op here without a branch in
+# runtime.py buys nothing — the plan would describe a step that never runs.
+OP_ANALYZE_SYMBOL = "analyze_symbol"
+
 VALID_OPS = frozenset(
-    {"scan_universe", "signal_decay_check", "propose_candidates", "await_approval"}
+    {
+        "scan_universe",
+        "signal_decay_check",
+        OP_ANALYZE_SYMBOL,
+        "propose_candidates",
+        "await_approval",
+    }
 )
 
 # Wave Y.3: whitelist of keys the LLM is allowed to suggest for policy_json.
@@ -129,7 +139,11 @@ def _build_messages(objective: dict[str, Any]) -> list[dict[str, str]]:
         '   "policy_suggestion": <optional object with keys among preset, flag_filter, '
         "min_composite_score, min_hit_rate, max_candidates, universe_mode, layers, option_overlay>}\n\n"
         f"Allowed op values (whitelist): {sorted(VALID_OPS)}.\n"
-        "Recommended order: scan_universe → signal_decay_check → propose_candidates → await_approval.\n"
+        "Recommended order: scan_universe → signal_decay_check → analyze_symbol → "
+        "propose_candidates → await_approval.\n"
+        "analyze_symbol attaches per-candidate evidence: why it was selected, price\n"
+        "context, option analytics where they exist, and this source's settled hit\n"
+        "rate. Drop it only when the objective explicitly wants a bare list.\n"
         "For universe_mode stock_composite/sepa/momentum/events: describe SEPA/momentum/event layers; "
         "do NOT mention IV hot watchlist unless option_overlay.enabled is true.\n"
         "signal_decay_check applies only to scan_legacy (option scan) mode.\n"
