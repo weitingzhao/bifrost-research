@@ -27,6 +27,27 @@ from bifrost_research.schema.schemas import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/research/signal-health", tags=["research-signal-health"])
 
+# Align with Massive plugin weekend freshness (Sat/Sun/Mon-before-22:00 UTC → 72h).
+FRESH_SLA_HOURS = 36.0
+WEEKEND_SLA_HOURS = 72.0
+
+
+def freshness_sla_hours(now: datetime | None = None) -> float:
+    """Mon–Fri batch + 36h SLA false-trips Monday afternoon without a weekend window."""
+    ts = now or datetime.now(timezone.utc)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    else:
+        ts = ts.astimezone(timezone.utc)
+    weekday = ts.weekday()  # Mon=0 … Sun=6
+    if weekday >= 5 or (weekday == 0 and ts.hour < 22):
+        return WEEKEND_SLA_HOURS
+    return FRESH_SLA_HOURS
+
+
+def freshness_status_from_age(age: float, *, now: datetime | None = None) -> str:
+    return "fresh" if age <= freshness_sla_hours(now) else "stale"
+
 # Core tables for cron freshness (subset of feature store)
 _FRESHNESS_TABLES: tuple[tuple[str, str], ...] = (
     ("vrp", TABLE_STOCK_SIGNAL_VRP_DAILY),
@@ -57,6 +78,7 @@ def _table_freshness(conn: Any, label: str, table: str) -> dict[str, Any]:
         "row_count": 0,
         "status": "missing",
         "age_hours": None,
+        "sla_hours": freshness_sla_hours(),
     }
     try:
         with conn.cursor() as cur:
@@ -90,14 +112,12 @@ def _table_freshness(conn: Any, label: str, table: str) -> dict[str, Any]:
                 age = None
             out["max_computed_at"] = iso
             out["age_hours"] = age
+            sla = freshness_sla_hours()
+            out["sla_hours"] = sla
             if age is None:
                 out["status"] = "unknown"
-            elif age <= 36:
-                out["status"] = "fresh"
-            elif age <= 168:
-                out["status"] = "stale"
             else:
-                out["status"] = "stale"
+                out["status"] = freshness_status_from_age(age)
         elif count > 0:
             out["status"] = "unknown"
         else:
@@ -269,6 +289,7 @@ def signal_health() -> dict[str, Any]:
             {
                 "overall": overall,
                 "as_of": datetime.utcnow().isoformat() + "Z",
+                "sla_hours": freshness_sla_hours(),
                 "freshness": freshness,
                 "extra_tables": extra,
                 "hypotheses": hyp,
@@ -291,4 +312,11 @@ def signal_health() -> dict[str, Any]:
             pass
 
 
-__all__ = ["router", "_overall_from_freshness"]
+__all__ = [
+    "router",
+    "_overall_from_freshness",
+    "freshness_sla_hours",
+    "freshness_status_from_age",
+    "FRESH_SLA_HOURS",
+    "WEEKEND_SLA_HOURS",
+]
