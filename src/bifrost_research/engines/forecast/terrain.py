@@ -456,7 +456,16 @@ def load_upstream_signals(
     symbol: str,
     trade_date: date,
 ) -> tuple[float, dict[str, Any], dict[str, Any], dict[str, Any]]:
-    """Best-effort load of spot + Wave 3 tables for terrain compute."""
+    """Best-effort load of spot + Wave 3 tables for terrain compute.
+
+    Every lookup takes the newest row **at or before** ``trade_date`` rather than
+    an exact match. These tables are written by the nightly batch and hold the
+    prior trading day, so the intraday slots — which ask for today in New York —
+    matched nothing all session: spot stayed 0, all 25 symbols were skipped, and
+    terrain_intraday reported success having written nothing since 2026-08-21.
+    ``<=`` keeps the guarantee that matters (never read past ``trade_date``)
+    while letting the intraday path stand on the latest close it has.
+    """
     sym = symbol.strip().upper()
     spot = 0.0
     gex: dict[str, Any] = {}
@@ -468,8 +477,8 @@ def load_upstream_signals(
             """
             SELECT zero_gamma, major_call_wall, major_put_wall, total_net_gex, spot
             FROM features.option_metric_gex_levels_daily
-            WHERE symbol = %s AND trade_date = %s
-            ORDER BY expiry ASC
+            WHERE symbol = %s AND trade_date <= %s
+            ORDER BY trade_date DESC, expiry ASC
             LIMIT 1
             """,
             (sym, trade_date),
@@ -493,7 +502,8 @@ def load_upstream_signals(
             """
             SELECT score, path, crash
             FROM features.stock_signal_momentum_daily
-            WHERE symbol = %s AND trade_date = %s
+            WHERE symbol = %s AND trade_date <= %s
+            ORDER BY trade_date DESC
             LIMIT 1
             """,
             (sym, trade_date),
@@ -509,7 +519,8 @@ def load_upstream_signals(
             """
             SELECT iv_percentile_1y, iv_rank_1y
             FROM features.option_metric_iv_percentile_daily
-            WHERE symbol = %s AND trade_date = %s
+            WHERE symbol = %s AND trade_date <= %s
+            ORDER BY trade_date DESC
             LIMIT 1
             """,
             (sym, trade_date),
@@ -525,7 +536,8 @@ def load_upstream_signals(
             cur.execute(
                 """
                 SELECT close FROM raw_market.stock_daily
-                WHERE symbol = %s AND bar_date = %s
+                WHERE symbol = %s AND bar_date <= %s
+                ORDER BY bar_date DESC
                 LIMIT 1
                 """,
                 (sym, trade_date),
