@@ -10,15 +10,29 @@ from bifrost_research.repositories import objective as obj_repo
 
 logger = logging.getLogger(__name__)
 
+# Kinds an unattended batch run may approve on its own.
+#
+# Narrowed to research outputs. Two removals carry the weight:
+#
+#   policy_suggestion — apply_draft_approval merges it into objective.policy_json
+#     (api/agents.py:423). Auto-approving it lets the model rewrite the strategy
+#     that governs every later run, unattended. Now that policy templates are
+#     editable data, changing the strategy is a deliberate act with an author.
+#
+#   order_intent — no handler today, so approving it only flips a status. But the
+#     name carries order semantics, and the day a handler appears this whitelist
+#     would arm it silently. D10 is not the guard here; this is.
+#
+# decision_draft has no handler either, so its removal changes nothing today.
+# attach_backtest_evidence was never a draft kind at all — it is absent from
+# ai_draft._ALLOWED_KINDS, so it could never have matched a row. A whitelist
+# should list what it means to allow, not carry entries that happened to be
+# harmless or, worse, entries that never meant anything.
 RESEARCH_AUTO_APPROVE_KINDS = frozenset(
     {
         "candidate_batch",
-        "policy_suggestion",
-        "order_intent",
-        "decision_draft",
-        "eod_verdict",
         "hypothesis_suggestion",
-        "attach_backtest_evidence",
+        "eod_verdict",
     }
 )
 
