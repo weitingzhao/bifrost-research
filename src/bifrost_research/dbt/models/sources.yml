@@ -126,7 +126,10 @@ sources:
       - name: us_market_holiday
         description: "US market holidays and early-close dates"
         columns:
-          - name: date
+          # Column is holiday_date, not date — dim_trading_calendar.sql has always
+          # read it correctly; only this test declaration named a column that does
+          # not exist, so the test errored (not failed) and took dbt build with it.
+          - name: holiday_date
             tests:
               - not_null
           - name: status

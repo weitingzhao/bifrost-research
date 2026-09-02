@@ -20,6 +20,7 @@ from dagster import (
 
 from bifrost_research.orchestration.plugin_http import meta
 from bifrost_research.orchestration import runners
+from bifrost_research.orchestration.engine_assets import forecast as engines_forecast
 from bifrost_research.scheduler import engines as engine_sched
 
 GROUP_SIGNALS = "research_signals"
@@ -306,6 +307,27 @@ _specs: list[tuple[str, str, list[Any], str, str, str]] = [
         "0 22 * * 0",
         "UTC",
         "vol-weekly-backfill",
+    ),
+    # engines/forecast writes features.stock_forecast_session — the only input
+    # run_settlement has. It is excluded from research_trading_day twice over
+    # (group ai_forecast, then by key) and belonged to no schedule, so it had no
+    # producer at all: one ad-hoc materialization on 2026-08-30 and nothing since.
+    # Sessions stopped at 2026-08-28, settlement then had nothing left to settle,
+    # and stock_backtest_settlement went stale while its schedule kept reporting
+    # SUCCESS. Its own group cannot simply rejoin trading_day — event_radar and
+    # backtest live there too and carry their own cadence.
+    #
+    # New York, 1-5, matching research_trading_day: this asset depends on
+    # engines/terrain, which that job produces at 22:30 ET. Half an hour later
+    # keeps the dependency ordered on the same calendar, and still lands well
+    # before research_settlement_schedule at 22:00 UTC the following day.
+    (
+        "research_forecast_schedule",
+        "research_forecast_job",
+        [engines_forecast],
+        "0 23 * * 1-5",
+        "America/New_York",
+        "forecast sessions",
     ),
 ]
 

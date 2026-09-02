@@ -14,7 +14,9 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ["quarterly", "annual"]
+              # ttm (trailing twelve months) is 4,138 legitimate rows in
+              # stg_income_stmt. The data was right and the whitelist was stale.
+              values: ["quarterly", "annual", "ttm"]
       - name: revenue
         description: "Total revenues"
       - name: eps
