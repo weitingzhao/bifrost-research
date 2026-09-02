@@ -77,6 +77,62 @@ engines_vol_surface_svi = _run_asset(
         "bifrost_research.engines.vol_surface.entry", fromlist=["run"]
     ).run(),
 )
+
+
+def _run_iv_solver() -> dict[str, Any]:
+    """Daily dual-source IV reconstruction → features.option_iv_reconstructed_daily.
+
+    SVI surface fit does **not** write this table; Console used to map
+    ``iv_reconstructed`` freshness to research_vol_surface_svi by mistake, so the
+    schedule kept reporting SUCCESS while computed_at froze. Short lookback is
+    enough for the weekday 36h SLA; weekly vol backfill covers deeper history.
+    """
+    import json
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    from bifrost_research.db.calendar import (
+        load_symbols_from_env_or_query,
+        union_iv_radar_benchmarks,
+    )
+    from bifrost_research.db.conn import connect
+    from bifrost_research.engines.volatility.iv_solver import run_cohort
+
+    as_of = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
+    conn = connect()
+    try:
+        universe = union_iv_radar_benchmarks(load_symbols_from_env_or_query(conn))
+        result = run_cohort(
+            conn,
+            symbols=universe,
+            lookback_days=5,
+            as_of=as_of,
+            source="all",
+            dry_run=False,
+        )
+        # Compact for Dagster metadata (run_cohort returns a large per-symbol list).
+        if isinstance(result, dict):
+            return {
+                "ok": True,
+                "engine": "iv_solver",
+                "as_of": as_of.isoformat(),
+                "symbols": len(universe),
+                "rows_written": result.get("rows_written")
+                or result.get("total_rows_written"),
+                "advisory": "D10 BLOCKED",
+                "detail": json.dumps(result, default=str)[:400],
+            }
+        return {"ok": True, "engine": "iv_solver", "result": str(result)[:400]}
+    finally:
+        conn.close()
+
+
+engines_iv_solver = _run_asset(
+    key_path=["engines", "iv_solver"],
+    group=GROUP_SIGNALS,
+    description="Historical IV solver → features.option_iv_reconstructed_daily (IDS)",
+    fn=_run_iv_solver,
+)
 engines_alert_scan = _run_asset(
     key_path=["engines", "alert_scan"],
     group=GROUP_SIGNALS,
@@ -184,6 +240,7 @@ RESEARCH_AUX_ASSETS = [
     engines_vrp,
     engines_opex,
     engines_vol_surface_svi,
+    engines_iv_solver,
     engines_alert_scan,
     engines_signal_hit,
     engines_settlement,
@@ -235,6 +292,14 @@ _specs: list[tuple[str, str, list[Any], str, str, str]] = [
         "20 23 * * 1-5",
         "UTC",
         "SVI surface",
+    ),
+    (
+        "research_iv_solver_schedule",
+        "research_iv_solver_job",
+        [engines_iv_solver],
+        "25 23 * * 1-5",
+        "UTC",
+        "IV reconstructed",
     ),
     (
         "research_alert_scan_schedule",

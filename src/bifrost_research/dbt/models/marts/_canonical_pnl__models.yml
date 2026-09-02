@@ -5,7 +5,8 @@ models:
     description: >
       Canonical structure hypothetical PnL (Watchlist trust / replay).
       Python engine dual-writes features.stock_signal_canonical_pnl_daily;
-      this mart rebuilds from features for human-read / dbt tests.
+      this mart is a **view** over features (no table DROP/CREATE — avoids
+      ``must be owner`` on bifrost-owned relations during dbt build).
       Structures: short_strangle, put_credit_spread, long_straddle,
       covered_call, short_put. D10 BLOCKED — observe only.
     columns:

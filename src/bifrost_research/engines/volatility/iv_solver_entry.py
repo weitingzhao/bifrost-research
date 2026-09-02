@@ -56,7 +56,16 @@ def main(argv: list[str] | None = None) -> int:
     conn = connect()
     try:
         if args.ensure_ddl:
-            apply_features_ddl(conn)
+            try:
+                apply_features_ddl(conn)
+            except Exception as exc:
+                # analytics_writer often lacks CREATE on features (bifrost-owned DDL).
+                # Tables already exist in Golden Source — continue the solve.
+                logger.warning("ensure-ddl skipped: %s", exc)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
         underlyings = load_symbols_from_env_or_query(conn)
         universe = union_iv_radar_benchmarks(underlyings)
         if args.symbol:

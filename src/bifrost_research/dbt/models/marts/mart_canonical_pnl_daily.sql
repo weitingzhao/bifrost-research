@@ -1,7 +1,9 @@
-{{ config(materialized='table') }}
+{{ config(materialized='view') }}
 
--- Human-read mart mirroring features.stock_signal_canonical_pnl_daily
--- (Python engine is the write authority; dbt rebuilds for docs/tests).
+-- Human-read mart mirroring features.stock_signal_canonical_pnl_daily.
+-- Python engine is the write authority; keep this a view so dbt never needs
+-- DROP/CREATE OWNER on dw_stock.mart_canonical_pnl_daily (table materialization
+-- failed trading_day when the relation was owned by bifrost).
 -- Wave Canonical-PnL Foundation.
 
 select

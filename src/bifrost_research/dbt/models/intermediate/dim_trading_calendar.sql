@@ -6,7 +6,9 @@ with all_dates as (
 ),
 
 holidays as (
-    select holiday_date
+    -- NYSE + NASDAQ both publish the same closed/early-close days; without
+    -- DISTINCT the LEFT JOIN duplicated trade_date and broke unique_*.
+    select distinct holiday_date
     from {{ source('market', 'us_market_holiday') }}
     where status in ('closed', 'early-close')
 )
