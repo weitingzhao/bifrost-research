@@ -33,12 +33,20 @@ logger = logging.getLogger(__name__)
 # The op the runtime actually branches on. Adding an op here without a branch in
 # runtime.py buys nothing — the plan would describe a step that never runs.
 OP_ANALYZE_SYMBOL = "analyze_symbol"
+# Validate the batch against history, and turn it into something readable.
+# Without these the planner could scan, focus on one symbol and propose — but
+# never check whether the signal has ever worked, and never produce the report
+# the Loop exists to deliver.
+OP_RUN_BACKTEST = "run_backtest"
+OP_COMPOSE_REPORT = "compose_report"
 
 VALID_OPS = frozenset(
     {
         "scan_universe",
         "signal_decay_check",
         OP_ANALYZE_SYMBOL,
+        OP_RUN_BACKTEST,
+        OP_COMPOSE_REPORT,
         "propose_candidates",
         "await_approval",
     }
@@ -127,7 +135,37 @@ def _resolve_model(policy: dict[str, Any] | None) -> str:
     return DEFAULT_MODEL
 
 
-def _build_messages(objective: dict[str, Any]) -> list[dict[str, str]]:
+def _playbook_block(rules: list[dict[str, Any]] | None) -> str:
+    """Render the Owner's trading rules for the planner to follow.
+
+    The policy says which symbols to look at; these say how to judge them. They
+    are the adjustable half of "brain + strategy" — written in the Playbook, read
+    here, with no new schema and no new dependency. An empty list renders nothing
+    and the planner behaves exactly as before.
+    """
+    if not rules:
+        return ""
+    lines = []
+    for r in rules[:20]:
+        title = str(r.get("title") or "").strip()
+        body = " ".join(str(r.get("body_md") or "").split())[:300]
+        if not title and not body:
+            continue
+        lines.append(f"- {title}: {body}" if title else f"- {body}")
+    if not lines:
+        return ""
+    return (
+        "\n\nOWNER TRADING RULES — follow these when deciding what to propose and "
+        "which steps the plan needs. They come from the Owner's Playbook and "
+        "outrank your own preferences; if one conflicts with the objective, say so "
+        "in `reasoning` rather than silently ignoring it.\n" + "\n".join(lines)
+    )
+
+
+def _build_messages(
+    objective: dict[str, Any],
+    playbook_rules: list[dict[str, Any]] | None = None,
+) -> list[dict[str, str]]:
     """Assemble system + user prompt.  Objective only — no scan/decay reflow (C1)."""
     policy = objective.get("policy_json") or {}
     system = (
@@ -140,16 +178,23 @@ def _build_messages(objective: dict[str, Any]) -> list[dict[str, str]]:
         "min_composite_score, min_hit_rate, max_candidates, universe_mode, layers, option_overlay>}\n\n"
         f"Allowed op values (whitelist): {sorted(VALID_OPS)}.\n"
         "Recommended order: scan_universe → signal_decay_check → analyze_symbol → "
-        "propose_candidates → await_approval.\n"
+        "run_backtest → propose_candidates → compose_report → await_approval.\n"
         "analyze_symbol attaches per-candidate evidence: why it was selected, price\n"
         "context, option analytics where they exist, and this source's settled hit\n"
         "rate. Drop it only when the objective explicitly wants a bare list.\n"
+        "run_backtest checks the batch against history before proposing it. Include\n"
+        "it whenever the objective cares whether the signal has ever worked.\n"
+        "compose_report turns the batch into a readable verdict: why each name was\n"
+        "picked, where its price sits, how this source has actually settled, and what\n"
+        "would make the call wrong. Include it when the objective asks for a report\n"
+        "or a recommendation rather than a bare candidate list.\n"
         "For universe_mode stock_composite/sepa/momentum/events: describe SEPA/momentum/event layers; "
         "do NOT mention IV hot watchlist unless option_overlay.enabled is true.\n"
         "signal_decay_check applies only to scan_legacy (option scan) mode.\n"
         "You may drop / reorder steps if the objective calls for it, but you must include propose_candidates and await_approval.\n"
         "policy_suggestion is advisory only; the Owner still has to update the objective policy.\n"
         "D10 BLOCKED — you are proposing research candidates only, never orders."
+        + _playbook_block(playbook_rules)
     )
     user_body = {
         "objective": {
@@ -201,6 +246,7 @@ def _parse_llm_json(raw: str) -> dict[str, Any] | None:
 def generate_plan_llm(
     objective: dict[str, Any],
     *,
+    playbook_rules: list[dict[str, Any]] | None = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any] | None:
     """Attempt to build a plan via LLM.  Returns None on any failure (fail-soft).
@@ -228,7 +274,7 @@ def generate_plan_llm(
 
     model = _resolve_model(policy)
     base_url = os.environ.get("DEEPSEEK_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
-    messages = _build_messages(objective)
+    messages = _build_messages(objective, playbook_rules)
 
     body = {
         "model": model,

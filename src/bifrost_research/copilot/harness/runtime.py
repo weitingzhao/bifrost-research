@@ -7,7 +7,11 @@ from typing import Any, Protocol
 
 from bifrost_research.db.conn import rollback_quietly
 from bifrost_research.copilot.harness.evidence import build_candidate_evidence
-from bifrost_research.copilot.harness.plan_llm import OP_ANALYZE_SYMBOL
+from bifrost_research.copilot.harness.plan_llm import (
+    OP_ANALYZE_SYMBOL,
+    OP_COMPOSE_REPORT,
+    OP_RUN_BACKTEST,
+)
 from bifrost_research.copilot.harness import data_sources as ds
 from bifrost_research.copilot.harness import plan_llm
 from bifrost_research.copilot.harness.gate import (
@@ -105,7 +109,33 @@ def _heuristic_plan(objective: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _plan_for_objective(objective: dict[str, Any]) -> dict[str, Any]:
+def _playbook_rules_for(conn: Any, objective: dict[str, Any]) -> list[dict[str, Any]]:
+    """The Owner's rules for the persona running this objective.
+
+    Policy decides which symbols the Loop looks at; these decide how it judges
+    them — the half of "brain + strategy" the Owner writes. Fail-soft on purpose:
+    a Playbook that cannot be read must not cost the run its plan, it just plans
+    without the rules, exactly as before they existed.
+    """
+    try:
+        from bifrost_research.repositories import playbook as playbook_repo
+
+        return playbook_repo.list_rules_for_agent(
+            conn,
+            owner_id=str(objective.get("owner_id") or "owner"),
+            agent_name=str(objective.get("persona") or "loop_curator"),
+            limit=20,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("playbook rules unavailable for plan: %s", exc)
+        rollback_quietly(conn)
+        return []
+
+
+def _plan_for_objective(
+    objective: dict[str, Any],
+    conn: Any | None = None,
+) -> dict[str, Any]:
     heuristic = _heuristic_plan(objective)
     policy = objective.get("policy_json") or {}
     enabled, reason = plan_llm.is_llm_plan_enabled(policy)
@@ -113,7 +143,8 @@ def _plan_for_objective(objective: dict[str, Any]) -> dict[str, Any]:
         heuristic["fallback_reason"] = f"llm_disabled: {reason}"
         return heuristic
 
-    llm_result = plan_llm.generate_plan_llm(objective)
+    rules = _playbook_rules_for(conn, objective) if conn is not None else []
+    llm_result = plan_llm.generate_plan_llm(objective, playbook_rules=rules)
     if not llm_result:
         heuristic["fallback_reason"] = "llm_call_failed_or_invalid"
         return heuristic
@@ -126,6 +157,8 @@ def _plan_for_objective(objective: dict[str, Any]) -> dict[str, Any]:
         "llm_model": llm_result.get("llm_model"),
         "llm_reasoning": llm_result.get("reasoning"),
         "policy_suggestion": llm_result.get("policy_suggestion"),
+        # Visible in the trace: a plan made under rules is a different plan.
+        "playbook_rules_applied": len(rules),
     }
 
 
@@ -184,7 +217,7 @@ def _build_lens_snapshot(
 
 def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, Any]:
     """Execute a harness run: universe → decay (legacy) → propose."""
-    plan = _plan_for_objective(objective)
+    plan = _plan_for_objective(objective, conn)
     run = obj_repo.create_run(conn, objective_id=objective["id"], plan_json=plan)
     run_id = run["id"]
     trace: list[dict[str, Any]] = []
@@ -212,6 +245,8 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
             if isinstance(step, dict)
         }
         want_evidence = OP_ANALYZE_SYMBOL in plan_ops
+        want_backtest = OP_RUN_BACKTEST in plan_ops
+        want_report = OP_COMPOSE_REPORT in plan_ops
         trace.append(
             {
                 "step": "plan_ops",
@@ -375,6 +410,32 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
             output_payload={"candidate_ids": candidate_ids},
             status="proposed",
         )
+        # Has this signal ever worked? The plan asks for the check; a failure to
+        # answer must not cost the Owner the batch, so it is recorded as
+        # not_measured rather than swallowed or raised.
+        backtest_summary: dict[str, Any] | None = None
+        if want_backtest:
+            try:
+                from bifrost_research.engines.backtest.event_defs import EventDef
+                from bifrost_research.engines.backtest.event_query import run_event_query
+
+                bt = run_event_query(
+                    EventDef(kind="earnings", params={}),
+                    "long_stock_event",
+                    lookback_years=3,
+                    conn=conn,
+                )
+                backtest_summary = {
+                    "status": "ok",
+                    "template": "long_stock_event",
+                    "summary": bt.get("summary") or {},
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("run_backtest failed for run %s: %s", run_id, exc)
+                rollback_quietly(conn)
+                backtest_summary = {"status": "not_measured", "reason": str(exc)[:200]}
+            trace.append({"step": "run_backtest", "result": backtest_summary})
+
         candidate_payload: dict[str, Any] = {
             "objective_id": objective["id"],
             "run_id": run_id,
@@ -387,8 +448,36 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
             "signal_decay": decay_summary,
             "hit_rate_gate": gate,
         }
+        if backtest_summary is not None:
+            candidate_payload["backtest"] = backtest_summary
         if gate.get("applied") and not gate.get("ok"):
             candidate_payload["hit_rate_warn"] = True
+
+        # The report is the Loop's actual deliverable: why each name, where its
+        # price sits, how this source has settled, and what would unmake the call.
+        if want_report:
+            try:
+                from bifrost_research.copilot.harness.report import compose_report
+
+                candidate_payload["report"] = compose_report(
+                    objective=objective,
+                    run_id=run_id,
+                    items=proposed_items,
+                    funnel=universe.funnel_dicts(),
+                    backtest=backtest_summary,
+                )
+                trace.append(
+                    {
+                        "step": "compose_report",
+                        "candidates": len(proposed_items),
+                        "with_settled_record": candidate_payload["report"]["coverage"][
+                            "with_settled_record"
+                        ],
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("compose_report failed for run %s: %s", run_id, exc)
+                trace.append({"step": "compose_report", "error": str(exc)[:200]})
         draft = draft_repo.insert_draft(
             conn,
             kind="candidate_batch",

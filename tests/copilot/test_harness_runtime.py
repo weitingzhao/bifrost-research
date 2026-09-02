@@ -59,7 +59,7 @@ def test_plan_for_objective_uses_llm_when_available(
     monkeypatch.setattr(
         rt.plan_llm,
         "generate_plan_llm",
-        lambda obj: {
+        lambda obj, **_kw: {
             "steps": [
                 {"op": "scan_universe", "note": "llm-picked scan"},
                 {"op": "propose_candidates", "note": "llm-picked propose"},
@@ -94,7 +94,7 @@ def test_plan_for_objective_falls_back_when_llm_returns_none(
     """Y.2: LLM enabled but generate_plan_llm returns None → heuristic + fallback_reason."""
     from bifrost_research.copilot.harness import runtime as rt
 
-    monkeypatch.setattr(rt.plan_llm, "generate_plan_llm", lambda obj: None)
+    monkeypatch.setattr(rt.plan_llm, "generate_plan_llm", lambda obj, **_kw: None)
     plan = _plan_for_objective(
         {
             "id": "obj-fallback",
@@ -580,7 +580,7 @@ def test_run_objective_creates_policy_suggestion_draft_from_llm_plan(
     monkeypatch.setattr(
         rt.plan_llm,
         "generate_plan_llm",
-        lambda obj: {
+        lambda obj, **_kw: {
             "steps": [
                 {"op": "scan_universe", "note": "llm"},
                 {"op": "propose_candidates", "note": "llm"},
@@ -632,7 +632,7 @@ def test_run_objective_no_policy_suggestion_draft_when_diff_empty(
     monkeypatch.setattr(
         rt.plan_llm,
         "generate_plan_llm",
-        lambda obj: {
+        lambda obj, **_kw: {
             "steps": [
                 {"op": "propose_candidates", "note": "llm"},
                 {"op": "await_approval", "note": "llm"},
