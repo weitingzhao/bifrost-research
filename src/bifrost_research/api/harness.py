@@ -38,6 +38,14 @@ def _connect_or_503() -> Any:
         raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
 
 
+class ObjectiveStatusPatch(BaseModel):
+    """`archived` retires an objective; `active` brings it back."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = Field(..., min_length=1, max_length=32)
+
+
 class ObjectiveCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -81,6 +89,54 @@ def create_objective(body: ObjectiveCreate) -> dict[str, Any]:
     finally:
         conn.close()
     return _ok(row)
+
+
+@router.patch("/objectives/{objective_id}")
+def set_objective_status(objective_id: str, body: ObjectiveStatusPatch) -> dict[str, Any]:
+    """Archive an objective, or bring an archived one back.
+
+    Archiving is the retirement path: the console lists active objectives, so
+    this removes it from view while its runs, funnels and candidate lineage stay
+    exactly where they are.
+    """
+    conn = _connect_or_503()
+    try:
+        row = obj_repo.set_objective_status(conn, objective_id, status=body.status)
+    finally:
+        conn.close()
+    if row is None:
+        raise HTTPException(status_code=404, detail="objective not found")
+    return _ok(row)
+
+
+@router.delete("/objectives/{objective_id}")
+def delete_objective(objective_id: str) -> dict[str, Any]:
+    """Delete an objective that never ran.
+
+    Refused once it has runs — deleting it would take the run history and the
+    candidate lineage pointing at it. The foreign key would refuse anyway; this
+    returns the reason and the run count instead of a 500 from an integrity
+    error, and names archiving as the thing the caller probably wants.
+    """
+    conn = _connect_or_503()
+    try:
+        existing = obj_repo.get_objective(conn, objective_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="objective not found")
+        runs = obj_repo.count_runs(conn, objective_id)
+        if runs > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"objective has {runs} run(s) — deleting it would take their "
+                    "funnels and the candidates that reference them. Archive it "
+                    "instead."
+                ),
+            )
+        obj_repo.delete_objective(conn, objective_id)
+    finally:
+        conn.close()
+    return _ok({"id": objective_id, "deleted": True})
 
 
 @router.post("/objectives/{objective_id}/run")
@@ -138,6 +194,35 @@ def list_objective_runs(
     finally:
         conn.close()
     return _ok({"items": rows, "count": len(rows)})
+
+
+@router.delete("/objective-runs/{run_id}")
+def delete_run(run_id: str) -> dict[str, Any]:
+    """Delete one run once nothing points at it.
+
+    Refused while candidates carry it in `source_ref`: no foreign key targets
+    objective_run, so the database would allow the delete and leave the Inbox
+    card and the outcome ledger referring to a run that is gone. Approving a
+    batch first, or clearing its candidates, releases the run.
+    """
+    conn = _connect_or_503()
+    try:
+        existing = obj_repo.get_run(conn, run_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        linked = obj_repo.count_candidates_for_run(conn, run_id)
+        if linked > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{linked} candidate(s) still point at this run — deleting it "
+                    "would leave their lineage dangling."
+                ),
+            )
+        obj_repo.delete_run(conn, run_id)
+    finally:
+        conn.close()
+    return _ok({"id": run_id, "deleted": True})
 
 
 @router.post("/objective-runs/{run_id}/curate")

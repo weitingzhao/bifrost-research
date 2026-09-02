@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from bifrost_research.schema.schemas import (
+    TABLE_RESEARCH_CANDIDATE_POOL,
     TABLE_RESEARCH_OBJECTIVE,
     TABLE_RESEARCH_OBJECTIVE_RUN,
 )
@@ -275,6 +276,62 @@ def list_objectives(
         return [_obj_row(r) for r in cur.fetchall() if r]  # type: ignore[misc]
 
 
+ARCHIVED_STATUS = "archived"
+
+
+def count_runs(conn: _Connection, objective_id: str) -> int:
+    """How much history an objective carries — the cost of deleting it."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT count(*) FROM {TABLE_RESEARCH_OBJECTIVE_RUN} WHERE objective_id = %s",
+            (objective_id,),
+        )
+        row = cur.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def set_objective_status(
+    conn: _Connection, objective_id: str, *, status: str
+) -> dict[str, Any] | None:
+    """Archive or reactivate. Archiving is how an objective leaves the console.
+
+    Runs and the candidate lineage that points at them survive: the console
+    lists `status = 'active'`, so setting anything else is enough to retire an
+    objective without destroying what it produced.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE {TABLE_RESEARCH_OBJECTIVE}
+            SET status = %s
+            WHERE id = %s
+            RETURNING {", ".join(_OBJ_COLS)}
+            """,
+            (status, objective_id),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    return _obj_row(row)
+
+
+def delete_objective(conn: _Connection, objective_id: str) -> bool:
+    """Remove an objective that never ran. Returns False when it does not exist.
+
+    Only safe with no runs, and the caller is expected to have checked: the
+    foreign key from objective_run has no ON DELETE clause, so Postgres refuses
+    the delete anyway — this just makes the refusal a decision rather than an
+    integrity error surfacing as a 500.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            f"DELETE FROM {TABLE_RESEARCH_OBJECTIVE} WHERE id = %s",
+            (objective_id,),
+        )
+        deleted = cur.rowcount
+    conn.commit()
+    return bool(deleted)
+
+
 def create_run(
     conn: _Connection,
     *,
@@ -334,6 +391,36 @@ def list_runs(
     with conn.cursor() as cur:
         cur.execute(sql, params)
         return [_run_row(r) for r in cur.fetchall() if r]  # type: ignore[misc]
+
+
+def count_candidates_for_run(conn: _Connection, run_id: str) -> int:
+    """Candidates whose lineage points at this run.
+
+    Nothing in the schema protects a run: no foreign key targets objective_run,
+    and candidates reference it through `source_ref->>'run_id'`, a jsonb field
+    the database will not defend. Deleting a referenced run would leave the
+    Inbox card and the outcome ledger pointing at a run that no longer exists,
+    silently — so the check has to live here.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT count(*) FROM {TABLE_RESEARCH_CANDIDATE_POOL}
+            WHERE source_ref ->> 'run_id' = %s
+            """,
+            (run_id,),
+        )
+        row = cur.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def delete_run(conn: _Connection, run_id: str) -> bool:
+    """Remove one run. Caller must have checked its lineage first."""
+    with conn.cursor() as cur:
+        cur.execute(f"DELETE FROM {TABLE_RESEARCH_OBJECTIVE_RUN} WHERE id = %s", (run_id,))
+        deleted = cur.rowcount
+    conn.commit()
+    return bool(deleted)
 
 
 def finish_run(
