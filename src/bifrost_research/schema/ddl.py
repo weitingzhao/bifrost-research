@@ -630,6 +630,38 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         """
     )
 
+    # --- P0-2: named, editable Loop policy templates ---
+    #
+    # `id` rather than `loop_policy_template_id`: every table in the research
+    # schema keys on `id`, and objective_run / candidate_outcome already point at
+    # siblings that way. The `<table>_id` convention in .claude/skills/
+    # database-design scopes itself to bifrost-trade-{core,api,worker}; importing
+    # it here would make this the one odd table out of thirteen.
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.loop_policy_template (
+            id            text        PRIMARY KEY,
+            name          text        NOT NULL UNIQUE,
+            description   text        NOT NULL DEFAULT '',
+            universe_mode text        NOT NULL,
+            policy_json   jsonb       NOT NULL DEFAULT '{{}}'::jsonb,
+            is_default    boolean     NOT NULL DEFAULT false,
+            owner_id      text        NOT NULL DEFAULT 'owner',
+            created_at    timestamptz NOT NULL DEFAULT now(),
+            updated_at    timestamptz NOT NULL DEFAULT now()
+        )
+        """
+    )
+    # At most one default per universe_mode — a partial unique index rather than a
+    # trigger, so the database refuses a second default instead of the API hoping.
+    cur.execute(
+        f"""
+        CREATE UNIQUE INDEX IF NOT EXISTS loop_policy_template_one_default
+        ON {SCHEMA_RESEARCH}.loop_policy_template (universe_mode)
+        WHERE is_default
+        """
+    )
+
 
 def apply_features_daily_ddl(conn: _Connection) -> None:
     """Legacy wrapper — partitioned option metrics + compat views."""

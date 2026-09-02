@@ -35,6 +35,10 @@ TABLE_RESEARCH_CANDIDATE_OUTCOME = f"{SCHEMA_RESEARCH}.candidate_outcome"
 # Wave Harness — Objective + run audit (Stage 3).
 TABLE_RESEARCH_OBJECTIVE = f"{SCHEMA_RESEARCH}.objective"
 TABLE_RESEARCH_OBJECTIVE_RUN = f"{SCHEMA_RESEARCH}.objective_run"
+# Named, editable Loop policies. Until now the "recommended policy template" was a
+# hardcoded constant in two places at once -- Python and TypeScript -- so tuning
+# the strategy meant a release, and the two copies were free to drift.
+TABLE_RESEARCH_LOOP_POLICY_TEMPLATE = f"{SCHEMA_RESEARCH}.loop_policy_template"
 
 # --- Canonical table names (schema.table) ---
 TABLE_OPTION_METRIC_ATM_IV_DAILY = f"{SCHEMA_FEATURES}.option_metric_atm_iv_daily"

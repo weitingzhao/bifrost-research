@@ -127,6 +127,16 @@ def parse_policy(raw: dict[str, Any] | None) -> LoopPolicy:
 def validate_policy_for_mode(policy: LoopPolicy) -> list[str]:
     """Return non-fatal policy warnings for Owner / trace."""
     warnings: list[str] = []
+    # Composite scores are 0–100 (candidates read 82.8, 79.2). The frontend's
+    # recommended template shipped min_composite_score: 0.55, which filters
+    # nothing — a threshold two orders of magnitude below every row it gates.
+    # Warn rather than reject: an existing objective may already hold this value,
+    # and refusing to load it would be worse than saying so.
+    if policy.min_composite_score is not None and 0 < policy.min_composite_score <= 1:
+        warnings.append(
+            f"min_composite_score={policy.min_composite_score} looks like a 0–1 fraction; "
+            "composite scores are 0–100, so this filters nothing"
+        )
     if policy.is_stock_mode() and policy.min_hit_rate is not None and not policy.flag_filter_str():
         warnings.append("min_hit_rate ignored in stock modes without flag_filter")
     if policy.is_stock_mode() and policy.universe_mode != "scan_legacy" and policy.preset != "neutral":
