@@ -32,7 +32,7 @@ spec:
               exit 1
       containers:
         - name: ddl
-          image: 192.168.10.73:30500/bifrost-research:0.64.2
+          image: 192.168.10.73:30500/bifrost-research:0.64.3
           imagePullPolicy: Always
           args:
             - python

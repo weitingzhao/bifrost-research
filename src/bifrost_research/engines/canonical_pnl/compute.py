@@ -148,17 +148,13 @@ def fetch_atm_iv_series(
 
 
 def clear_canonical_pnl_tables(conn: Any) -> None:
-    """Full rebuild helper — drop prior dual-write rows before cohort rerun."""
+    """Full rebuild helper — truncate features write authority before cohort rerun."""
     with conn.cursor() as cur:
-        for table in (
-            TABLE_STOCK_SIGNAL_CANONICAL_PNL_DAILY,
-            TABLE_MART_CANONICAL_PNL_DAILY,
-        ):
-            try:
-                cur.execute(f"TRUNCATE TABLE {table}")
-            except Exception:
-                conn.rollback()
-                cur.execute(f"DELETE FROM {table}")
+        try:
+            cur.execute(f"TRUNCATE TABLE {TABLE_STOCK_SIGNAL_CANONICAL_PNL_DAILY}")
+        except Exception:
+            conn.rollback()
+            cur.execute(f"DELETE FROM {TABLE_STOCK_SIGNAL_CANONICAL_PNL_DAILY}")
     conn.commit()
 
 
@@ -172,11 +168,10 @@ def upsert_marks(conn: Any, rows: Sequence[Mapping[str, Any]]) -> int:
         if isinstance(sp, dict):
             p["structure_params"] = json.dumps(sp)
         payloads.append(p)
+    sql = _UPSERT_SQL.format(table=TABLE_STOCK_SIGNAL_CANONICAL_PNL_DAILY)
     with conn.cursor() as cur:
-        for table in (TABLE_STOCK_SIGNAL_CANONICAL_PNL_DAILY, TABLE_MART_CANONICAL_PNL_DAILY):
-            sql = _UPSERT_SQL.format(table=table)
-            for p in payloads:
-                cur.execute(sql, p)
+        for p in payloads:
+            cur.execute(sql, p)
     conn.commit()
     return len(payloads)
 

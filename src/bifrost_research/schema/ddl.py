@@ -777,6 +777,30 @@ def _create_option_metric_partitioned_tables(cur: _Cursor) -> None:
     )
 
 
+def _ensure_canonical_pnl_features_pk(cur: _Cursor) -> None:
+    """Backfill PK on legacy features table (CREATE TABLE IF NOT EXISTS skips PK upgrade)."""
+    cur.execute(
+        """
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE c.contype = 'p'
+              AND n.nspname = 'features'
+              AND t.relname = 'stock_signal_canonical_pnl_daily'
+          ) THEN
+            ALTER TABLE features.stock_signal_canonical_pnl_daily
+              ADD CONSTRAINT stock_signal_canonical_pnl_daily_pkey
+              PRIMARY KEY (as_of_date, entry_date, symbol, structure, params_hash);
+          END IF;
+        END $$;
+        """
+    )
+
+
 def _create_research_tables(cur: _Cursor) -> None:
   # --- Momentum Radar ---
     cur.execute(
@@ -1361,7 +1385,7 @@ def _create_research_tables(cur: _Cursor) -> None:
         """
     )
 
-    # --- Wave Canonical-PnL Foundation: dual-write features + dw_stock mart ---
+    # --- Wave Canonical-PnL Foundation: features write authority; dw_stock mart is dbt view ---
     cur.execute("CREATE SCHEMA IF NOT EXISTS dw_stock")
     _canonical_pnl_ddl = """
         (
@@ -1389,6 +1413,7 @@ def _create_research_tables(cur: _Cursor) -> None:
     cur.execute(
         f"CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.stock_signal_canonical_pnl_daily {_canonical_pnl_ddl}"
     )
+    # Legacy bootstrap only — production mart is dbt view (mart_canonical_pnl_daily.sql).
     cur.execute(
         f"CREATE TABLE IF NOT EXISTS dw_stock.mart_canonical_pnl_daily {_canonical_pnl_ddl}"
     )
@@ -1398,6 +1423,7 @@ def _create_research_tables(cur: _Cursor) -> None:
         ON {SCHEMA_FEATURES}.stock_signal_canonical_pnl_daily (symbol, entry_date, structure)
         """
     )
+    _ensure_canonical_pnl_features_pk(cur)
 
     # --- IDS Historical IV Solver: dual-source reconstructed IV ---
     cur.execute(
@@ -1456,12 +1482,6 @@ def _create_research_tables(cur: _Cursor) -> None:
           r.solver_status AS iv_source
         FROM {SCHEMA_FEATURES}.option_iv_reconstructed_daily r
         WHERE r.iv IS NOT NULL AND r.iv > 0
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS mart_canonical_pnl_symbol_entry
-        ON dw_stock.mart_canonical_pnl_daily (symbol, entry_date, structure)
         """
     )
 
