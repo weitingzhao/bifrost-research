@@ -10,16 +10,26 @@ from bifrost_research.copilot.harness.evidence import build_candidate_evidence
 from bifrost_research.copilot.harness.plan_llm import (
     OP_ANALYZE_SYMBOL,
     OP_COMPOSE_REPORT,
+    OP_PERSONA_EVALUATE,
     OP_RUN_BACKTEST,
 )
 from bifrost_research.copilot.harness import data_sources as ds
-from bifrost_research.copilot.harness import plan_llm
 from bifrost_research.copilot.harness.gate import (
     apply_hit_rate_gate,
     lenses_from_flag_filter,
 )
-from bifrost_research.copilot.harness.policy_schema import LoopPolicy, parse_policy
-from bifrost_research.copilot.harness.suggestion import policy_suggestion_from_plan
+from bifrost_research.copilot.harness.planning import (
+    _plan_for_objective,
+    _playbook_rules_for,
+)
+from bifrost_research.copilot.harness.planning import (
+    _heuristic_plan as _heuristic_plan,  # re-export: api/harness.py fast-create path
+)
+from bifrost_research.copilot.harness.policy_schema import parse_policy
+from bifrost_research.copilot.harness.suggestion import (
+    policy_suggestion_from_outcomes,
+    policy_suggestion_from_plan,
+)
 from bifrost_research.copilot.harness.universe.registry import resolve_universe
 from bifrost_research.repositories import ai_action_log as action_repo
 from bifrost_research.repositories import ai_draft as draft_repo
@@ -41,125 +51,28 @@ class _Connection(Protocol):
     def rollback(self) -> None: ...
 
 
-def _scan_universe_note(loop_policy: LoopPolicy) -> str:
-    mode = loop_policy.universe_mode
-    if mode == "scan_legacy":
-        return (
-            f"Read features.stock_signal_scan_daily preset={loop_policy.preset} "
-            f"(flag_filter={loop_policy.flag_filter_str() or 'none'})"
-        )
-    if mode == "stock_composite":
-        layers = loop_policy.layers
-        return (
-            f"Stock composite funnel: SEPA path={layers.sepa.stage} min_score={layers.sepa.min_score}; "
-            f"momentum required={layers.momentum.required}; events required={layers.events.required}; "
-            f"option_overlay enabled={loop_policy.option_overlay.enabled} "
-            f"required={loop_policy.option_overlay.required}"
-        )
-    return f"Universe mode {mode} from Golden Source stock features"
-
-
-def _heuristic_plan(objective: dict[str, Any]) -> dict[str, Any]:
-    """Static 4-step template used as fallback when the LLM plan is unavailable."""
-    policy_raw = objective.get("policy_json") or {}
-    loop_policy = parse_policy(policy_raw)
-    max_candidates = loop_policy.max_candidates
-    decay_note = (
-        "Fetch global lens hit-rate summary (scan_legacy only)"
-        if loop_policy.universe_mode == "scan_legacy"
-        else "Skipped in stock-first modes — option lens gate not applied"
-    )
-    steps: list[dict[str, Any]] = [
-        {"op": "scan_universe", "note": _scan_universe_note(loop_policy)},
-    ]
-    if loop_policy.universe_mode == "scan_legacy":
-        steps.append(
-            {
-                "op": "signal_decay_check",
-                "note": (
-                    "Fetch global lens hit-rate summary; min_hit_rate + "
-                    "flag_filter apply the Y.3 hit-rate gate"
-                ),
-            }
-        )
-    else:
-        steps.append({"op": "signal_decay_check", "note": decay_note})
-    steps.extend(
-        [
-            {
-                "op": OP_ANALYZE_SYMBOL,
-                "note": (
-                    "Attach selection rationale, price context, option analytics "
-                    "(absent for most symbols) and this source's settled hit rate"
-                ),
-            },
-            {
-                "op": "propose_candidates",
-                "max": max_candidates,
-                "note": "Propose top candidates into pool + draft (universe first; fallback seed_symbols)",
-            },
-            {"op": "await_approval", "note": "Owner approves drafts in Decision Inbox"},
-        ]
-    )
-    return {
-        "steps": steps,
-        "persona": objective.get("persona") or "loop_curator",
-        "policy": policy_raw,
-        "generated_by": "heuristic",
-    }
-
-
-def _playbook_rules_for(conn: Any, objective: dict[str, Any]) -> list[dict[str, Any]]:
-    """The Owner's rules for the persona running this objective.
-
-    Policy decides which symbols the Loop looks at; these decide how it judges
-    them — the half of "brain + strategy" the Owner writes. Fail-soft on purpose:
-    a Playbook that cannot be read must not cost the run its plan, it just plans
-    without the rules, exactly as before they existed.
-    """
+def _flush_live_trace(
+    conn: _Connection,
+    run_id: str,
+    trace: list[dict[str, Any]],
+    *,
+    step: str,
+    label: str,
+    detail: str = "",
+) -> None:
+    """Persist mid-run trace so Pipeline can poll progress while status=running."""
     try:
-        from bifrost_research.repositories import playbook as playbook_repo
-
-        return playbook_repo.list_rules_for_agent(
+        obj_repo.patch_run_trace(
             conn,
-            owner_id=str(objective.get("owner_id") or "owner"),
-            agent_name=str(objective.get("persona") or "loop_curator"),
-            limit=20,
+            run_id,
+            {
+                "events": list(trace),
+                "progress": {"step": step, "label": label, "detail": detail},
+            },
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("playbook rules unavailable for plan: %s", exc)
+        logger.warning("mid-run trace flush failed for %s: %s", run_id, exc)
         rollback_quietly(conn)
-        return []
-
-
-def _plan_for_objective(
-    objective: dict[str, Any],
-    conn: Any | None = None,
-) -> dict[str, Any]:
-    heuristic = _heuristic_plan(objective)
-    policy = objective.get("policy_json") or {}
-    enabled, reason = plan_llm.is_llm_plan_enabled(policy)
-    if not enabled:
-        heuristic["fallback_reason"] = f"llm_disabled: {reason}"
-        return heuristic
-
-    rules = _playbook_rules_for(conn, objective) if conn is not None else []
-    llm_result = plan_llm.generate_plan_llm(objective, playbook_rules=rules)
-    if not llm_result:
-        heuristic["fallback_reason"] = "llm_call_failed_or_invalid"
-        return heuristic
-
-    return {
-        "steps": llm_result["steps"],
-        "persona": objective.get("persona") or "loop_curator",
-        "policy": policy,
-        "generated_by": "llm",
-        "llm_model": llm_result.get("llm_model"),
-        "llm_reasoning": llm_result.get("reasoning"),
-        "policy_suggestion": llm_result.get("policy_suggestion"),
-        # Visible in the trace: a plan made under rules is a different plan.
-        "playbook_rules_applied": len(rules),
-    }
 
 
 def _primary_score(meta: dict[str, Any] | None) -> float | None:
@@ -215,11 +128,27 @@ def _build_lens_snapshot(
     return snap
 
 
-def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, Any]:
-    """Execute a harness run: universe → decay (legacy) → propose."""
-    plan = _plan_for_objective(objective, conn)
-    run = obj_repo.create_run(conn, objective_id=objective["id"], plan_json=plan)
-    run_id = run["id"]
+def run_objective(
+    conn: _Connection,
+    *,
+    objective: dict[str, Any],
+    existing_run: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Execute a harness run: universe → decay (legacy) → propose.
+
+    When ``existing_run`` is provided (HTTP batch-run async start), skip
+    ``create_run`` and continue that row so Pipeline can poll immediately.
+    """
+    if existing_run is not None:
+        run = existing_run
+        plan = existing_run.get("plan_json") if isinstance(existing_run.get("plan_json"), dict) else {}
+        if not plan:
+            plan = _plan_for_objective(objective, conn)
+        run_id = str(run["id"])
+    else:
+        plan = _plan_for_objective(objective, conn)
+        run = obj_repo.create_run(conn, objective_id=objective["id"], plan_json=plan)
+        run_id = run["id"]
     trace: list[dict[str, Any]] = []
     candidate_ids: list[str] = []
     draft_ids: list[str] = []
@@ -246,34 +175,99 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
         }
         want_evidence = OP_ANALYZE_SYMBOL in plan_ops
         want_backtest = OP_RUN_BACKTEST in plan_ops
-        want_report = OP_COMPOSE_REPORT in plan_ops
+        # Persona eval + report default on for heuristic plans; LLM plans may omit.
+        want_persona = OP_PERSONA_EVALUATE in plan_ops or (
+            plan.get("generated_by") == "heuristic" and loop_policy.persona_evaluate
+        )
+        if not loop_policy.persona_evaluate:
+            want_persona = False
+        want_report = OP_COMPOSE_REPORT in plan_ops or plan.get("generated_by") == "heuristic"
         trace.append(
             {
                 "step": "plan_ops",
                 "ops": sorted(plan_ops),
                 "evidence_enabled": want_evidence,
+                "persona_evaluate": want_persona,
+                "compose_report": want_report,
+                "decision": f"persona={want_persona} report={want_report}",
             }
+        )
+        # Enrich plan event with a short decision for live UI.
+        if trace and trace[0].get("step") == "plan":
+            trace[0]["decision"] = f"generated_by={plan.get('generated_by')}"
+            trace[0]["label"] = "Plan"
+        _flush_live_trace(
+            conn,
+            run_id,
+            trace,
+            step="plan",
+            label="Plan",
+            detail=str(plan.get("generated_by") or "heuristic"),
         )
 
         # 1. Resolve universe --------------------------------------------------
-        universe = resolve_universe(conn, loop_policy, limit=max_n)
+        # Fetch a wider set so discovery_assist can veto/boost before max_candidates.
+        fetch_n = max(max_n * 3, max_n)
+        universe = resolve_universe(conn, loop_policy, limit=fetch_n)
         universe_symbols = list(universe.symbols)
         row_meta_by_symbol = dict(universe.row_meta_by_symbol)
 
+        # Wave 3 — Discover assist at funnel exit (does not replace Policy).
+        from bifrost_research.copilot.harness.discovery_assist import apply_discovery_assist
+
+        discovery_rules = _playbook_rules_for(
+            conn,
+            {
+                **objective,
+                "persona": "discovery",
+            },
+        )
+        assist = apply_discovery_assist(
+            universe_symbols,
+            policy=policy_raw,
+            playbook_rules=discovery_rules,
+            row_meta_by_symbol=row_meta_by_symbol,
+        )
+        universe_symbols = list(assist.get("symbols") or universe_symbols)[:max_n]
+        funnel_dicts = universe.funnel_dicts()
+        if assist.get("funnel_step"):
+            funnel_dicts = list(funnel_dicts) + [assist["funnel_step"]]
+
+        veto_n = len(assist.get("veto") or [])
+        boost_n = len(assist.get("boost") or [])
+        scan_decision = (
+            f"returned={len(universe_symbols)} veto={veto_n} boost={boost_n}"
+        )
         trace.append(
             {
                 "step": "scan_universe",
+                "label": "Scan universe",
                 "returned": len(universe_symbols),
                 "symbols": universe_symbols,
                 "universe_mode": universe.universe_mode,
-                "funnel": universe.funnel_dicts(),
+                "funnel": funnel_dicts,
                 "layer_results": universe.layer_results,
                 "option_overlay_applied": universe.option_overlay_applied,
                 "policy_warnings": universe.policy_warnings,
+                "discovery_assist": {
+                    "enabled": assist.get("enabled"),
+                    "boost": assist.get("boost"),
+                    "veto": assist.get("veto"),
+                    "notes": assist.get("notes"),
+                },
                 "flag_filter": flag_filter if loop_policy.universe_mode == "scan_legacy" else None,
                 "min_composite_score": loop_policy.min_composite_score,
                 "preset": loop_policy.preset,
+                "decision": scan_decision,
             }
+        )
+        _flush_live_trace(
+            conn,
+            run_id,
+            trace,
+            step="scan_universe",
+            label="Scan universe",
+            detail=scan_decision,
         )
 
         # 2. Signal decay (scan_legacy only) -----------------------------------
@@ -329,7 +323,14 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
                 conn,
                 run_id,
                 status="failed",
-                trace_json={"events": trace},
+                trace_json={
+                    "events": trace,
+                    "progress": {
+                        "step": "no_data",
+                        "label": "No data",
+                        "detail": "universe empty",
+                    },
+                },
                 outputs=empty_outputs,
             )
             return {
@@ -396,6 +397,98 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
             proposed_items.append(item)
             trace.append({"step": "propose_candidate", "symbol": row["symbol"], "id": row["id"]})
 
+        propose_decision = f"proposed={len(proposed_items)}"
+        trace.append(
+            {
+                "step": "propose_candidates",
+                "label": "Propose candidates",
+                "count": len(proposed_items),
+                "symbols": [i.get("symbol") for i in proposed_items],
+                "decision": propose_decision,
+            }
+        )
+        _flush_live_trace(
+            conn,
+            run_id,
+            trace,
+            step="propose_candidates",
+            label="Propose candidates",
+            detail=propose_decision,
+        )
+
+        # 4b. Persona eval (Wave 1) — before candidate_batch draft --------------
+        persona_eval_summary: dict[str, Any] | None = None
+        if want_persona and proposed_items:
+            try:
+                from bifrost_research.copilot.harness.persona_eval import evaluate_candidates
+
+                persona_eval_summary = evaluate_candidates(
+                    proposed_items,
+                    policy={
+                        **policy_raw,
+                        "require_validate_pass": loop_policy.require_validate_pass,
+                    },
+                    owner_id=str(objective.get("owner_id") or "owner"),
+                )
+                blocked = int(persona_eval_summary.get("blocked_by_validate") or 0)
+                eligible = persona_eval_summary.get("auto_approve_eligible")
+                persona_decision = (
+                    f"mode={persona_eval_summary.get('mode')} "
+                    f"blocked_by_validate={blocked} "
+                    f"auto_approve_eligible={eligible}"
+                )
+                trace.append(
+                    {
+                        "step": "persona_evaluate",
+                        "label": "Persona eval",
+                        "decision": persona_decision,
+                        **{
+                            k: persona_eval_summary[k]
+                            for k in (
+                                "status",
+                                "mode",
+                                "fallback_used",
+                                "fallback_count",
+                                "holdings_status",
+                                "holdings_count",
+                                "symbols_evaluated",
+                                "blocked_by_validate",
+                                "auto_approve_eligible",
+                                "eligible_count",
+                                "per_symbol",
+                            )
+                            if k in persona_eval_summary
+                        },
+                    }
+                )
+                _flush_live_trace(
+                    conn,
+                    run_id,
+                    trace,
+                    step="persona_evaluate",
+                    label="Persona eval",
+                    detail=persona_decision,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("persona_evaluate failed for run %s: %s", run_id, exc)
+                rollback_quietly(conn)
+                persona_eval_summary = {"status": "error", "error": str(exc)[:200]}
+                trace.append(
+                    {
+                        "step": "persona_evaluate",
+                        "error": str(exc)[:200],
+                        "decision": "error",
+                    }
+                )
+                _flush_live_trace(
+                    conn,
+                    run_id,
+                    trace,
+                    step="persona_evaluate",
+                    label="Persona eval",
+                    detail=str(exc)[:120],
+                )
+
         # 5. Draft candidate_batch --------------------------------------------
         action = action_repo.insert_action(
             conn,
@@ -444,7 +537,7 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
             "description": objective.get("description"),
             "data_source": data_source,
             "universe_mode": loop_policy.universe_mode,
-            "funnel": universe.funnel_dicts(),
+            "funnel": funnel_dicts,
             "signal_decay": decay_summary,
             "hit_rate_gate": gate,
         }
@@ -452,6 +545,23 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
             candidate_payload["backtest"] = backtest_summary
         if gate.get("applied") and not gate.get("ok"):
             candidate_payload["hit_rate_warn"] = True
+        if persona_eval_summary:
+            candidate_payload["persona_eval"] = {
+                "mode": persona_eval_summary.get("mode"),
+                "fallback_used": persona_eval_summary.get("fallback_used"),
+                "fallback_count": persona_eval_summary.get("fallback_count"),
+                "holdings_status": persona_eval_summary.get("holdings_status"),
+                "blocked_by_validate": persona_eval_summary.get("blocked_by_validate"),
+                "auto_approve_eligible": persona_eval_summary.get("auto_approve_eligible"),
+            }
+            candidate_payload["auto_approve_eligible"] = bool(
+                persona_eval_summary.get("auto_approve_eligible")
+            )
+            if any(
+                i.get("blocked_by_validate") or i.get("net_stance") == "oppose"
+                for i in proposed_items
+            ):
+                candidate_payload["persona_dissent"] = True
 
         # The report is the Loop's actual deliverable: why each name, where its
         # price sits, how this source has settled, and what would unmake the call.
@@ -463,21 +573,44 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
                     objective=objective,
                     run_id=run_id,
                     items=proposed_items,
-                    funnel=universe.funnel_dicts(),
+                    funnel=funnel_dicts,
                     backtest=backtest_summary,
+                )
+                report_decision = (
+                    f"candidates={len(proposed_items)} "
+                    f"settled={candidate_payload['report']['coverage']['with_settled_record']}"
                 )
                 trace.append(
                     {
                         "step": "compose_report",
+                        "label": "Compose report",
                         "candidates": len(proposed_items),
                         "with_settled_record": candidate_payload["report"]["coverage"][
                             "with_settled_record"
                         ],
+                        "net_stance_counts": candidate_payload["report"]
+                        .get("coverage", {})
+                        .get("net_stance_counts"),
+                        "decision": report_decision,
                     }
+                )
+                _flush_live_trace(
+                    conn,
+                    run_id,
+                    trace,
+                    step="compose_report",
+                    label="Compose report",
+                    detail=report_decision,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("compose_report failed for run %s: %s", run_id, exc)
-                trace.append({"step": "compose_report", "error": str(exc)[:200]})
+                trace.append(
+                    {
+                        "step": "compose_report",
+                        "error": str(exc)[:200],
+                        "decision": "error",
+                    }
+                )
         draft = draft_repo.insert_draft(
             conn,
             kind="candidate_batch",
@@ -487,10 +620,53 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
             linked_action_id=action["id"],
         )
         draft_ids.append(draft["id"])
-        trace.append({"step": "draft_candidate_batch", "draft_id": draft["id"]})
+        draft_decision = (
+            f"draft={draft['id']} "
+            f"auto_approve_eligible="
+            f"{bool((persona_eval_summary or {}).get('auto_approve_eligible', True))}"
+        )
+        trace.append(
+            {
+                "step": "draft_candidate_batch",
+                "label": "Draft candidate batch",
+                "draft_id": draft["id"],
+                "decision": draft_decision,
+            }
+        )
+        _flush_live_trace(
+            conn,
+            run_id,
+            trace,
+            step="draft_candidate_batch",
+            label="Draft candidate batch",
+            detail=draft_decision,
+        )
 
         policy_suggestion_draft_id: str | None = None
         suggestion_diff = policy_suggestion_from_plan(plan, policy_raw)
+        suggestion_source = "harness_llm_plan"
+        suggestion_reasoning = plan.get("llm_reasoning")
+        if not suggestion_diff and persona_eval_summary:
+            outcome_summary: dict[str, Any] | None = None
+            try:
+                from bifrost_research.api.candidate_outcome import build_summary
+
+                outcome_summary = build_summary(conn, days=90)
+            except Exception as exc:  # noqa: BLE001
+                logger.info(
+                    "candidate_outcome summary skipped for policy suggestion: %s",
+                    str(exc)[:160],
+                )
+                rollback_quietly(conn)
+            outcome_sug = policy_suggestion_from_outcomes(
+                persona_eval_summary,
+                current_policy=policy_raw,
+                outcome_summary=outcome_summary,
+            )
+            if outcome_sug:
+                suggestion_diff = outcome_sug.get("suggestion")
+                suggestion_source = "persona_eval_outcomes"
+                suggestion_reasoning = outcome_sug.get("reasoning")
         if suggestion_diff:
             ps_action = action_repo.insert_action(
                 conn,
@@ -500,6 +676,7 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
                     "objective_id": objective["id"],
                     "run_id": run_id,
                     "source_plan_generated_by": plan.get("generated_by"),
+                    "suggestion_source": suggestion_source,
                 },
                 output_payload={"suggestion": suggestion_diff},
                 status="proposed",
@@ -512,9 +689,23 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
                     "run_id": run_id,
                     "suggestion": suggestion_diff,
                     "current_policy": policy_raw,
-                    "source": "harness_llm_plan",
+                    "source": suggestion_source,
                     "llm_model": plan.get("llm_model"),
-                    "llm_reasoning": plan.get("llm_reasoning"),
+                    "llm_reasoning": suggestion_reasoning,
+                    "evidence": (
+                        {
+                            "persona_eval": {
+                                "blocked_by_validate": (
+                                    persona_eval_summary or {}
+                                ).get("blocked_by_validate"),
+                                "symbols_evaluated": (
+                                    persona_eval_summary or {}
+                                ).get("symbols_evaluated"),
+                            }
+                        }
+                        if suggestion_source == "persona_eval_outcomes"
+                        else None
+                    ),
                 },
                 scope=f"objective:{objective['id']}",
                 generated_by="harness",
@@ -527,6 +718,7 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
                     "step": "draft_policy_suggestion",
                     "draft_id": policy_suggestion_draft_id,
                     "diff": suggestion_diff,
+                    "source": suggestion_source,
                 }
             )
 
@@ -541,12 +733,23 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
             "top_symbols": universe_symbols,
             "policy_suggestion_draft_id": policy_suggestion_draft_id,
             "hit_rate_gate": gate,
+            "persona_eval": persona_eval_summary,
+            "auto_approve_eligible": bool(
+                (persona_eval_summary or {}).get("auto_approve_eligible", True)
+            ),
         }
         finished = obj_repo.finish_run(
             conn,
             run_id,
             status="awaiting_approval",
-            trace_json={"events": trace},
+            trace_json={
+                "events": trace,
+                "progress": {
+                    "step": "awaiting_approval",
+                    "label": "Awaiting approval",
+                    "detail": f"candidates={len(candidate_ids)} drafts={len(draft_ids)}",
+                },
+            },
             outputs=outputs,
         )
         return {
@@ -560,7 +763,15 @@ def run_objective(conn: _Connection, *, objective: dict[str, Any]) -> dict[str, 
             conn,
             run_id,
             status="failed",
-            trace_json={"events": trace, "error": str(exc)},
+            trace_json={
+                "events": trace,
+                "error": str(exc),
+                "progress": {
+                    "step": "failed",
+                    "label": "Failed",
+                    "detail": str(exc)[:160],
+                },
+            },
             outputs={"candidate_ids": candidate_ids, "draft_ids": draft_ids},
         )
         raise

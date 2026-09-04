@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from bifrost_research.schema.schemas import (
+    TABLE_RESEARCH_AI_DRAFT,
     TABLE_RESEARCH_CANDIDATE_POOL,
     TABLE_RESEARCH_OBJECTIVE,
     TABLE_RESEARCH_OBJECTIVE_RUN,
@@ -178,10 +179,18 @@ POLICY_SUGGESTION_WHITELIST: frozenset[str] = frozenset(
         "universe_mode",
         "layers",
         "option_overlay",
+        # Both are real LoopPolicy fields the runtime honours (policy_schema.py:89
+        # and :102). They reached plan_llm's suggestion whitelist without reaching
+        # this one, so the model could propose them, the Inbox would show the card,
+        # and approving it would silently drop them — a suggestion that changes
+        # nothing, which is the failure the "0 fields to merge" work exists to
+        # surface. test_policy_suggestion_contract keeps the two sets in step.
+        "require_validate_pass",
+        "discovery_assist",
     }
 )
 
-_NESTED_POLICY_KEYS = frozenset({"layers", "option_overlay"})
+_NESTED_POLICY_KEYS = frozenset({"layers", "option_overlay", "discovery_assist"})
 
 
 def _deep_merge_policy_patch(
@@ -421,6 +430,136 @@ def delete_run(conn: _Connection, run_id: str) -> bool:
         deleted = cur.rowcount
     conn.commit()
     return bool(deleted)
+
+
+def force_delete_run(conn: _Connection, run_id: str) -> dict[str, Any]:
+    """Cascade-clear lineage then delete the run (hypotheses kept).
+
+    Removes candidates whose ``source_ref.run_id`` matches (``candidate_outcome``
+    rows cascade), dismisses drafts that reference the run
+    (``outputs.draft_ids`` / ``decision_draft_ids`` / ``payload.run_id``),
+    then deletes the run row. Promoted hypotheses are not touched.
+    """
+    run = get_run(conn, run_id)
+    if run is None:
+        raise ValueError("run not found")
+
+    outputs = run.get("outputs") if isinstance(run.get("outputs"), dict) else {}
+    draft_ids_raw = [
+        str(x)
+        for x in (
+            list(outputs.get("draft_ids") or [])
+            + list(outputs.get("decision_draft_ids") or [])
+        )
+        if x
+    ]
+    draft_ids: list[str] = []
+    seen: set[str] = set()
+    for d in draft_ids_raw:
+        if d not in seen:
+            seen.add(d)
+            draft_ids.append(d)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            DELETE FROM {TABLE_RESEARCH_CANDIDATE_POOL}
+            WHERE source_ref ->> 'run_id' = %s
+            """,
+            (run_id,),
+        )
+        candidates_removed = int(cur.rowcount or 0)
+
+        # Dismiss open Inbox cards for this run (pending only — approved stay).
+        if draft_ids:
+            cur.execute(
+                f"""
+                UPDATE {TABLE_RESEARCH_AI_DRAFT}
+                SET status = 'dismissed'
+                WHERE status = 'pending'
+                  AND (id = ANY(%s) OR payload ->> 'run_id' = %s)
+                """,
+                (draft_ids, run_id),
+            )
+        else:
+            cur.execute(
+                f"""
+                UPDATE {TABLE_RESEARCH_AI_DRAFT}
+                SET status = 'dismissed'
+                WHERE status = 'pending' AND payload ->> 'run_id' = %s
+                """,
+                (run_id,),
+            )
+        drafts_dismissed = int(cur.rowcount or 0)
+
+        cur.execute(
+            f"DELETE FROM {TABLE_RESEARCH_OBJECTIVE_RUN} WHERE id = %s",
+            (run_id,),
+        )
+        deleted = bool(cur.rowcount)
+
+    conn.commit()
+    return {
+        "id": run_id,
+        "deleted": deleted,
+        "force": True,
+        "candidates_removed": candidates_removed,
+        "drafts_dismissed": drafts_dismissed,
+    }
+
+
+def patch_run_trace(
+    conn: _Connection,
+    run_id: str,
+    trace_json: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Replace ``trace_json`` while the run is still ``running`` (live progress)."""
+    sql = f"""
+        UPDATE {TABLE_RESEARCH_OBJECTIVE_RUN}
+        SET trace_json = %s::jsonb
+        WHERE id = %s AND status = 'running'
+        RETURNING {", ".join(_RUN_COLS)}
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (_serialize_json(dict(trace_json)), run_id))
+        row = cur.fetchone()
+    conn.commit()
+    return _run_row(row)
+
+
+def append_run_trace_event(
+    conn: _Connection,
+    run_id: str,
+    event: Mapping[str, Any],
+    *,
+    progress: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Append one event to ``trace_json`` (any status) and optional progress."""
+    run = get_run(conn, run_id)
+    if run is None:
+        return None
+    trace = run.get("trace_json") if isinstance(run.get("trace_json"), dict) else {}
+    events = list(trace.get("events") or [])
+    events.append(dict(event))
+    new_trace: dict[str, Any] = {
+        "events": events,
+        "error": trace.get("error"),
+    }
+    if progress is not None:
+        new_trace["progress"] = dict(progress)
+    elif isinstance(trace.get("progress"), dict):
+        new_trace["progress"] = trace["progress"]
+    sql = f"""
+        UPDATE {TABLE_RESEARCH_OBJECTIVE_RUN}
+        SET trace_json = %s::jsonb
+        WHERE id = %s
+        RETURNING {", ".join(_RUN_COLS)}
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (_serialize_json(new_trace), run_id))
+        row = cur.fetchone()
+    conn.commit()
+    return _run_row(row)
 
 
 def finish_run(

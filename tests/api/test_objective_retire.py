@@ -112,10 +112,23 @@ def test_run_delete_is_refused_while_candidates_point_at_it(
     outcome ledger pointing at a run that no longer exists.
     """
     deleted: list[str] = []
+    forced: list[str] = []
     monkeypatch.setattr(obj_repo, "get_run", lambda conn, rid: RUN)
     monkeypatch.setattr(obj_repo, "count_candidates_for_run", lambda conn, rid: 8)
     monkeypatch.setattr(
         obj_repo, "delete_run", lambda conn, rid: bool(deleted.append(rid)) or True
+    )
+    monkeypatch.setattr(
+        obj_repo,
+        "force_delete_run",
+        lambda conn, rid: forced.append(rid)
+        or {
+            "id": rid,
+            "deleted": True,
+            "force": True,
+            "candidates_removed": 8,
+            "drafts_dismissed": 1,
+        },
     )
 
     with pytest.raises(HTTPException) as e:
@@ -124,6 +137,32 @@ def test_run_delete_is_refused_while_candidates_point_at_it(
     assert e.value.status_code == 409
     assert "8 candidate(s)" in str(e.value.detail)
     assert deleted == [], "refused delete must not reach the repository"
+    assert forced == []
+
+
+def test_run_force_delete_cascades_lineage(monkeypatch: pytest.MonkeyPatch) -> None:
+    forced: list[str] = []
+    monkeypatch.setattr(obj_repo, "get_run", lambda conn, rid: RUN)
+    monkeypatch.setattr(
+        obj_repo,
+        "force_delete_run",
+        lambda conn, rid: forced.append(rid)
+        or {
+            "id": rid,
+            "deleted": True,
+            "force": True,
+            "candidates_removed": 3,
+            "drafts_dismissed": 2,
+        },
+    )
+    monkeypatch.setattr(
+        obj_repo, "delete_run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no"))
+    )
+    out = api.delete_run("run-1", force=True)
+    assert out["data"]["force"] is True
+    assert out["data"]["candidates_removed"] == 3
+    assert out["data"]["drafts_dismissed"] == 2
+    assert forced == ["run-1"]
 
 
 def test_run_delete_is_allowed_once_nothing_references_it(

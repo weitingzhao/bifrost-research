@@ -16,10 +16,7 @@ import sys
 
 from bifrost_research.copilot.harness import data_sources as ds
 from bifrost_research.copilot.harness import readiness as readiness_mod
-from bifrost_research.copilot.harness.batch import RESEARCH_AUTO_APPROVE_KINDS, approve_all_for_run
-from bifrost_research.copilot.harness.runtime import run_objective
-from bifrost_research.copilot.harness.trust_gate import trust_l0_research_loop_batch
-from bifrost_research.copilot.curator.runtime import run_curator_for_run
+from bifrost_research.copilot.harness.batch_orchestrate import process_objective
 from bifrost_research.db.conn import connect
 from bifrost_research.repositories import objective as obj_repo
 
@@ -59,44 +56,12 @@ def _process_objective(
     curate_after: bool,
     batch_mode: bool,
 ) -> dict:
-    policy = obj.get("policy_json") or {}
-    auto_validate = bool(policy.get("auto_validate", True))
-
-    result = run_objective(conn, objective=obj)
-    run = result.get("run") or {}
-    run_id = str(run.get("id") or "")
-    if not run_id:
-        return result
-
-    if curate_after and run.get("status") == "awaiting_approval":
-        logger.info("CuratorRun for %s", run_id)
-        try:
-            curate_result = run_curator_for_run(conn, run_id, skip_agent=False)
-            result["curator"] = curate_result
-        except Exception as exc:
-            logger.exception("curate failed")
-            result["curator_error"] = str(exc)
-
-    if batch_mode and run.get("status") == "awaiting_approval":
-        if trust_l0_research_loop_batch():
-            if curate_after and "curator" not in result and "curator_error" not in result:
-                try:
-                    result["curator"] = run_curator_for_run(conn, run_id)
-                except Exception as exc:
-                    logger.warning("batch curate skipped: %s", exc)
-            logger.info("batch auto-approve for %s", run_id)
-            result["approve_all"] = approve_all_for_run(
-                conn,
-                run_id,
-                approved_by="system:loop_batch",
-                owner_id=str(obj.get("owner_id") or "owner"),
-                kinds_whitelist=RESEARCH_AUTO_APPROVE_KINDS,
-                auto_validate=auto_validate,
-            )
-        else:
-            logger.info("batch mode on but research-loop-batch not L0 — skip auto-approve")
-
-    return result
+    return process_objective(
+        conn,
+        obj,
+        curate_after=curate_after,
+        batch_mode=batch_mode,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

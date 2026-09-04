@@ -54,10 +54,10 @@ def test_plan_for_objective_uses_llm_when_available(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Y.2: policy.use_llm_plan=true + mock generate_plan_llm → generated_by=llm."""
-    from bifrost_research.copilot.harness import runtime as rt
+    from bifrost_research.copilot.harness import plan_llm
 
     monkeypatch.setattr(
-        rt.plan_llm,
+        plan_llm,
         "generate_plan_llm",
         lambda obj, **_kw: {
             "steps": [
@@ -92,9 +92,9 @@ def test_plan_for_objective_falls_back_when_llm_returns_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Y.2: LLM enabled but generate_plan_llm returns None → heuristic + fallback_reason."""
-    from bifrost_research.copilot.harness import runtime as rt
+    from bifrost_research.copilot.harness import plan_llm
 
-    monkeypatch.setattr(rt.plan_llm, "generate_plan_llm", lambda obj, **_kw: None)
+    monkeypatch.setattr(plan_llm, "generate_plan_llm", lambda obj, **_kw: None)
     plan = _plan_for_objective(
         {
             "id": "obj-fallback",
@@ -113,6 +113,8 @@ def test_plan_for_objective_falls_back_when_llm_returns_none(
         # without reasoning is the normal case.
         "analyze_symbol",
         "propose_candidates",
+        "persona_evaluate",
+        "compose_report",
         "await_approval",
     }
 
@@ -577,8 +579,10 @@ def test_run_objective_creates_policy_suggestion_draft_from_llm_plan(
     from bifrost_research.copilot.harness import runtime as rt
 
     # LLM plan with actionable suggestion
+    from bifrost_research.copilot.harness import plan_llm
+
     monkeypatch.setattr(
-        rt.plan_llm,
+        plan_llm,
         "generate_plan_llm",
         lambda obj, **_kw: {
             "steps": [
@@ -627,10 +631,11 @@ def test_run_objective_no_policy_suggestion_draft_when_diff_empty(
     monkeypatch: pytest.MonkeyPatch, fake_conn: Any
 ) -> None:
     """LLM proposes only fields matching current policy → no draft."""
+    from bifrost_research.copilot.harness import plan_llm
     from bifrost_research.copilot.harness import runtime as rt
 
     monkeypatch.setattr(
-        rt.plan_llm,
+        plan_llm,
         "generate_plan_llm",
         lambda obj, **_kw: {
             "steps": [

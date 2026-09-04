@@ -73,12 +73,20 @@ class OptionOverlayPolicy(BaseModel):
     scan_preset: str = "neutral"
 
 
+class DiscoveryAssistPolicy(BaseModel):
+    """Wave 3 — optional nominate/veto at funnel exit (does not replace Policy)."""
+
+    enabled: bool = False
+    max_veto_fraction: float = Field(default=0.35, ge=0.0, le=0.9)
+
+
 class LoopPolicy(BaseModel):
     """Parsed harness policy — superset of legacy scan keys."""
 
     universe_mode: UniverseMode = DEFAULT_UNIVERSE_MODE
     layers: LayersPolicy = Field(default_factory=LayersPolicy)
     option_overlay: OptionOverlayPolicy = Field(default_factory=OptionOverlayPolicy)
+    discovery_assist: DiscoveryAssistPolicy = Field(default_factory=DiscoveryAssistPolicy)
     # Legacy scan keys (scan_legacy + option overlay)
     preset: str = "neutral"
     flag_filter: str | list[str] | None = None
@@ -90,6 +98,10 @@ class LoopPolicy(BaseModel):
     use_llm_plan: bool | None = None
     llm_model: str | None = None
     auto_validate: bool = False
+    # Wave 2 — validate oppose blocks auto-approve when True
+    require_validate_pass: bool = True
+    # Wave 1 — heuristic persona eval on by default; set false to skip
+    persona_evaluate: bool = True
 
     model_config = {"extra": "allow"}
 
@@ -169,6 +181,7 @@ def default_stock_composite_policy() -> dict[str, Any]:
 
 __all__ = [
     "DEFAULT_UNIVERSE_MODE",
+    "DiscoveryAssistPolicy",
     "EventsLayerPolicy",
     "LayersPolicy",
     "LoopPolicy",

@@ -39,6 +39,7 @@ OP_ANALYZE_SYMBOL = "analyze_symbol"
 # the Loop exists to deliver.
 OP_RUN_BACKTEST = "run_backtest"
 OP_COMPOSE_REPORT = "compose_report"
+OP_PERSONA_EVALUATE = "persona_evaluate"
 
 VALID_OPS = frozenset(
     {
@@ -47,6 +48,7 @@ VALID_OPS = frozenset(
         OP_ANALYZE_SYMBOL,
         OP_RUN_BACKTEST,
         OP_COMPOSE_REPORT,
+        OP_PERSONA_EVALUATE,
         "propose_candidates",
         "await_approval",
     }
@@ -64,6 +66,8 @@ POLICY_SUGGESTION_KEYS = frozenset(
         "universe_mode",
         "layers",
         "option_overlay",
+        "require_validate_pass",
+        "discovery_assist",
     }
 )
 

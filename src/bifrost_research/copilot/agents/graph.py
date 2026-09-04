@@ -282,10 +282,46 @@ def build_verdict_agent(
     discovery = build_discovery_agent(model_id, mcp=mcp, owner_id=owner_id)
     analyze = build_analyze_agent(model_id, mcp=mcp, owner_id=owner_id)
     validate = build_validate_agent(model_id, mcp=mcp, owner_id=owner_id)
+    portfolio = build_portfolio_agent(model_id, mcp=mcp, owner_id=owner_id)
     tools = [
         discovery.as_tool(tool_name="discovery_specialist", tool_description="SEPA/discovery data"),
         analyze.as_tool(tool_name="analyze_specialist", tool_description="VRP/vol/OpEx analytics"),
         validate.as_tool(tool_name="validate_specialist", tool_description="Backtest validation"),
+        portfolio.as_tool(
+            tool_name="portfolio_specialist",
+            tool_description="Holdings / concentration / conflict check",
+        ),
+    ]
+    return _agent(
+        name="verdict",
+        instructions=_assembled_instruction("verdict", owner_id),
+        model_id=model_id,
+        tools=tools,
+    )
+
+
+def build_eval_verdict_agent(
+    model_id: str,
+    mcp: MCPServerSse | None = None,
+    owner_id: str | None = None,
+) -> Agent[Any]:
+    """Harness persona-eval chain: analyze → portfolio → validate → verdict JSON.
+
+    Same specialist tools as chat verdict, without discovery (Policy already selected).
+    """
+    analyze = build_analyze_agent(model_id, mcp=mcp, owner_id=owner_id)
+    portfolio = build_portfolio_agent(model_id, mcp=mcp, owner_id=owner_id)
+    validate = build_validate_agent(model_id, mcp=mcp, owner_id=owner_id)
+    tools = [
+        analyze.as_tool(tool_name="analyze_specialist", tool_description="Structure / vol view"),
+        portfolio.as_tool(
+            tool_name="portfolio_specialist",
+            tool_description="Holdings conflict check",
+        ),
+        validate.as_tool(
+            tool_name="validate_specialist",
+            tool_description="Neutral falsification (guardrail locked)",
+        ),
     ]
     return _agent(
         name="verdict",
@@ -356,6 +392,7 @@ __all__ = [
     "build_curator_agent",
     "build_discovery_agent",
     "build_explain_agent",
+    "build_eval_verdict_agent",
     "build_loop_curator_agent",
     "build_portfolio_agent",
     "build_triage_agent",

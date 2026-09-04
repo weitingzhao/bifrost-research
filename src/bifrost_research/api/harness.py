@@ -4,9 +4,12 @@ Routes:
     GET  /research/objectives
     POST /research/objectives
     POST /research/objectives/{id}/run
+    POST /research/objectives/{id}/batch-run
     GET  /research/objective-runs
+    DELETE /research/objective-runs/{id}?force=
     POST /research/objective-runs/{id}/curate
     POST /research/objective-runs/{id}/approve-all
+    GET  /research/loop/trust
 
 D-Research-Harness: write research.* only; D10 BLOCKED — no trade execution.
 """
@@ -14,7 +17,7 @@ D-Research-Harness: write research.* only; D10 BLOCKED — no trade execution.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
@@ -55,6 +58,14 @@ class ObjectiveCreate(BaseModel):
     policy_json: dict[str, Any] = Field(default_factory=dict)
     persona: str = Field(default="loop_curator")
     owner_id: str = Field(default="owner")
+
+
+class BatchRunBody(BaseModel):
+    """UI / HTTP equivalent of CLI ``--batch-mode`` (+ optional curate)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    curate_after: bool = True
 
 
 @router.get("/objectives")
@@ -159,6 +170,134 @@ def run_objective(objective_id: str) -> dict[str, Any]:
     return _ok(result)
 
 
+@router.post("/objectives/{objective_id}/batch-run")
+def batch_run_objective(
+    objective_id: str,
+    body: BatchRunBody | None = None,
+) -> dict[str, Any]:
+    """Start unattended batch and return the run id immediately.
+
+    Creates a ``running`` row, returns ``{ run, started, trust }``, then finishes
+    harness → curate → Trust-L0 approve in a background thread so Pipeline can
+    poll mid-run progress. D10 BLOCKED — research drafts only.
+    """
+    import threading
+
+    from bifrost_research.copilot.harness.batch_orchestrate import (
+        process_objective,
+        trust_status,
+    )
+    from bifrost_research.copilot.harness.runtime import _heuristic_plan
+    from bifrost_research.db.conn import connect as db_connect
+
+    payload = body or BatchRunBody()
+    conn = _connect_or_503()
+    try:
+        obj = obj_repo.get_objective(conn, objective_id)
+        if obj is None:
+            raise HTTPException(status_code=404, detail="objective not found")
+        if obj.get("status") != "active":
+            raise HTTPException(
+                status_code=409,
+                detail=f"objective status {obj.get('status')!r} is not active",
+            )
+        # Fast create so FE can open Pipeline before the heavy work starts.
+        plan = _heuristic_plan(obj)
+        plan["generated_by"] = plan.get("generated_by") or "heuristic"
+        plan["async_batch_start"] = True
+        run = obj_repo.create_run(conn, objective_id=objective_id, plan_json=plan)
+        run_id = str(run["id"])
+        try:
+            obj_repo.patch_run_trace(
+                conn,
+                run_id,
+                {
+                    "events": [
+                        {
+                            "step": "queued",
+                            "label": "Queued",
+                            "decision": "async_batch_started",
+                        }
+                    ],
+                    "progress": {
+                        "step": "queued",
+                        "label": "Queued",
+                        "detail": "Harness starting…",
+                    },
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("initial progress flush failed: %s", exc)
+        trust = trust_status()
+        obj_snapshot = dict(obj)
+        curate_after = payload.curate_after
+    finally:
+        conn.close()
+
+    def _bg() -> None:
+        bg_conn = None
+        try:
+            bg_conn = db_connect()
+            existing = obj_repo.get_run(bg_conn, run_id)
+            if existing is None:
+                logger.error("batch-run bg: run %s missing", run_id)
+                return
+            process_objective(
+                bg_conn,
+                obj_snapshot,
+                curate_after=curate_after,
+                batch_mode=True,
+                existing_run=existing,
+            )
+        except Exception:
+            logger.exception("batch-run background failed for %s", run_id)
+            if bg_conn is not None:
+                try:
+                    obj_repo.finish_run(
+                        bg_conn,
+                        run_id,
+                        status="failed",
+                        trace_json={
+                            "events": [{"step": "failed", "decision": "background_error"}],
+                            "progress": {
+                                "step": "failed",
+                                "label": "Failed",
+                                "detail": "background batch-run error",
+                            },
+                        },
+                        outputs={},
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("batch-run bg finish_run failed")
+        finally:
+            if bg_conn is not None:
+                try:
+                    bg_conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    threading.Thread(target=_bg, name=f"batch-run-{run_id}", daemon=True).start()
+    return _ok(
+        {
+            "run": run,
+            "started": True,
+            "trust": trust,
+            "advisory": (
+                "D10 BLOCKED — batch started; Pipeline can poll live progress. "
+                "Auto-approve is research drafts only."
+            ),
+        }
+    )
+
+
+@router.get("/loop/trust")
+def get_loop_trust() -> dict[str, Any]:
+    """Trust gate observability for Harness Console (batch auto-approve)."""
+    from bifrost_research.copilot.harness.batch_orchestrate import trust_status
+
+    return _ok(trust_status())
+
+
 @router.get("/objective-runs/{run_id}")
 def get_objective_run(run_id: str) -> dict[str, Any]:
     """Single run detail for white-box pipeline UI (LS-3)."""
@@ -197,32 +336,41 @@ def list_objective_runs(
 
 
 @router.delete("/objective-runs/{run_id}")
-def delete_run(run_id: str) -> dict[str, Any]:
-    """Delete one run once nothing points at it.
+def delete_run(
+    run_id: str,
+    force: Annotated[bool, Query()] = False,
+) -> dict[str, Any]:
+    """Delete one run. Default refuses while candidates point at it.
 
-    Refused while candidates carry it in `source_ref`: no foreign key targets
-    objective_run, so the database would allow the delete and leave the Inbox
-    card and the outcome ledger referring to a run that is gone. Approving a
-    batch first, or clearing its candidates, releases the run.
+    ``force=true`` cascades: deletes those candidates, dismisses pending drafts
+    for the run, then deletes the run. Promoted hypotheses are kept.
     """
     conn = _connect_or_503()
     try:
         existing = obj_repo.get_run(conn, run_id)
         if existing is None:
             raise HTTPException(status_code=404, detail="run not found")
+        if force:
+            try:
+                result = obj_repo.force_delete_run(conn, run_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            return _ok(result)
+
         linked = obj_repo.count_candidates_for_run(conn, run_id)
         if linked > 0:
             raise HTTPException(
                 status_code=409,
                 detail=(
                     f"{linked} candidate(s) still point at this run — deleting it "
-                    "would leave their lineage dangling."
+                    "would leave their lineage dangling. Use force=true to remove "
+                    "those candidates and dismiss pending drafts (hypotheses kept)."
                 ),
             )
         obj_repo.delete_run(conn, run_id)
     finally:
         conn.close()
-    return _ok({"id": run_id, "deleted": True})
+    return _ok({"id": run_id, "deleted": True, "force": False})
 
 
 @router.post("/objective-runs/{run_id}/curate")

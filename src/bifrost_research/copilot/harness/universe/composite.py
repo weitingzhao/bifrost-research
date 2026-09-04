@@ -180,7 +180,25 @@ def resolve_stock_composite(
         )
 
     symbols.sort(key=stock_sort_key)
+    # Record the cut. Ranking then slicing to `limit` was dropping symbols with no
+    # funnel step to show for it, so the funnel jumped from the layers' output
+    # straight to the overlay's input — events out=44 next to option_overlay in=24,
+    # with nothing accounting for the 20 that went missing. Same failure the sepa
+    # step above was written to fix: count before the truncation, not after.
+    ranked_count = len(symbols)
     symbols = symbols[:limit]
+    if ranked_count != len(symbols):
+        funnel.append(
+            FunnelStep(
+                name="rank_cut",
+                in_count=ranked_count,
+                out_count=len(symbols),
+                filter_summary=(
+                    f"top {limit} by sepa_score then momentum_score "
+                    f"(limit = max_candidates x 3)"
+                ),
+            )
+        )
 
     overlay_applied = False
     overlay = policy.option_overlay

@@ -177,7 +177,10 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
-- 版本：`0.64.3`（canonical_pnl Dagster job 失败：`dw_stock.mart_canonical_pnl_daily` 已是 dbt view，dual-write ON CONFLICT 无 PK；引擎只写 `features.*`，DDL 补 features 表 PK）
+- 版本：`0.65.2`（batch-run 异步立刻返回 run_id → Pipeline 直播；Force delete 级联；D10 仍 BLOCKED）
+- 历史：`0.65.1`（Harness Force delete + UI batch-run + mid-run trace live progress；D10 仍 BLOCKED）
+- 历史：`0.65.0`（Harness Policy × Personas E2E — persona_eval 链、discovery_assist、Trust 无 dissent 才 auto-approve、outcome→policy_suggestion 飞轮；默认 heuristic；holdings 只读 overlay + UI mode 标注；D10 仍 BLOCKED）
+- 历史：`0.64.3`（canonical_pnl Dagster job 失败：`dw_stock.mart_canonical_pnl_daily` 已是 dbt view，dual-write ON CONFLICT 无 PK；引擎只写 `features.*`，DDL 补 features 表 PK）
 - 历史：`0.64.1`（Research Engine 修复 — dbt 第一次真跑就暴露三处旧问题：`us_market_holiday` 测试写了不存在的列名 `date`（实为 `holiday_date`，测试 ERROR 拖垮 build）、`period_type` 白名单漏了 4138 行合法的 `ttm`；
  `engines/forecast` 被 `_EXCLUDED` 排除两次又不属于任何 schedule —— **完全没有生产者**，sessions 停在 08-28，settlement 从此每次 SUCCESS 写 0 行；补 `research_forecast_schedule`；
  `load_upstream_signals` 四处日期查询改为「不晚于该日」—— 这些表由夜间批次为**前一交易日**写入，intraday 却查「今天」，spot 恒为 0、25 个标的全跳过；
