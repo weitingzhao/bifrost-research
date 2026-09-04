@@ -17,6 +17,7 @@ import sys
 from bifrost_research.copilot.harness import data_sources as ds
 from bifrost_research.copilot.harness import readiness as readiness_mod
 from bifrost_research.copilot.harness.batch_orchestrate import process_objective
+from bifrost_research.copilot.harness.trust_report import report_batch_outcome
 from bifrost_research.db.conn import connect
 from bifrost_research.repositories import objective as obj_repo
 
@@ -141,15 +142,31 @@ def main(argv: list[str] | None = None) -> int:
             logger.info("no objectives to run")
             return 0
 
-        for obj in objectives:
-            logger.info("running objective %s (%s)", obj["id"], obj.get("title"))
-            result = _process_objective(
-                conn,
-                obj,
-                curate_after=args.curate_after or args.batch_mode,
-                batch_mode=args.batch_mode,
+        ran = 0
+        try:
+            for obj in objectives:
+                logger.info("running objective %s (%s)", obj["id"], obj.get("title"))
+                result = _process_objective(
+                    conn,
+                    obj,
+                    curate_after=args.curate_after or args.batch_mode,
+                    batch_mode=args.batch_mode,
+                )
+                ran += 1
+                print(json.dumps(result, indent=2, default=str))
+        except Exception as exc:
+            # One report per invocation of the skill, whichever way it ended —
+            # a matrix that only ever hears about successes cannot demote.
+            if args.batch_mode:
+                report_batch_outcome(
+                    ok=False,
+                    summary=f"{ran}/{len(objectives)} objectives ran before {type(exc).__name__}: {exc}",
+                )
+            raise
+        if args.batch_mode:
+            report_batch_outcome(
+                ok=True, summary=f"{ran} objective(s) completed"
             )
-            print(json.dumps(result, indent=2, default=str))
     finally:
         conn.close()
     return exit_code

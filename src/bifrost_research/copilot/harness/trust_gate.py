@@ -37,7 +37,16 @@ def trust_l0_research_loop_batch() -> bool:
     entries = data.get("entries") or []
     for entry in entries:
         if entry.get("skill_id") == SKILL_ID:
-            level = str(entry.get("effective_level") or entry.get("level") or "").upper()
+            # The matrix serialises `current_level`; neither `effective_level`
+            # nor `level` has ever been a field on it, so this read returned ""
+            # and the gate could not open even once L0 was granted. Both older
+            # names are kept as fallbacks in case the payload ever carries them.
+            level = str(
+                entry.get("current_level")
+                or entry.get("effective_level")
+                or entry.get("level")
+                or ""
+            ).upper()
             return level == "L0"
     return False
 
