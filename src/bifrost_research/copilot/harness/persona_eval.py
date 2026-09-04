@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,26 @@ def _symbol_from_position(pos: dict[str, Any]) -> str | None:
     return None
 
 
+HOLDINGS_SNAPSHOT_TIMEOUT_S = float(
+    os.environ.get("BIFROST_HOLDINGS_SNAPSHOT_TIMEOUT_S") or 1.5
+)
+
+# How long to trust a failed probe. Only failures are remembered: holdings move,
+# so a cached "applied" snapshot would go stale, while a cached "unavailable"
+# only costs the overlay it was already not providing.
+HOLDINGS_UNAVAILABLE_TTL_S = float(
+    os.environ.get("BIFROST_HOLDINGS_UNAVAILABLE_TTL_S") or 60.0
+)
+
+_unavailable_until: float = 0.0
+
+
+def reset_holdings_probe_cache() -> None:
+    """Forget a cached failure — for tests, and for callers that know better."""
+    global _unavailable_until
+    _unavailable_until = 0.0
+
+
 def load_held_symbols() -> tuple[set[str] | None, str]:
     """Best-effort read-only holdings via Trade monitor ``/status``.
 
@@ -88,12 +109,29 @@ def load_held_symbols() -> tuple[set[str] | None, str]:
     not applied (unavailable / misconfigured). Empty set means snapshot ok but
     no positions. Never writes; D10 untouched.
     """
+    global _unavailable_until
+
+    # The Trade monitor is addressed by its in-cluster name. In the cluster that
+    # resolves; from a dev machine it does not, and the failure is a DNS one —
+    # `getaddrinfo` blocks for ~5s and no HTTP timeout bounds it (measured: a
+    # 0.2s budget still took 5.02s). That was 98% of a local run, paid again on
+    # every run, to re-learn the same answer. Remember the failure instead.
+    if time.monotonic() < _unavailable_until:
+        return None, "unavailable"
+
     try:
         from bifrost_research.mcp.tools._trade_api_client import base_monitor, get
         from bifrost_research.mcp.tools.trade_context import _extract_light_status
 
-        status = get(base_monitor(), "/status")
+        # Best-effort means best-effort. With the default 8s budget an
+        # unreachable Trade monitor made this single call the whole run:
+        # measured 5.02s of a 5.12s run — 98% — spent waiting to conclude that
+        # holdings were unavailable, on every scheduled run and every click.
+        # The portfolio persona abstains without it, so a short wait is the
+        # correct price for an overlay nothing downstream depends on.
+        status = get(base_monitor(), "/status", timeout=HOLDINGS_SNAPSHOT_TIMEOUT_S)
         if not isinstance(status, dict):
+            _unavailable_until = time.monotonic() + HOLDINGS_UNAVAILABLE_TTL_S
             return None, "unavailable"
         light = _extract_light_status(status)
         held: set[str] = set()
@@ -109,6 +147,7 @@ def load_held_symbols() -> tuple[set[str] | None, str]:
         return held, "applied"
     except Exception as exc:  # noqa: BLE001
         logger.info("persona_eval holdings snapshot skipped: %s", str(exc)[:160])
+        _unavailable_until = time.monotonic() + HOLDINGS_UNAVAILABLE_TTL_S
         return None, "unavailable"
 
 

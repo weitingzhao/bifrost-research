@@ -70,11 +70,23 @@ def _timeout() -> float:
         return DEFAULT_TIMEOUT
 
 
-def get(base: str, path: str, params: dict[str, Any] | None = None) -> Any:
-    """Read-only GET. Returns parsed JSON. Raises `RuntimeError` on failure."""
+def get(
+    base: str,
+    path: str,
+    params: dict[str, Any] | None = None,
+    *,
+    timeout: float | None = None,
+) -> Any:
+    """Read-only GET. Returns parsed JSON. Raises `RuntimeError` on failure.
+
+    `timeout` overrides `TRADE_API_TIMEOUT` for a single call. Callers that only
+    want to enrich a result — as opposed to needing it — should pass something
+    short: the default 8s is the right budget for a read the caller depends on,
+    and the wrong one for an optional overlay that fails soft.
+    """
     url = f"{base}{path if path.startswith('/') else '/' + path}"
     try:
-        with httpx.Client(timeout=_timeout()) as client:
+        with httpx.Client(timeout=timeout if timeout is not None else _timeout()) as client:
             resp = client.get(url, params=params or {})
         resp.raise_for_status()
         return resp.json()

@@ -177,6 +177,7 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
+- 版本：`0.65.4`（trace 事件加 `at_ms` → Pipeline 每阶段耗时，已完成的 run 也能看出时间花在哪；首次用它就发现 persona_evaluate 占 5.02s/5.12s，根因是本机解析不了集群内名 `api-monitor.bifrost-prod.svc`，DNS 阻塞 ~5s 且 HTTP timeout 管不到 → 失败探测缓存 60s；D10 仍 BLOCKED）
 - 版本：`0.65.3`（漏斗补最后一刀 `max_candidates`：resolver 取 `max_candidates*3` 供 discovery_assist 否决，run_objective 再截到 `max_candidates`，这一步此前不记账 —— 提出 8 只的 run 漏斗停在 24，控制台照 24 报，产出虚报三倍；端到端断言末段 == `propose_candidates.count`；D10 仍 BLOCKED）
 - 历史：`0.65.2`（batch-run 异步立刻返回 run_id → Pipeline 直播；Force delete 级联；D10 仍 BLOCKED）
 - 历史：`0.65.1`（Harness Force delete + UI batch-run + mid-run trace live progress；D10 仍 BLOCKED）

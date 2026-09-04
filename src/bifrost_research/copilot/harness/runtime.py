@@ -26,6 +26,7 @@ from bifrost_research.copilot.harness.planning import (
     _heuristic_plan as _heuristic_plan,  # re-export: api/harness.py fast-create path
 )
 from bifrost_research.copilot.harness.policy_schema import parse_policy
+from bifrost_research.copilot.harness.trace import RunTrace
 from bifrost_research.copilot.harness.suggestion import (
     policy_suggestion_from_outcomes,
     policy_suggestion_from_plan,
@@ -150,7 +151,7 @@ def run_objective(
         plan = _plan_for_objective(objective, conn)
         run = obj_repo.create_run(conn, objective_id=objective["id"], plan_json=plan)
         run_id = run["id"]
-    trace: list[dict[str, Any]] = []
+    trace = RunTrace()
     candidate_ids: list[str] = []
     draft_ids: list[str] = []
 
