@@ -64,9 +64,16 @@ def validate_hypothesis_stock_leg(
     if not sym:
         return {"ok": False, "error": "no symbol for hypothesis"}
 
+    # The symbol was resolved above and then never used: the query ran with
+    # empty params, so every hypothesis was validated against the same
+    # market-wide aggregate. Measured on the live warehouse — market-wide
+    # win_rate 0.3243 rejects everything, while WT's own record is 0.6 over 5
+    # events and SCCO's is 0.5 over 4. The bug did not just mislabel the
+    # evidence, it inverted the verdict, and it cost 29s a call instead of 3.
+    event_params = {"symbols": [sym]}
     try:
         bt = run_event_query(
-            EventDef(kind="earnings", params={}),
+            EventDef(kind="earnings", params=event_params),
             STOCK_TEMPLATE,
             lookback_years=lookback_years,
             conn=conn,
@@ -82,7 +89,7 @@ def validate_hypothesis_stock_leg(
     try:
         row = bt_repo.create_run(
             conn,
-            event_def={"kind": "earnings", "params": {}},
+            event_def={"kind": "earnings", "params": dict(event_params)},
             strategy_template=STOCK_TEMPLATE,
             fill_config={
                 "slippage_pct_of_spread": 0.2,
@@ -107,9 +114,15 @@ def validate_hypothesis_stock_leg(
             hyp_repo.patch_hypothesis(conn, hypothesis_id, {"linked_backtest_ids": linked})
 
     proposed = "validated" if isinstance(win_rate, (int, float)) and win_rate >= 0.5 else "rejected"
+    # `event_count` has never been a key on the summary — it is `n_events` — so
+    # every verdict has read "events=n/a" and hidden its own sample size. On this
+    # data a symbol's record is four or five earnings, which is thin enough that
+    # the reader has to see it next to the verdict.
+    n_events = summary.get("n_events")
     rationale = (
-        f"Auto stock-leg backtest ({STOCK_TEMPLATE}) win_rate={win_rate}; "
-        f"events={summary.get('event_count', 'n/a')}"
+        f"Auto stock-leg backtest ({STOCK_TEMPLATE}) for {sym}: "
+        f"win_rate={win_rate} over {n_events if n_events is not None else 'n/a'} earnings "
+        f"in {lookback_years}y"
     )
 
     action = action_repo.insert_action(
