@@ -26,6 +26,7 @@ from bifrost_research.copilot.harness.planning import (
     _heuristic_plan as _heuristic_plan,  # re-export: api/harness.py fast-create path
 )
 from bifrost_research.copilot.harness.policy_schema import parse_policy
+from bifrost_research.copilot.harness.backtest_baseline import template_baseline
 from bifrost_research.copilot.harness.trace import RunTrace
 from bifrost_research.copilot.harness.suggestion import (
     policy_suggestion_from_outcomes,
@@ -526,25 +527,9 @@ def run_objective(
         # not_measured rather than swallowed or raised.
         backtest_summary: dict[str, Any] | None = None
         if want_backtest:
-            try:
-                from bifrost_research.engines.backtest.event_defs import EventDef
-                from bifrost_research.engines.backtest.event_query import run_event_query
-
-                bt = run_event_query(
-                    EventDef(kind="earnings", params={}),
-                    "long_stock_event",
-                    lookback_years=3,
-                    conn=conn,
-                )
-                backtest_summary = {
-                    "status": "ok",
-                    "template": "long_stock_event",
-                    "summary": bt.get("summary") or {},
-                }
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("run_backtest failed for run %s: %s", run_id, exc)
+            backtest_summary = template_baseline(conn)
+            if backtest_summary.get("status") != "ok":
                 rollback_quietly(conn)
-                backtest_summary = {"status": "not_measured", "reason": str(exc)[:200]}
             trace.append({"step": "run_backtest", "result": backtest_summary})
 
         candidate_payload: dict[str, Any] = {

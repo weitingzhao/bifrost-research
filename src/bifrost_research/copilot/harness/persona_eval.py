@@ -89,8 +89,13 @@ HOLDINGS_SNAPSHOT_TIMEOUT_S = float(
 # How long to trust a failed probe. Only failures are remembered: holdings move,
 # so a cached "applied" snapshot would go stale, while a cached "unavailable"
 # only costs the overlay it was already not providing.
+#
+# 60s was too short to help. Runs are minutes apart, so every one of them paid
+# the ~5s DNS timeout again — measured at 5.02s on a 5.12s run after the cache
+# was in place. 15 minutes covers a working session while still noticing a
+# monitor that comes back inside the hour.
 HOLDINGS_UNAVAILABLE_TTL_S = float(
-    os.environ.get("BIFROST_HOLDINGS_UNAVAILABLE_TTL_S") or 60.0
+    os.environ.get("BIFROST_HOLDINGS_UNAVAILABLE_TTL_S") or 900.0
 )
 
 _unavailable_until: float = 0.0

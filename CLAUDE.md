@@ -177,6 +177,7 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
+- 版本：`0.65.7`（阶段计时照出 `run_backtest` 每次 29s：事件定义无参数、查询看不到候选，所以每次算同一个全市场答案（`n_events=37 win_rate=0.3243`，正是 curator 说的 scaffold 数）→ 按天 memo，29.07s→0.00s；payload 加 `scope: market_wide` 说明它不是本批标的的记录；holdings 负缓存 TTL 60s→900s（run 间隔通常超 60s，等于没缓存）；D10 仍 BLOCKED）
 - 版本：`0.65.6`（Trust 链第三处断点：CronJob 的 `PLATFORM_API_URL` 指向 `platform-api.platform.svc`，而 `platform` namespace 是空的 —— 真实服务在 `bifrost-platform-prod`，所以连读矩阵都一直失败；改用窄权限 `PLATFORM_REPORTER_TOKEN`，绝不回退 operator token（operator 含 cluster scale 与 trust override，触 D10）；D10 仍 BLOCKED）
 - 版本：`0.65.5`（Trust 闭环 LO-4 补齐 —— batch 跑完向平台 `POST /agent/governance/skill-runs` 登记结果；`trust_gate` 此前读 `effective_level`/`level`，而矩阵发的是 `current_level`，读到空串所以门永远关着；需要 `PLATFORM_OPERATOR_TOKEN` 才上报，缺则跳过不影响 run；D10 仍 BLOCKED）
 - 版本：`0.65.4`（trace 事件加 `at_ms` → Pipeline 每阶段耗时，已完成的 run 也能看出时间花在哪；首次用它就发现 persona_evaluate 占 5.02s/5.12s，根因是本机解析不了集群内名 `api-monitor.bifrost-prod.svc`，DNS 阻塞 ~5s 且 HTTP timeout 管不到 → 失败探测缓存 60s；D10 仍 BLOCKED）
