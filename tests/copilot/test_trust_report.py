@@ -13,7 +13,7 @@ from bifrost_research.copilot.harness import trust_gate, trust_report
 
 
 def test_a_run_is_reported_with_its_outcome(monkeypatch: Any) -> None:
-    monkeypatch.setenv("PLATFORM_OPERATOR_TOKEN", "t0ken")
+    monkeypatch.setenv("PLATFORM_REPORTER_TOKEN", "t0ken")
     monkeypatch.setenv("PLATFORM_API_URL", "http://platform.test")
     sent: dict[str, Any] = {}
 
@@ -38,7 +38,7 @@ def test_a_run_is_reported_with_its_outcome(monkeypatch: Any) -> None:
 
 def test_a_failure_is_reported_too(monkeypatch: Any) -> None:
     # A matrix that only hears about successes can never demote.
-    monkeypatch.setenv("PLATFORM_OPERATOR_TOKEN", "t0ken")
+    monkeypatch.setenv("PLATFORM_REPORTER_TOKEN", "t0ken")
     seen: dict[str, Any] = {}
 
     class _Resp:
@@ -52,7 +52,7 @@ def test_a_failure_is_reported_too(monkeypatch: Any) -> None:
 
 
 def test_without_a_token_it_skips_quietly(monkeypatch: Any) -> None:
-    monkeypatch.delenv("PLATFORM_OPERATOR_TOKEN", raising=False)
+    monkeypatch.delenv("PLATFORM_REPORTER_TOKEN", raising=False)
     import httpx
 
     def _boom(*a: Any, **k: Any) -> Any:
@@ -65,7 +65,7 @@ def test_without_a_token_it_skips_quietly(monkeypatch: Any) -> None:
 def test_an_unreachable_platform_never_fails_the_run(monkeypatch: Any) -> None:
     # The work is done and stands on its own; the control plane being down must
     # not turn a good run into a failed one.
-    monkeypatch.setenv("PLATFORM_OPERATOR_TOKEN", "t0ken")
+    monkeypatch.setenv("PLATFORM_REPORTER_TOKEN", "t0ken")
     import httpx
 
     def _boom(*a: Any, **k: Any) -> Any:
@@ -109,3 +109,21 @@ def test_the_gate_stays_shut_at_l1(monkeypatch: Any) -> None:
 
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp())
     assert trust_gate.trust_l0_research_loop_batch() is False
+
+
+def test_it_never_borrows_an_operator_token(monkeypatch: Any) -> None:
+    """Operator also gates cluster scale and trust overrides.
+
+    Falling back to it would let a run that only wanted to record an outcome
+    scale the trade daemon (D10) or write its own L0 override — the gate
+    guarding nothing. The reporter role exists so this path needs neither.
+    """
+    monkeypatch.delenv("PLATFORM_REPORTER_TOKEN", raising=False)
+    monkeypatch.setenv("PLATFORM_OPERATOR_TOKEN", "operator-token")
+    import httpx
+
+    def _boom(*a: Any, **k: Any) -> Any:
+        raise AssertionError("fell back to the operator token")
+
+    monkeypatch.setattr(httpx, "post", _boom)
+    assert trust_report.report_batch_outcome(ok=True) is False

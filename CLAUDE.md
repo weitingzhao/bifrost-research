@@ -177,6 +177,7 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
+- 版本：`0.65.6`（Trust 链第三处断点：CronJob 的 `PLATFORM_API_URL` 指向 `platform-api.platform.svc`，而 `platform` namespace 是空的 —— 真实服务在 `bifrost-platform-prod`，所以连读矩阵都一直失败；改用窄权限 `PLATFORM_REPORTER_TOKEN`，绝不回退 operator token（operator 含 cluster scale 与 trust override，触 D10）；D10 仍 BLOCKED）
 - 版本：`0.65.5`（Trust 闭环 LO-4 补齐 —— batch 跑完向平台 `POST /agent/governance/skill-runs` 登记结果；`trust_gate` 此前读 `effective_level`/`level`，而矩阵发的是 `current_level`，读到空串所以门永远关着；需要 `PLATFORM_OPERATOR_TOKEN` 才上报，缺则跳过不影响 run；D10 仍 BLOCKED）
 - 版本：`0.65.4`（trace 事件加 `at_ms` → Pipeline 每阶段耗时，已完成的 run 也能看出时间花在哪；首次用它就发现 persona_evaluate 占 5.02s/5.12s，根因是本机解析不了集群内名 `api-monitor.bifrost-prod.svc`，DNS 阻塞 ~5s 且 HTTP timeout 管不到 → 失败探测缓存 60s；D10 仍 BLOCKED）
 - 版本：`0.65.3`（漏斗补最后一刀 `max_candidates`：resolver 取 `max_candidates*3` 供 discovery_assist 否决，run_objective 再截到 `max_candidates`，这一步此前不记账 —— 提出 8 只的 run 漏斗停在 24，控制台照 24 报，产出虚报三倍；端到端断言末段 == `propose_candidates.count`；D10 仍 BLOCKED）

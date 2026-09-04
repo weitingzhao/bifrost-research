@@ -26,14 +26,20 @@ logger = logging.getLogger(__name__)
 
 
 def report_batch_outcome(*, ok: bool, summary: str = "") -> bool:
-    """Record one Loop batch run. Returns True when the platform accepted it."""
-    token = os.environ.get("PLATFORM_OPERATOR_TOKEN", "").strip()
+    """Record one Loop batch run. Returns True when the platform accepted it.
+
+    Deliberately reads only PLATFORM_REPORTER_TOKEN and never falls back to an
+    operator token. Operator also carries `POST /cluster/workloads/scale` —
+    which D10 forbids pointing at the trade daemon — and
+    `PUT /agent/governance/trust-overrides/{skill_id}`, which would let this
+    Loop grant itself the L0 the trust gate exists to withhold. A reporter token
+    can record an outcome and do nothing else, so that is the only credential
+    this path will use.
+    """
+    token = os.environ.get("PLATFORM_REPORTER_TOKEN", "").strip()
     if not token:
-        # Recording feeds an autonomy decision, so the endpoint is operator
-        # gated. Without a token the run still happened and still stands on its
-        # own — it just does not count towards earned autonomy.
         logger.info(
-            "trust report skipped: no PLATFORM_OPERATOR_TOKEN — %s stays at 0 "
+            "trust report skipped: no PLATFORM_REPORTER_TOKEN — %s stays at 0 "
             "consecutive successes",
             SKILL_ID,
         )

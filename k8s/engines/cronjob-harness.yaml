@@ -73,7 +73,7 @@ spec:
                 - name: BIFROST_LOOP_BATCH_MODE
                   value: "1"
                 - name: PLATFORM_API_URL
-                  value: "http://platform-api.platform.svc.cluster.local:8780"
+                  value: "http://platform-api.bifrost-platform-prod.svc.cluster.local:8780"
               resources:
                 requests:
                   cpu: 50m
