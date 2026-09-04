@@ -19,10 +19,12 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
+from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
+from bifrost_research.repositories import ai_draft as draft_repo
 from bifrost_research.repositories import objective as obj_repo
 
 logger = logging.getLogger(__name__)
@@ -429,3 +431,93 @@ def approve_all_for_run_endpoint(run_id: str) -> dict[str, Any]:
     finally:
         conn.close()
     return _ok(result)
+
+
+class PolicySuggestionBody(BaseModel):
+    """An Owner-authored change to an objective's policy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    suggestion: dict[str, Any] = Field(
+        ..., description="Policy fields to change, whitelist-checked before the draft is made."
+    )
+    rationale: str = Field(
+        default="", description="Why. Stored with the change so drift can be attributed to it."
+    )
+
+
+@router.post("/objectives/{objective_id}/policy-suggestion")
+def create_policy_suggestion(
+    objective_id: str,
+    body: PolicySuggestionBody,
+    owner_id: str = Depends(require_owner),
+) -> dict[str, Any]:
+    """Propose a policy change as a draft, the same way the model does.
+
+    The Owner could not originate one: policy_suggestion is not a manually
+    creatable kind, and PATCH /objectives only takes status. So the trading
+    system was readable and not adjustable.
+
+    Routed through a draft rather than written straight onto the objective so
+    that every policy change — model-proposed or Owner-proposed — leaves the
+    same record. Without one, rule drift is unreadable: `sepa −3,431 → −1,204`
+    means the market moved *or* that someone lowered min_score, and those are
+    opposite conclusions. The draft carries the rationale so the answer is on
+    the record rather than in someone's memory.
+
+    Keys are checked here rather than dropped at approval. patch_policy_json
+    filters silently, which is how a suggestion that changes nothing used to
+    reach the Inbox looking like one that does.
+    """
+    if not body.suggestion:
+        raise HTTPException(status_code=400, detail="suggestion must not be empty")
+
+    unknown = sorted(set(body.suggestion) - obj_repo.POLICY_SUGGESTION_WHITELIST)
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"not applicable policy fields: {unknown}. Approving would drop them "
+                f"silently. Allowed: {sorted(obj_repo.POLICY_SUGGESTION_WHITELIST)}"
+            ),
+        )
+
+    conn = _connect_or_503()
+    try:
+        objective = obj_repo.get_objective(conn, objective_id)
+        if objective is None:
+            raise HTTPException(status_code=404, detail="objective not found")
+
+        # Validated strictly, not with parse_policy — that one is fail-soft by
+        # design so a stored policy can always be read, and it answers an
+        # invalid value by logging and falling back to defaults. Accepting
+        # `max_candidates: 9999` here would store a policy that says 9999 while
+        # every run quietly does something else.
+        from bifrost_research.copilot.harness.policy_schema import LoopPolicy
+
+        merged = {**(objective.get("policy_json") or {}), **body.suggestion}
+        try:
+            LoopPolicy.model_validate(merged)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=400, detail=f"policy would not be valid: {exc}"
+            ) from exc
+
+        draft = draft_repo.insert_draft(
+            conn,
+            kind="policy_suggestion",
+            payload={
+                "objective_id": objective_id,
+                "suggestion": body.suggestion,
+                "rationale": body.rationale.strip(),
+                "objective_title": objective.get("title"),
+                # Tells the Inbox this came from the Owner, not the model.
+                "manual": True,
+                "created_by": owner_id,
+            },
+            scope=f"objective:{objective_id}",
+            generated_by=f"owner:{owner_id}",
+        )
+    finally:
+        conn.close()
+    return _ok({"draft": draft})

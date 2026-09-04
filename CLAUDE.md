@@ -177,6 +177,7 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
+- 版本：`0.66.0`（可调节的交易系统 —— `POST /objectives/{id}/policy-suggestion` 让 Owner 也能发起 policy 变更；走 draft 而非直写,系统提的和 Owner 提的留同一份记录,漂移才可归因;白名单在入口校验而非批准时静默丢弃;用严格 `LoopPolicy.model_validate` 而非 fail-soft 的 `parse_policy`;D10 仍 BLOCKED）
 - 版本：`0.65.8`（`validate_hook` 取出 symbol、校验它存在、然后用空 params 跑回测 —— 每个 hypothesis 都按同一个全市场数字判定。实测:全市场 win_rate 0.3243(37 事件)判 rejected，而 WT 自己是 0.6(5 事件)、SCCO 0.5(4 事件)→ **判定被反转**，且慢 8 倍；另 `event_count` 从来不是 summary 的键(应为 `n_events`)，所以每条 verdict 都印 events=n/a 藏住了样本量；存量:15 条无 symbols 的 backtest_run + 16 条基于它的待批 verdict；D10 仍 BLOCKED）
 - 版本：`0.65.7`（阶段计时照出 `run_backtest` 每次 29s：事件定义无参数、查询看不到候选，所以每次算同一个全市场答案（`n_events=37 win_rate=0.3243`，正是 curator 说的 scaffold 数）→ 按天 memo，29.07s→0.00s；payload 加 `scope: market_wide` 说明它不是本批标的的记录；holdings 负缓存 TTL 60s→900s（run 间隔通常超 60s，等于没缓存）；D10 仍 BLOCKED）
 - 版本：`0.65.6`（Trust 链第三处断点：CronJob 的 `PLATFORM_API_URL` 指向 `platform-api.platform.svc`，而 `platform` namespace 是空的 —— 真实服务在 `bifrost-platform-prod`，所以连读矩阵都一直失败；改用窄权限 `PLATFORM_REPORTER_TOKEN`，绝不回退 operator token（operator 含 cluster scale 与 trust override，触 D10）；D10 仍 BLOCKED）
