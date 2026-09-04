@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -132,14 +131,6 @@ def test_order_intent_to_payload_advisory_d10() -> None:
 
 
 # --------------- run_objective branches (Y.1) ------------------
-
-
-@pytest.fixture
-def fake_conn() -> Any:
-    conn = MagicMock()
-    conn.cursor.return_value.__enter__ = MagicMock(return_value=MagicMock())
-    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
-    return conn
 
 
 def _patch_repos(monkeypatch: pytest.MonkeyPatch, *, run_id: str = "run_1") -> dict[str, list]:

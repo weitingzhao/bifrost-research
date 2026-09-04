@@ -31,6 +31,7 @@ from bifrost_research.copilot.harness.suggestion import (
     policy_suggestion_from_plan,
 )
 from bifrost_research.copilot.harness.universe.registry import resolve_universe
+from bifrost_research.copilot.harness.universe.types import FunnelStep
 from bifrost_research.repositories import ai_action_log as action_repo
 from bifrost_research.repositories import ai_draft as draft_repo
 from bifrost_research.repositories import candidate_pool as cand_repo
@@ -228,10 +229,26 @@ def run_objective(
             playbook_rules=discovery_rules,
             row_meta_by_symbol=row_meta_by_symbol,
         )
-        universe_symbols = list(assist.get("symbols") or universe_symbols)[:max_n]
+        assisted_symbols = list(assist.get("symbols") or universe_symbols)
         funnel_dicts = universe.funnel_dicts()
         if assist.get("funnel_step"):
             funnel_dicts = list(funnel_dicts) + [assist["funnel_step"]]
+
+        # The last cut, and the one nothing showed. The resolver was asked for
+        # `max_n * 3` so discovery_assist had room to veto, then this line took
+        # the top `max_n` — a drop of 24 -> 8 that never reached the funnel, so
+        # the console headlined the 24 as if they had been proposed. Everything
+        # downstream (candidates, personas, the draft) works off `max_n`.
+        universe_symbols = assisted_symbols[:max_n]
+        if len(assisted_symbols) != len(universe_symbols):
+            funnel_dicts = list(funnel_dicts) + [
+                FunnelStep(
+                    name="max_candidates",
+                    in_count=len(assisted_symbols),
+                    out_count=len(universe_symbols),
+                    filter_summary=f"policy.max_candidates = {max_n}",
+                ).to_dict()
+            ]
 
         veto_n = len(assist.get("veto") or [])
         boost_n = len(assist.get("boost") or [])

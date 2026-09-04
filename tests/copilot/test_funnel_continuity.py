@@ -89,3 +89,67 @@ def test_the_funnel_still_opens_at_the_universe(monkeypatch: Any) -> None:
     funnel = _funnel_for(monkeypatch, n_symbols=44, limit=24)
     assert funnel[0].name == "sepa"
     assert funnel[0].in_count == 3475
+
+
+def test_the_funnel_reaches_the_number_that_was_actually_proposed(
+    monkeypatch: Any, fake_conn: Any
+) -> None:
+    """End-to-end: the last funnel step must equal `propose_candidates.count`.
+
+    The resolver is asked for `max_candidates * 3` so discovery_assist has room
+    to veto, and run_objective then keeps the top `max_candidates`. That last
+    slice recorded nothing, so a run that proposed 8 ended its funnel at 24 and
+    the console reported the 24 — a three-fold overstatement of the output, from
+    the one number a reader is most likely to trust.
+    """
+    from bifrost_research.copilot.harness import runtime as rt
+    from bifrost_research.copilot.harness.universe.types import FunnelStep, UniverseResult
+    from tests.copilot.test_harness_runtime import _patch_repos
+
+    resolved = [f"SYM{i}" for i in range(24)]
+    monkeypatch.setattr(
+        rt,
+        "resolve_universe",
+        lambda conn, policy, *, limit: UniverseResult(
+            symbols=list(resolved),
+            row_meta_by_symbol={s: {"sepa_score": 90.0} for s in resolved},
+            funnel=[FunnelStep(name="sepa", in_count=3475, out_count=24, filter_summary="")],
+            data_source="stock_composite",
+            universe_mode="stock_composite",
+        ),
+    )
+    monkeypatch.setattr(rt.ds, "global_signal_decay_summary", lambda conn, **k: {})
+    _patch_repos(monkeypatch)
+
+    # _patch_repos keeps only status/outputs; the funnel lives in the trace.
+    seen: dict[str, Any] = {}
+
+    def _finish(conn, rid, *, status, trace_json, outputs):
+        seen["status"] = status
+        seen["trace"] = trace_json
+        return {"id": rid, "status": status, "outputs": outputs}
+
+    monkeypatch.setattr(rt.obj_repo, "finish_run", _finish)
+
+    rt.run_objective(
+        fake_conn,
+        objective={
+            "id": "obj-funnel",
+            "title": "Funnel",
+            "policy_json": {"universe_mode": "stock_composite", "max_candidates": 8},
+        },
+    )
+    # A run that blew up would finish "failed" with a trace that trivially
+    # satisfies everything below.
+    assert seen["status"] == "awaiting_approval", seen.get("trace")
+    events = seen["trace"]["events"]
+    scan = next(e for e in events if e.get("step") == "scan_universe")
+    propose = next(e for e in events if e.get("step") == "propose_candidates")
+
+    funnel = scan["funnel"]
+    for prev, nxt in zip(funnel, funnel[1:]):
+        assert prev["out_count"] == nxt["in_count"], f"{prev['name']} -> {nxt['name']}"
+    assert funnel[-1]["name"] == "max_candidates"
+    assert funnel[-1]["out_count"] == propose["count"], (
+        f"funnel ends at {funnel[-1]['out_count']} but {propose['count']} were proposed"
+    )
