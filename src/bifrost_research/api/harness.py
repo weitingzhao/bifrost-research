@@ -511,6 +511,11 @@ def create_policy_suggestion(
                 "suggestion": body.suggestion,
                 "rationale": body.rationale.strip(),
                 "objective_title": objective.get("title"),
+                # Snapshot, not a live read: the Inbox diff should show what the
+                # proposer was looking at. Without it every row rendered its
+                # current value as "not set", so an 8 → 10 change read as though
+                # nothing had been set before.
+                "current_policy": objective.get("policy_json") or {},
                 # Tells the Inbox this came from the Owner, not the model.
                 "manual": True,
                 "created_by": owner_id,

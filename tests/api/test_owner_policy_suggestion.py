@@ -80,6 +80,10 @@ def test_a_change_becomes_a_draft_carrying_its_reason(
     # whoever made it.
     assert payload["manual"] is True
     assert captured["generated_by"].startswith("owner:")
+    # The Inbox diff renders current-vs-proposed from this snapshot. Without it
+    # every row showed "not set" as the current value, so an 8 → 10 change read
+    # as though nothing had been set before.
+    assert payload["current_policy"]["max_candidates"] == 8
 
 
 def test_a_field_that_would_be_dropped_is_refused(
