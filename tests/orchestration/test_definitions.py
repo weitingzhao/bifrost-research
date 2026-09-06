@@ -12,7 +12,7 @@ import pytest
 pytest.importorskip("dagster")
 pytest.importorskip("dagster_dbt")
 
-from dagster import AssetKey, Definitions  # noqa: E402
+from dagster import AssetKey, Definitions
 
 
 def test_definitions_load_without_dbt_manifest() -> None:
@@ -58,8 +58,37 @@ def test_definitions_include_schedule() -> None:
         defs = build_definitions()
     names = {s.name for s in defs.schedules}
     assert "research_trading_day_schedule" in names
+    assert "research_flex_morning_schedule" in names
     job_names = {j.name for j in defs.jobs}
     assert "research_trading_day" in job_names
+    assert "research_flex_morning" in job_names
+
+
+def test_flex_is_enqueued_in_the_morning_not_at_close() -> None:
+    """22:30 ET is before IB generates the statement; Flex moved to 06:30 ET Mon–Sat."""
+    from bifrost_research.orchestration.schedules import (
+        research_flex_morning_job,
+        research_flex_morning_schedule,
+        research_trading_day_job,
+    )
+
+    assert research_flex_morning_schedule.cron_schedule == "30 6 * * 1-6"
+    assert research_flex_morning_schedule.execution_timezone == "America/New_York"
+
+    with patch(
+        "bifrost_research.orchestration.dbt_assets.dbt_manifest_exists",
+        return_value=False,
+    ):
+        from bifrost_research.orchestration.definitions import build_definitions
+
+        defs = build_definitions()
+    graph = defs.resolve_asset_graph()
+    flex = {AssetKey(["batch", "flex_trades"]), AssetKey(["batch", "flex_transactions"])}
+    morning = research_flex_morning_job.selection.resolve(graph)
+    assert morning == flex
+    trading_day = research_trading_day_job.selection.resolve(graph)
+    assert not (trading_day & flex)
+    assert AssetKey(["batch", "husbandry_gate"]) in trading_day
 
 
 def test_definitions_include_dbt_when_manifest_present() -> None:

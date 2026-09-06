@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 # (schedule_name, pipeline/job name in ops_dagster.runs)
 HUSBANDRY_SCHEDULE_JOBS: tuple[tuple[str, str], ...] = (
     ("research_trading_day_schedule", "research_trading_day"),
+    ("research_flex_morning_schedule", "research_flex_morning"),
     ("research_canonical_pnl_schedule", "research_canonical_pnl_job"),
     ("market_snapshot_schedule", "market_snapshot_job"),
     ("market_movers_schedule", "market_movers_job"),

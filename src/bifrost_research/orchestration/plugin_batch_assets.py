@@ -7,10 +7,13 @@ Note: do not use ``from __future__ import annotations`` — Dagster validates
 """
 
 import urllib.error
-from typing import Any
 
 from dagster import AssetExecutionContext, AssetKey, MaterializeResult, asset
 
+from bifrost_research.orchestration.flex_husbandry import (
+    DEFAULT_MAX_AGE_HOURS,
+    flex_ingest_verdict,
+)
 from bifrost_research.orchestration.plugin_http import (
     enqueue_market_slots,
     env,
@@ -36,7 +39,13 @@ def market_eod(context: AssetExecutionContext) -> MaterializeResult:
 @asset(
     key=AssetKey(["batch", "flex_trades"]),
     group_name="plugin_batch",
-    description="Enqueue Flex trades day-end via POST /flex/ingest/enqueue (fail if token source=none).",
+    description=(
+        "Enqueue Flex trades via POST /flex/ingest/enqueue (fail if token source=none). "
+        "Fired by research_flex_morning_schedule at 06:30 America/New_York Mon–Sat: IB "
+        "generates the previous day's Activity statement overnight, so the 22:30 ET "
+        "trading-day slot met [1003] every night. The plugin's worker waits for IB "
+        "(deferred retries) — this asset only accepts the enqueue."
+    ),
 )
 def flex_trades(context: AssetExecutionContext) -> MaterializeResult:
     return _enqueue_flex(context, slot="flex-trades")
@@ -45,7 +54,10 @@ def flex_trades(context: AssetExecutionContext) -> MaterializeResult:
 @asset(
     key=AssetKey(["batch", "flex_transactions"]),
     group_name="plugin_batch",
-    description="Enqueue Flex cash transactions via POST /flex/ingest/enqueue.",
+    description=(
+        "Enqueue Flex cash transactions via POST /flex/ingest/enqueue "
+        "(research_flex_morning_schedule, 06:30 America/New_York Mon–Sat)."
+    ),
 )
 def flex_transactions(context: AssetExecutionContext) -> MaterializeResult:
     return _enqueue_flex(context, slot="flex-transactions")
@@ -97,8 +109,10 @@ def _enqueue_flex(context: AssetExecutionContext, *, slot: str) -> MaterializeRe
     group_name="plugin_batch",
     description=(
         "Gate before Research dbt/engines: Market husbandry.verdict and Flex "
-        "token/freshness must not be degraded. Blocks dual-track when red. "
-        "draining is allowed (queue may still be processing non-EOD slots)."
+        "token + ingest outcome must not be degraded. Blocks dual-track when red. "
+        "draining is allowed (queue may still be processing non-EOD slots). "
+        "Flex is checked on its outcome (freshness-kpis: last attempt ok, last "
+        "success within FLEX_GATE_MAX_AGE_HOURS) — an accepted enqueue is not a success."
     ),
 )
 def husbandry_gate(context: AssetExecutionContext) -> MaterializeResult:
@@ -127,21 +141,37 @@ def husbandry_gate(context: AssetExecutionContext) -> MaterializeResult:
     except Exception as exc:  # noqa: BLE001
         context.log.warning("flex summary probe failed: %s", exc)
 
+    flex_verdict, flex_reason = "unknown", "freshness-kpis not probed"
+    try:
+        kpis = get_json(f"{flex_base}/flex/dashboard/freshness-kpis")
+        max_age = float(env("FLEX_GATE_MAX_AGE_HOURS", str(DEFAULT_MAX_AGE_HOURS)))
+        flex_verdict, flex_reason = flex_ingest_verdict(kpis, max_age_hours=max_age)
+    except Exception as exc:  # noqa: BLE001
+        context.log.warning("flex freshness probe failed: %s", exc)
+
     if flex_source == "none":
         raise RuntimeError("husbandry_gate: Flex source=none — block dbt")
+    if flex_verdict in ("failed", "stale"):
+        raise RuntimeError(f"husbandry_gate: Flex ingest {flex_verdict} ({flex_reason}) — block dbt")
     if market_verdict in ("missed", "degraded"):
         raise RuntimeError(
             f"husbandry_gate: Market verdict={market_verdict} — block dbt"
         )
 
     context.log.info(
-        "husbandry_gate ok market=%s flex_source=%s", market_verdict, flex_source
+        "husbandry_gate ok market=%s flex_source=%s flex_ingest=%s (%s)",
+        market_verdict,
+        flex_source,
+        flex_verdict,
+        flex_reason,
     )
     return MaterializeResult(
         metadata=meta(
             {
                 "market_verdict": market_verdict,
                 "flex_source": flex_source,
+                "flex_ingest": flex_verdict,
+                "flex_ingest_reason": flex_reason,
                 "gate": "pass",
             }
         )
