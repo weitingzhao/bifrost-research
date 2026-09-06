@@ -30,6 +30,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Query
 
 from bifrost_research.db.conn import connect
+from bifrost_research.lenses.similar import summarize_forward_returns
 from bifrost_research.schema.schemas import (
     TABLE_OPTION_METRIC_GEX_LEVELS_DAILY,
     TABLE_OPTION_METRIC_IV_PERCENTILE_DAILY,
@@ -443,6 +444,59 @@ def _similar_regime_categorical(
     return out, source
 
 
+# Hygiene (research-loop-automation A3): a neighbour is evidence only once its
+# forward return exists, and two neighbours a few sessions apart are one episode,
+# not two. The k-NN over-fetches, drops the unresolved, keeps the nearest of any
+# cluster, and only then cuts to k.
+OVERFETCH = 4
+MIN_GAP_DAYS = 7  # five sessions, in calendar days
+
+
+def _as_date(raw: Any) -> date | None:
+    if isinstance(raw, date):
+        return raw
+    try:
+        return date.fromisoformat(str(raw)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def neighbour_hygiene(
+    rows: list[dict[str, Any]],
+    *,
+    k: int,
+    min_gap_days: int = MIN_GAP_DAYS,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Resolved neighbours, de-clustered by ``min_gap_days``, nearest first, at most ``k``."""
+    resolved = [r for r in rows if r.get("fwd_return") is not None]
+    ordered = sorted(
+        resolved,
+        key=lambda r: (
+            float(r["distance"]) if r.get("distance") is not None else float("inf"),
+            str(r.get("trade_date") or ""),
+        ),
+    )
+    kept: list[dict[str, Any]] = []
+    kept_dates: list[date] = []
+    dropped_clustered = 0
+    for row in ordered:
+        d = _as_date(row.get("trade_date"))
+        if d is not None and any(abs((d - kd).days) < min_gap_days for kd in kept_dates):
+            dropped_clustered += 1
+            continue
+        kept.append(row)
+        if d is not None:
+            kept_dates.append(d)
+        if len(kept) >= k:
+            break
+    return kept, {
+        "fetched": len(rows),
+        "dropped_unresolved": len(rows) - len(resolved),
+        "dropped_clustered": dropped_clustered,
+        "min_gap_days": min_gap_days,
+    }
+
+
 def similar_rows(
     conn: Any,
     *,
@@ -455,32 +509,55 @@ def similar_rows(
     """Neighbours for a lens reading: ``(rows, source, value_as_used)``.
 
     The HTTP endpoint and the exhibit share this so "similar regimes" means the
-    same thing on the page and in Copilot's answer.
+    same thing on the page and in Copilot's answer. Rows are resolved-only and
+    de-clustered (``neighbour_hygiene``); ``similar_report`` adds the accounting.
     """
+    rows, source, used, _ = similar_report(
+        conn, lens=lens, symbol=symbol, value=value, k=k, horizon=horizon
+    )
+    return rows, source, used
+
+
+def similar_report(
+    conn: Any,
+    *,
+    lens: str,
+    symbol: str,
+    value: str | float,
+    k: int,
+    horizon: int,
+) -> tuple[list[dict[str, Any]], str, str | float, dict[str, Any]]:
+    """``similar_rows`` plus ``{summary, hygiene}`` for the response."""
     sym = symbol.strip().upper()
+    fetch_k = max(k * OVERFETCH, k)
+    source: str = TABLE_STOCK_SIGNAL_VRP_DAILY
+    used: str | float
     if lens == "regime":
         regime_value = str(value).strip()
         if not regime_value:
             raise HTTPException(status_code=400, detail="regime value required")
-        rows, source = _similar_regime_categorical(
-            conn, symbol=sym, regime=regime_value, k=k, horizon=horizon
+        raw, source = _similar_regime_categorical(
+            conn, symbol=sym, regime=regime_value, k=fetch_k, horizon=horizon
         )
-        return rows, source, regime_value
-    numeric_value = parse_numeric_lens_value(str(value))
-    source: str = TABLE_STOCK_SIGNAL_VRP_DAILY
-    if lens == "vrp":
-        rows = _similar_vrp(conn, symbol=sym, value=numeric_value, k=k, horizon=horizon)
-    elif lens == "iv_rank":
-        rows, source = _similar_iv_rank(conn, symbol=sym, value=numeric_value, k=k, horizon=horizon)
-    elif lens == "term_slope":
-        rows, source = _similar_term_slope(conn, symbol=sym, value=numeric_value, k=k, horizon=horizon)
-    elif lens == "gex_notional":
-        rows, source = _similar_gex_notional(conn, symbol=sym, value=numeric_value, k=k, horizon=horizon)
-    elif lens == "pin_distance":
-        rows, source = _similar_pin_distance(conn, symbol=sym, value=numeric_value, k=k, horizon=horizon)
+        used = regime_value
     else:
-        raise HTTPException(status_code=400, detail=f"unsupported lens: {lens}")
-    return rows, source, numeric_value
+        numeric_value = parse_numeric_lens_value(str(value))
+        used = numeric_value
+        if lens == "vrp":
+            raw = _similar_vrp(conn, symbol=sym, value=numeric_value, k=fetch_k, horizon=horizon)
+        elif lens == "iv_rank":
+            raw, source = _similar_iv_rank(conn, symbol=sym, value=numeric_value, k=fetch_k, horizon=horizon)
+        elif lens == "term_slope":
+            raw, source = _similar_term_slope(conn, symbol=sym, value=numeric_value, k=fetch_k, horizon=horizon)
+        elif lens == "gex_notional":
+            raw, source = _similar_gex_notional(conn, symbol=sym, value=numeric_value, k=fetch_k, horizon=horizon)
+        elif lens == "pin_distance":
+            raw, source = _similar_pin_distance(conn, symbol=sym, value=numeric_value, k=fetch_k, horizon=horizon)
+        else:
+            raise HTTPException(status_code=400, detail=f"unsupported lens: {lens}")
+    rows, hygiene = neighbour_hygiene(raw, k=k)
+    extra = {"summary": summarize_forward_returns(rows, horizon=horizon), "hygiene": hygiene}
+    return rows, source, used, extra
 
 
 @router.get("")
@@ -497,7 +574,7 @@ def similar_regime(
     sym = symbol.strip().upper()
     conn = _connect_or_503()
     try:
-        rows, source, response_value = similar_rows(
+        rows, source, response_value, extra = similar_report(
             conn, lens=lens, symbol=sym, value=value, k=k, horizon=horizon
         )
         return _ok(
@@ -510,6 +587,8 @@ def similar_regime(
                 "source": source,
                 "rows": rows,
                 "count": len(rows),
+                "summary": extra["summary"],
+                "hygiene": extra["hygiene"],
             }
         )
     except HTTPException:
@@ -524,4 +603,4 @@ def similar_regime(
             pass
 
 
-__all__ = ["router", "Lens", "parse_numeric_lens_value", "similar_rows", "_fwd_return"]
+__all__ = ["router", "Lens", "parse_numeric_lens_value", "similar_rows", "similar_report", "neighbour_hygiene", "_fwd_return"]

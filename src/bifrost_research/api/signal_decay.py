@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
 from bifrost_research.db.conn import connect
+from bifrost_research.lenses.registry import decay_lens_ids
 from bifrost_research.schema.schemas import (
     TABLE_STOCK_FORECAST_TERRAIN_DAILY,
     TABLE_STOCK_SIGNAL_LENS_HIT_DAILY,
@@ -22,8 +23,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/research/signal-decay", tags=["research-signal-decay"])
 
-Lens = Literal["iv_rank", "vrp", "opex_pin"]
-VALID_LENSES = frozenset({"iv_rank", "vrp", "opex_pin"})
+# Every registry lens with a settled record (A3 added skew, gex_regime, terrain_regime,
+# order_sentiment to the Wave I three).
+VALID_LENSES = frozenset(decay_lens_ids())
+Lens = str
 VALID_SIDES = frozenset({"hot", "cold"})
 VALID_WINDOWS = frozenset({30, 90, 252})
 VALID_REGIMES = frozenset({"any", "bull", "rangy", "bear"})

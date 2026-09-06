@@ -1,11 +1,16 @@
-"""Cron entrypoint — lens trigger hit table builder (Analyze Wave I).
+"""Cron entrypoint — lens trigger hit table builder (Analyze Wave I, A3 lens expansion).
 
-Sources:
+Sources (the lens list is the registry's decay lenses):
 - IV Rank: features.option_metric_iv_percentile_daily.iv_rank_1y (0-100)
 - VRP: features.stock_signal_vrp_daily.vrp_pct_252d (0-100)
 - OpEx Pin: max_pain vs stock_daily close → pin_pct_distance
+- Skew: features.option_surface_fit_daily.atm_slope at the ~30 DTE expiry
+- GEX regime: features.option_metric_gex_levels_daily.total_net_gex at the ~30 DTE expiry
+- Terrain regime: features.stock_forecast_terrain_daily.regime (crash-risk only)
+- Order sentiment: features.option_flow_sentiment_daily, tape-sourced rows only
 
-Forward returns from raw_market.stock_daily (T+5 / T+20 sessions).
+Forward returns from raw_market.stock_daily (T+5 / T+20 sessions); the hit rule
+per lens (mean-revert / follow / magnitude) comes from the registry.
 """
 
 from __future__ import annotations
@@ -20,11 +25,16 @@ from zoneinfo import ZoneInfo
 from bifrost_research.db.conn import connect
 from bifrost_research.db.upsert import batch_upsert
 from bifrost_research.engines.signal_hit.build import (
+    classify_gex_regime,
     classify_iv_rank,
     classify_opex_pin,
+    classify_order_sentiment,
+    classify_skew,
+    classify_terrain_regime,
     classify_vrp,
-    side_aware_hit,
+    hit_for,
 )
+from bifrost_research.lenses.registry import decay_lens_ids
 from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_LENS_HIT_DAILY
 
 logger = logging.getLogger(__name__)
@@ -33,7 +43,11 @@ _NY = ZoneInfo("America/New_York")
 LENS_IV = "iv_rank"
 LENS_VRP = "vrp"
 LENS_OPEX = "opex_pin"
-ALL_LENSES = (LENS_IV, LENS_VRP, LENS_OPEX)
+LENS_SKEW = "skew"
+LENS_GEX = "gex_regime"
+LENS_TERRAIN = "terrain_regime"
+LENS_SENTIMENT = "order_sentiment"
+ALL_LENSES = decay_lens_ids()
 
 UPSERT_COLS = (
     "trade_date",
@@ -186,6 +200,88 @@ def _load_opex_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, flo
     return out
 
 
+def _load_skew_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, float]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (symbol) symbol, atm_slope::float
+            FROM features.option_surface_fit_daily
+            WHERE trade_date = %s AND atm_slope IS NOT NULL
+            ORDER BY symbol, ABS(dte - 30) ASC, expiry ASC
+            """,
+            (trade_date,),
+        )
+        rows = cur.fetchall() or []
+    out: list[tuple[str, str, float]] = []
+    for row in rows:
+        sym, slope = row[0], float(row[1])
+        side = classify_skew(slope)
+        if side:
+            out.append((str(sym).upper(), side, slope))
+    return out
+
+
+def _load_gex_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, float]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (symbol) symbol, total_net_gex::float
+            FROM features.option_metric_gex_levels_daily
+            WHERE trade_date = %s AND total_net_gex IS NOT NULL
+            ORDER BY symbol, ABS((expiry - trade_date) - 30) ASC, expiry ASC
+            """,
+            (trade_date,),
+        )
+        rows = cur.fetchall() or []
+    out: list[tuple[str, str, float]] = []
+    for row in rows:
+        sym, net = row[0], float(row[1])
+        side = classify_gex_regime(net)
+        if side:
+            out.append((str(sym).upper(), side, net))
+    return out
+
+
+def _load_terrain_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, float]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT symbol, regime, tail_risk::float
+            FROM features.stock_forecast_terrain_daily
+            WHERE trade_date = %s AND regime IS NOT NULL
+            """,
+            (trade_date,),
+        )
+        rows = cur.fetchall() or []
+    out: list[tuple[str, str, float]] = []
+    for row in rows:
+        sym, regime, tail = row[0], row[1], row[2]
+        side = classify_terrain_regime(regime)
+        if side:
+            out.append((str(sym).upper(), side, float(tail) if tail is not None else 0.0))
+    return out
+
+
+def _load_sentiment_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, float]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT symbol, sentiment_score::float, data_source
+            FROM features.option_flow_sentiment_daily
+            WHERE trade_date = %s AND sentiment_score IS NOT NULL
+            """,
+            (trade_date,),
+        )
+        rows = cur.fetchall() or []
+    out: list[tuple[str, str, float]] = []
+    for row in rows:
+        sym, score, source = row[0], float(row[1]), row[2]
+        side = classify_order_sentiment(score, source)
+        if side:
+            out.append((str(sym).upper(), side, score))
+    return out
+
+
 def _watchlist() -> list[str]:
     raw = os.environ.get("RESEARCH_WATCHLIST", "")
     return [s.strip().upper() for s in raw.split(",") if s.strip()]
@@ -213,6 +309,10 @@ def build_rows_for_day(
         LENS_IV: _load_iv_triggers,
         LENS_VRP: _load_vrp_triggers,
         LENS_OPEX: _load_opex_triggers,
+        LENS_SKEW: _load_skew_triggers,
+        LENS_GEX: _load_gex_triggers,
+        LENS_TERRAIN: _load_terrain_triggers,
+        LENS_SENTIMENT: _load_sentiment_triggers,
     }
     rows: list[tuple[Any, ...]] = []
     for lens in lenses:
@@ -220,8 +320,8 @@ def build_rows_for_day(
         for symbol, side, value in triggers:
             fwd5 = _fwd_return(conn, symbol, trade_date, 5)
             fwd20 = _fwd_return(conn, symbol, trade_date, 20)
-            hit5 = side_aware_hit(side=side, fwd_return=fwd5)
-            hit20 = side_aware_hit(side=side, fwd_return=fwd20)
+            hit5 = hit_for(lens, side=side, fwd_return=fwd5, horizon=5)
+            hit20 = hit_for(lens, side=side, fwd_return=fwd20, horizon=20)
             rows.append(
                 (
                     trade_date,

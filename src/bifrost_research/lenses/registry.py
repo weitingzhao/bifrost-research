@@ -34,6 +34,12 @@ REGISTRY_VERSION = 1
 
 Band = Literal["hot", "lean_hot", "neutral", "lean_cold", "cold"]
 Kind = Literal["score", "signed", "severity", "distance", "categorical"]
+# How Signal Decay scores a trigger of this lens against the forward return:
+#   mean_revert  hot expects the price down, cold expects it up (the Wave I rule)
+#   follow       hot expects up, cold expects down (flow that leans long is followed)
+#   magnitude    hot expects a large absolute move, cold a small one (gamma regimes)
+#   none         the lens is not a decay lens
+HitRule = Literal["mean_revert", "follow", "magnitude", "none"]
 
 # The 0–100 score bands every score-kind lens shares.
 SCORE_HOT = 80.0
@@ -80,6 +86,9 @@ class LensSpec:
     notes: str = ""
     # Categorical lenses: (category value, band) pairs; empty for numeric lenses.
     categories: tuple[tuple[str, str], ...] = ()
+    hit_rule: HitRule = "none"
+    # For magnitude lenses: the absolute 5d / 20d move that counts as "large".
+    move_threshold: tuple[float, float] | None = None
 
 
 _SPECS: tuple[LensSpec, ...] = (
@@ -98,6 +107,7 @@ _SPECS: tuple[LensSpec, ...] = (
         scan_flag="iv_rank",
         decay_lens="iv_rank",
         similar_lens="iv_rank",
+        hit_rule="mean_revert",
     ),
     LensSpec(
         id="iv_percentile",
@@ -128,6 +138,7 @@ _SPECS: tuple[LensSpec, ...] = (
         scan_flag="vrp",
         decay_lens="vrp",
         similar_lens="vrp",
+        hit_rule="mean_revert",
     ),
     LensSpec(
         id="skew",
@@ -142,10 +153,15 @@ _SPECS: tuple[LensSpec, ...] = (
         horizons=(5, 20),
         page_route="/research/vol-surface-lab",
         scan_flag="atm_slope",
+        decay_lens="skew",
         similar_lens="term_slope",
+        hit_rule="mean_revert",
         notes=(
             "Scan flags the signed slope on a normalised 0-100 score; the page verdict "
-            "reads the absolute slope as severity. similar-regime calls this lens term_slope."
+            "reads the absolute slope as severity. similar-regime calls this lens term_slope. "
+            "Decay trigger is contrarian on the sign: call-skew extreme (slope <= -0.25) is the "
+            "hot side and expects the price down, put-skew extreme (slope >= +0.25) is the cold "
+            "side and expects it up."
         ),
     ),
     LensSpec(
@@ -177,6 +193,7 @@ _SPECS: tuple[LensSpec, ...] = (
         scan_flag="pin",
         decay_lens="opex_pin",
         similar_lens="pin_distance",
+        hit_rule="mean_revert",
         notes="Wave J widened the hot band from 0.5% to 1% (21 rows / 179d was too sparse).",
     ),
     LensSpec(
@@ -191,8 +208,15 @@ _SPECS: tuple[LensSpec, ...] = (
         cold_means="Positive net gamma — dealers damp moves; realised vol compresses.",
         horizons=(5, 20),
         page_route="/research/gex-intraday",
+        decay_lens="gex_regime",
         similar_lens="gex_notional",
-        notes="Sign of total_net_gex plus spot vs zero-gamma; decay lens lands in Phase A3.",
+        hit_rule="magnitude",
+        move_threshold=(0.02, 0.04),
+        notes=(
+            "Sign of total_net_gex at the ~30 DTE expiry plus spot vs zero-gamma. Decay hit is "
+            "a magnitude: negative gamma (hot) expects a 5d move of at least 2% (20d: 4%), "
+            "positive gamma (cold) expects a smaller one."
+        ),
         categories=(("negative", "hot"), ("positive", "cold")),
     ),
     LensSpec(
@@ -208,8 +232,13 @@ _SPECS: tuple[LensSpec, ...] = (
         horizons=(5, 20),
         page_route="/research/analysis-model",
         scan_flag="terrain",
+        decay_lens="terrain_regime",
         similar_lens="regime",
-        notes="Scan's terrain flag is the pin_score band, not the regime label.",
+        hit_rule="mean_revert",
+        notes=(
+            "Scan's terrain flag is the pin_score band, not the regime label. Decay trigger: "
+            "only crash-risk fires (hot, expects the price down); trigger_value carries tail_risk."
+        ),
         categories=(("crash-risk", "hot"), ("trending", "lean_hot"), ("range", "neutral")),
     ),
     LensSpec(
@@ -251,8 +280,14 @@ _SPECS: tuple[LensSpec, ...] = (
         cold_means="Tape leans short — confirm with the put wall / zero gamma.",
         horizons=(1, 5),
         page_route="/research/order-sentiment",
+        decay_lens="order_sentiment",
         data_dependency="option_trades_tape",
-        notes="Without the trades tape the score is an OI proxy and carries no verdict.",
+        hit_rule="follow",
+        notes=(
+            "Without the trades tape the score is an OI proxy and carries no verdict; the decay "
+            "builder only writes triggers from tape-sourced rows, so the record stays empty until "
+            "the tape exists."
+        ),
     ),
     LensSpec(
         id="forecast_path",

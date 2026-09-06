@@ -92,7 +92,9 @@ def test_scan_flags_are_the_registry_and_keep_their_sparse_shape() -> None:
 
 def test_alert_and_similar_regime_read_the_registry() -> None:
     assert alert_entry.LENSES == decay_lens_ids()
-    assert set(decay_lens_ids()) == {"iv_rank", "vrp", "opex_pin"}
+    assert {"iv_rank", "vrp", "opex_pin"} <= set(decay_lens_ids())
+    for lens in decay_lens_ids():
+        assert LENSES[lens].hit_rule != "none"
     assert set(get_args(SimilarLens)) == set(similar_lens_ids())
 
 
