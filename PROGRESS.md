@@ -1,6 +1,10 @@
 ## Research Loop Automation — Waves A–D — planned 2026-09-06
 
-**Status:** 🟡 Planned (program `research-loop-automation`, 16 phases). Plan: `docs/plans/RESEARCH_LOOP_AUTOMATION_PLAN.md`. D10 BLOCKED.
+**Status:** 🟢 Wave A backend on DEV — package **0.68.0** (api · mcp · dagster `0.68.0-dagster`, 2026-09-06). Plan: `docs/plans/RESEARCH_LOOP_AUTOMATION_PLAN.md`. D10 BLOCKED.
+
+DEV acceptance 2026-09-06: every registry lens exhibits 200 with `verdict` / `track_record` / `similar` for NVDA and SPY; Brief NVDA narrative sign correct, Opportunity is NVDA's own PIVOT, sentiment card says no tape; NVDA VRP `atm_iv_30d` populated after the recompute Job; terrain gamma zone 228.85–231.15 (`walls_widened`) after the terrain recompute Job; similar-regime returns resolved-only, de-clustered neighbours with `summary`; `scripts/backfill_signal_hit.py` walked 252 sessions (706 rows: gex_regime 704 · skew 1 · terrain_regime 1 — skew / crash-risk thresholds are too strict for this universe; calibration lands in C2).
+
+Release facts learned: `k8s/orchestration/**` is excluded from the Argo app, so `dagster.yaml` is applied by hand after the `bifrost-build-research-dagster` PipelineRun; one-off Job manifests now carry `argocd.argoproj.io/hook: Skip` (a Job's pod template is immutable, so pin bumps failed the sync).
 
 | Wave | Deliverable | Status |
 |------|-------------|--------|
