@@ -66,8 +66,8 @@ spec:
                   value: "bifrost_golden_source"
                 - name: ANALYTICS_PG_USER
                   value: "analytics_writer"
-                - name: BIFROST_LOOP_OBJECTIVE_ID
-                  value: "obj-daily-loop-stock"
+                # B4: no BIFROST_LOOP_OBJECTIVE_ID — every active objective on
+                # --schedule=daily_open runs, each isolated from the others' failures.
                 - name: BIFROST_HARNESS_LLM_PLAN
                   value: "1"
                 - name: BIFROST_LOOP_BATCH_MODE

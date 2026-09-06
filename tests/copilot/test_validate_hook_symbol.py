@@ -81,3 +81,50 @@ def test_it_still_refuses_a_hypothesis_with_no_symbol(
     out = vh.validate_hypothesis_stock_leg(object(), hypothesis_id="hyp-none")
     assert out["ok"] is False
     assert "no symbol" in out["error"]
+
+
+# --------------------------------------------------------------------------- #
+# B4 — the template follows the instrument
+# --------------------------------------------------------------------------- #
+
+
+def test_instrument_is_read_off_tags_then_the_objective() -> None:
+    assert vh.instrument_for({"tags": ["harness", "candidate_batch"]}) == "stock"
+    assert vh.instrument_for({"tags": ["harness", "iv_hot"]}) == "option"
+    assert vh.instrument_for({"tags": []}, objective_policy={"universe_mode": "scan_legacy"}) == "option"
+    assert vh.instrument_for({"tags": []}, objective_policy={"universe_mode": "stock_composite"}) == "stock"
+    assert vh.instrument_for({}, objective_policy=None) == "stock"
+
+
+def test_template_needs_option_history_to_leave_the_stock_leg() -> None:
+    assert vh.template_for("stock", option_coverage=True) == vh.STOCK_TEMPLATE
+    assert vh.template_for("option", option_coverage=False) == vh.STOCK_TEMPLATE
+    assert vh.template_for("option", option_coverage=True) == vh.OPTION_TEMPLATE
+
+
+def test_an_option_thesis_runs_the_option_leg_when_history_allows(captured: dict[str, Any]) -> None:
+    out = vh.validate_hypothesis_stock_leg(
+        conn=object(),
+        hypothesis_id="h-iv",
+        objective_policy={"universe_mode": "scan_legacy"},
+        option_coverage=True,
+    )
+    assert out["ok"] is True
+    assert (out["instrument"], out["template"]) == ("option", vh.OPTION_TEMPLATE)
+    assert captured["stored"]["strategy_template"] == vh.OPTION_TEMPLATE
+
+
+def test_an_option_thesis_without_history_says_the_stock_leg_stands_in(
+    captured: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    drafts: list[dict[str, Any]] = []
+    monkeypatch.setattr(vh.draft_repo, "insert_draft", lambda conn, **kw: (drafts.append(kw) or {"id": "drf-test"}))
+    out = vh.validate_hypothesis_stock_leg(
+        conn=object(),
+        hypothesis_id="h-iv",
+        objective_policy={"universe_mode": "scan_legacy"},
+        option_coverage=False,
+    )
+    assert (out["instrument"], out["template"]) == ("option", vh.STOCK_TEMPLATE)
+    assert "stock leg stands in" in drafts[-1]["payload"]["rationale"]
+    assert drafts[-1]["payload"]["instrument"] == "option"

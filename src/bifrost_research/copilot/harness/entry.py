@@ -18,7 +18,7 @@ from bifrost_research.copilot.harness import data_sources as ds
 from bifrost_research.copilot.harness import readiness as readiness_mod
 from bifrost_research.copilot.harness.batch_orchestrate import process_objective
 from bifrost_research.copilot.harness.trust_report import report_batch_outcome
-from bifrost_research.db.conn import connect
+from bifrost_research.db.conn import connect, rollback_quietly
 from bifrost_research.repositories import objective as obj_repo
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -63,6 +63,57 @@ def _process_objective(
         curate_after=curate_after,
         batch_mode=batch_mode,
     )
+
+
+# B4 (research-loop-automation): every objective runs, and one objective's
+# failure is that objective's, not the batch's. Before this the loop raised on
+# the first exception, so a second objective never ran while the first was
+# broken — and the Cron only ever ran one objective anyway.
+
+
+def objective_outcome(
+    obj: dict,
+    *,
+    result: dict | None = None,
+    error: BaseException | None = None,
+) -> dict:
+    """One line's worth of facts about one objective's run."""
+    out: dict = {
+        "id": str(obj.get("id") or ""),
+        "title": str(obj.get("title") or ""),
+        "ok": error is None,
+    }
+    if error is not None:
+        out["error"] = f"{type(error).__name__}: {str(error)[:200]}"
+        return out
+    result = result or {}
+    run = result.get("run") if isinstance(result.get("run"), dict) else {}
+    outputs = result.get("outputs") if isinstance(result.get("outputs"), dict) else {}
+    out["run_id"] = run.get("id")
+    out["status"] = run.get("status")
+    out["candidates"] = len(outputs.get("candidate_ids") or [])
+    out["approved"] = bool(result.get("approve_result")) and not result.get("approve_skipped")
+    return out
+
+
+def summary_line(outcome: dict) -> str:
+    head = f"objective {outcome.get('id')} ({outcome.get('title')})"
+    if not outcome.get("ok"):
+        return f"{head}: FAILED {outcome.get('error')}"
+    return (
+        f"{head}: ok run={outcome.get('run_id')} status={outcome.get('status')} "
+        f"candidates={outcome.get('candidates')}"
+        + (" auto-approved" if outcome.get("approved") else "")
+    )
+
+
+def batch_summary(outcomes: list[dict]) -> str:
+    ok = [o for o in outcomes if o.get("ok")]
+    failed = [o for o in outcomes if not o.get("ok")]
+    text = f"{len(ok)}/{len(outcomes)} objectives ok"
+    if failed:
+        text += "; failed: " + ", ".join(f"{o.get('id')} ({o.get('error')})" for o in failed)
+    return text
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -142,31 +193,38 @@ def main(argv: list[str] | None = None) -> int:
             logger.info("no objectives to run")
             return 0
 
-        ran = 0
-        try:
-            for obj in objectives:
-                logger.info("running objective %s (%s)", obj["id"], obj.get("title"))
+        outcomes: list[dict] = []
+        for obj in objectives:
+            logger.info("running objective %s (%s)", obj["id"], obj.get("title"))
+            try:
                 result = _process_objective(
                     conn,
                     obj,
                     curate_after=args.curate_after or args.batch_mode,
                     batch_mode=args.batch_mode,
                 )
-                ran += 1
-                print(json.dumps(result, indent=2, default=str))
-        except Exception as exc:
-            # One report per invocation of the skill, whichever way it ended —
-            # a matrix that only ever hears about successes cannot demote.
-            if args.batch_mode:
-                report_batch_outcome(
-                    ok=False,
-                    summary=f"{ran}/{len(objectives)} objectives ran before {type(exc).__name__}: {exc}",
-                )
-            raise
+            except Exception as exc:  # noqa: BLE001
+                # This objective's failure, logged with its traceback; the
+                # transaction is rolled back so the next objective starts clean.
+                logger.exception("objective %s failed", obj.get("id"))
+                rollback_quietly(conn)
+                outcomes.append(objective_outcome(obj, error=exc))
+                continue
+            outcomes.append(objective_outcome(obj, result=result))
+            print(json.dumps(result, indent=2, default=str))
+
+        for outcome in outcomes:
+            logger.info(summary_line(outcome))
+        # One report per invocation of the skill, whichever way it ended — a
+        # matrix that only ever hears about successes cannot demote.
         if args.batch_mode:
             report_batch_outcome(
-                ok=True, summary=f"{ran} objective(s) completed"
+                ok=all(o["ok"] for o in outcomes), summary=batch_summary(outcomes)
             )
+        # Non-zero only when nothing ran: a retry would re-run the objectives
+        # that did succeed and propose their batches twice.
+        if outcomes and not any(o["ok"] for o in outcomes):
+            exit_code = 1
     finally:
         conn.close()
     return exit_code

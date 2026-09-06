@@ -191,6 +191,7 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
+- 版本：`0.70.1`（research-loop-automation **B4** —— harness CronJob 去掉 `BIFROST_LOOP_OBJECTIVE_ID`，`--schedule=daily_open` 下所有 active objective 都跑；一个 objective 失败只记它自己（回滚事务、逐 objective 一行摘要、有一个成功就退出 0，避免 backoff 重跑把成功的批次提两次）；validate_hook 按 hypothesis 的 instrument 选模板（option-lens objective / option tag → `short_strangle_30d`，期权历史不足时回落 stock leg 并在 rationale 里说明）；证据按标的已由 0.65.8 修复并在 0.69.2 的真实 run 上核实（HALO 0.8 / NVDA 0.2 / EE 0.4 …）；D10 仍 BLOCKED）
 - 版本：`0.70.0`（research-loop-automation **B3** —— hypothesis 按 outcome 规则自动 resolve（D-RLA-2）：`policy_json.resolution {enabled, horizon_days=20, validate_excess=+3%, reject_excess=−3%, benchmark=SPY}`，有 candidate 血统的 hypothesis 在窗口结清后 excess ≥ +3% → validated、≤ −3% → rejected，证据写入新列 `hypothesis.resolution_json` 并记 `ai_action_log`（`hypothesis_auto_resolve`）+ 一条 `eod_verdict` 简报；死区内仍走草稿并附 excess；`resolution` 进 policy_suggestion 白名单；Dagster eod_review 依赖 `engines.candidate_outcome` 先结算；`origin_ref` 新增 `objective_id`；D10 仍 BLOCKED）
 - 版本：`0.69.3`（Owner 决定：judge 上短绳 —— `BIFROST_PERSONA_EVAL_MAX_TURNS`（CronJob 设 4，默认 8）限制每次 verdict 的回合数，DeepSeek 日上限降到 $0.50；trace 记 `judge_max_turns`；D10 仍 BLOCKED）
 - 版本：`0.69.2`（judge 超时有名字：asyncio 的 TimeoutError 没有 message，trace 里只剩 "judge failed"；`estimate_cost` 按名字给 gpt-4o-mini / 4.1-mini / nano 定价 —— 家族表把所有 gpt* 按 GPT-4o 计价，首次双 judge 跑 8 个标的记了 $0.67，实际不到 5 美分，再跑几次就会用幻影花费把日上限打满；CronJob：单标的 120s、judge 阶段 900s；D10 仍 BLOCKED）
