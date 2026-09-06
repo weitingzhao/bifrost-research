@@ -1,3 +1,18 @@
+## Research Loop Automation — Waves A–D — planned 2026-09-06
+
+**Status:** 🟡 Planned (program `research-loop-automation`, 16 phases). Plan: `docs/plans/RESEARCH_LOOP_AUTOMATION_PLAN.md`. D10 BLOCKED.
+
+| Wave | Deliverable | Status |
+|------|-------------|--------|
+| A | Lens registry · Exhibit for every lens · Signal Decay lens expansion · analysis defects · pages read the registry | A1 pending |
+| B | LLM plan repair · two-model Persona judgement + caps · hypothesis auto-resolution · every objective runs | pending |
+| C | Analyze 12 → 5 hubs · per-lens depth · Daily Brief on exhibits | pending |
+| D | Copilot reads runs · daily digest · unattended on a leash · verdicts back on pages | pending |
+
+Owner decisions D-RLA-1…4 recorded in the plan. Out of scope: P0 hygiene (DDL apply / image alignment).
+
+---
+
 ## Loop Stock-first + Whitebox Pipeline — LS-1…LS-4 — 0.56.2
 
 **Status:** ✅ Package **0.56.2** (2026-08-31). Stock-first harness + pipeline UI; D10 BLOCKED.
