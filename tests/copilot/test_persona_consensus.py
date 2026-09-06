@@ -425,3 +425,51 @@ def test_estimate_cost_prices_the_small_openai_models_by_name() -> None:
     assert full == pytest.approx(12.5)
     # 231k in / 9k out — the first DEV run — is cents, not two thirds of a dollar.
     assert estimate_cost("gpt-4o-mini", 231_056, 8_924) < 0.05
+
+
+def test_a_partial_json_reply_is_a_failed_judgement(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gpt-4o-mini's first DEV reply was {"analyze": …} alone — not a verdict."""
+
+    async def fake_run(*, prompt: str, model_id: str, owner_id: str, mcp_url: str):
+        if model_id.startswith("gpt"):
+            return (
+                '```json\n{"analyze": {"stance": "caution", "summary": "only the analyst"}}\n```',
+                {"input_tokens": 500, "output_tokens": 50},
+            )
+        full = {
+            a: {"stance": "support", "summary": f"{a} ok"} for a in ("analyze", "portfolio", "validate", "verdict")
+        }
+        import json as _json
+
+        return _json.dumps(full), {"input_tokens": 500, "output_tokens": 50}
+
+    monkeypatch.setattr(persona_judge, "_run_verdict_agent_async", fake_run)
+    items = [_item("NVDA")]
+
+    summary = persona_eval.evaluate_candidates(items, policy={"require_validate_pass": True})
+
+    per = summary["per_symbol"][0]
+    gpt = next(m for m in per["models"] if m["model"] == "gpt-4o-mini")
+    assert gpt["ok"] is False and gpt["fallback"] is True
+    assert gpt["error"] == "incomplete JSON (missing: portfolio, validate, verdict)"
+    # Tokens were still spent and are still counted.
+    assert gpt["cost_usd"] > 0
+    ds = next(m for m in per["models"] if m["model"] == "deepseek-chat")
+    assert ds["ok"] is True and ds["net"] == "support"
+    assert items[0]["net_stance"] == DISSENT
+
+
+def test_a_judge_timeout_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_run(*, prompt: str, model_id: str, owner_id: str, mcp_url: str):
+        if model_id.startswith("gpt"):
+            raise TimeoutError()
+        raise RuntimeError("")
+
+    monkeypatch.setattr(persona_judge, "_run_verdict_agent_async", fake_run)
+    items = [_item("NVDA")]
+
+    summary = persona_eval.evaluate_candidates(items, policy={"require_validate_pass": True})
+
+    errors = {m["model"]: m["error"] for m in summary["per_symbol"][0]["models"]}
+    assert errors["gpt-4o-mini"] == f"timeout after {persona_judge.PER_SYMBOL_TIMEOUT_S:.0f}s"
+    assert errors["deepseek-chat"] == "RuntimeError"

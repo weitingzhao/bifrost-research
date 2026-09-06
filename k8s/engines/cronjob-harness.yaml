@@ -90,6 +90,20 @@ spec:
                   value: "120"
                 - name: BIFROST_PERSONA_EVAL_TIMEOUT_S
                   value: "900"
+                # The judges run their MCP tools in-process, so this pod needs the
+                # same Trade read-only backends research-mcp has; without them the
+                # portfolio specialist reported "tool configuration issue" and the
+                # holdings overlay stayed unavailable (0.69.1 acceptance run).
+                - name: TRADE_API_MONITOR_URL
+                  value: "http://api-monitor.bifrost-prod.svc.cluster.local:8765"
+                - name: TRADE_API_TRADING_URL
+                  value: "http://api-trading.bifrost-prod.svc.cluster.local:8769"
+                - name: TRADE_API_STRATEGY_URL
+                  value: "http://api-strategy.bifrost-prod.svc.cluster.local:8769"
+                - name: TRADE_API_MARKET_URL
+                  value: "http://api-market.bifrost-prod.svc.cluster.local:8772"
+                - name: TRADE_API_TIMEOUT
+                  value: "8.0"
                 # No RESEARCH_MCP_SSE_URL on purpose: the judges and the curator use the
                 # in-process MCP server (ensure_local_mcp_url). The curator's batch-pass
                 # guard reads BIFROST_CURATOR_RUN_ID from the MCP tools' own process env,

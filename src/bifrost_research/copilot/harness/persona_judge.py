@@ -112,9 +112,14 @@ def _eval_prompt(item: dict[str, Any]) -> str:
     return (
         "You are evaluating one research candidate for an Owner (D10: advisory only).\n"
         "Call analyze_specialist, portfolio_specialist, and validate_specialist as tools "
-        "if helpful, then reply with ONLY JSON:\n"
+        "if helpful, then reply with ONLY one JSON object:\n"
         '{"analyze":{"stance":"support|caution|oppose|abstain","summary":"..."},'
         '"portfolio":{...},"validate":{...},"verdict":{...}}\n'
+        "All four keys are required in your final message — analyze, portfolio, validate "
+        "and verdict — each with a stance and a one-sentence summary. Do not return a "
+        "specialist's output as your own answer; a reply missing any key is discarded as a "
+        "failed judgement. If a specialist tool errors, say so in that block's summary and "
+        "give the stance you can defend from the evidence (abstain is acceptable).\n"
         f"Symbol: {sym}\nScore: {item.get('score')}\n"
         f"Evidence JSON: {json.dumps(evidence)[:4000]}\n"
     )
@@ -194,6 +199,13 @@ async def _agent_verdicts_for_model_async(
         parsed = _parse_json_blob(text)
         if not parsed:
             raise ValueError("no JSON stance payload")
+        # A judge that hands back only its analyst's block is not a verdict.
+        # On the first DEV run gpt-4o-mini returned {"analyze": …} alone and
+        # the missing blocks read as three abstains — a non-answer dressed as
+        # an opinion. Missing blocks are a failed judgement, which is dissent.
+        missing = [agent for agent in EVAL_AGENTS if not isinstance(parsed.get(agent), dict)]
+        if missing:
+            raise ValueError(f"incomplete JSON (missing: {', '.join(missing)})")
         rows: list[dict[str, Any]] = []
         for agent in EVAL_AGENTS:
             block = parsed.get(agent) if isinstance(parsed.get(agent), dict) else {}
