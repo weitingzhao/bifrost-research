@@ -27,10 +27,14 @@ def test_decay_lenses_are_the_registry_and_the_builder_knows_each() -> None:
 
 
 def test_skew_is_contrarian_on_the_sign_of_an_extreme() -> None:
-    assert classify_skew(-0.30) == "hot"  # call-skew extreme expects the price down
-    assert classify_skew(0.30) == "cold"  # put-skew extreme expects it up
-    assert classify_skew(0.20) is None
-    assert classify_skew(None) is None
+    # C2: extreme means the top band of the symbol's own 252-day percentile.
+    assert classify_skew(-0.30, 92.0) == "hot"  # call-skew extreme expects the price down
+    assert classify_skew(0.30, 85.0) == "cold"  # put-skew extreme expects it up
+    assert classify_skew(0.30, 55.0) is None  # a big slope that is normal for this name
+    assert classify_skew(-0.02, 95.0) == "hot"  # a small slope that is extreme for this name
+    assert classify_skew(-0.30, 95.0, history_days=20) is None  # too little history
+    assert classify_skew(-0.30, None) is None
+    assert classify_skew(None, 95.0) is None
     assert hit_for("skew", side="hot", fwd_return=-0.02, horizon=5) is True
     assert hit_for("skew", side="cold", fwd_return=-0.02, horizon=5) is False
 

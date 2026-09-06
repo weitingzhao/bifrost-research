@@ -28,16 +28,21 @@ def classify_opex_pin(pin_pct_distance: float | None) -> str | None:
     return trigger_side("opex_pin", pin_pct_distance)
 
 
-def classify_skew(atm_slope: float | None) -> str | None:
-    """Contrarian on the sign of an extreme skew.
+# A percentile needs a year to mean something; below this the trigger stays quiet.
+SKEW_MIN_HISTORY_DAYS = 60
 
-    Call-skew extreme (slope <= -hot) is the hot side and expects the price down;
-    put-skew extreme (slope >= +hot) is the cold side and expects it up. Calm and
-    lean readings are not triggers.
+
+def classify_skew(atm_slope: float | None, slope_pctile: float | None, history_days: int = 252) -> str | None:
+    """Contrarian on the sign of an extreme skew — extreme against the symbol's own year.
+
+    C2: the extreme is ``|slope|`` at or above the hot band of its own 252-day
+    percentile (the registry's score bands), not a fixed slope. Call-skew
+    extreme (slope < 0) is the hot side and expects the price down; put-skew
+    extreme (slope > 0) is the cold side and expects it up.
     """
-    if atm_slope is None:
+    if atm_slope is None or slope_pctile is None or history_days < SKEW_MIN_HISTORY_DAYS:
         return None
-    if trigger_side("skew", atm_slope) != "hot":
+    if trigger_side("skew", slope_pctile) != "hot":
         return None
     return "hot" if float(atm_slope) < 0 else "cold"
 

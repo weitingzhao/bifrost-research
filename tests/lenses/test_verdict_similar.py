@@ -17,10 +17,12 @@ def test_verdict_bands_and_meanings() -> None:
     assert verdict_for("iv_rank", 0.85, fractions_as_pct=True)["band"] == "hot"
     mid = verdict_for("vrp", 50)
     assert mid["band"] == "neutral" and "confirm" in mid["means"]
-    calm = verdict_for("skew", 0.03)
-    assert calm["band"] == "neutral" and calm["means"] == "Skew calm — structures are freer."
+    calm = verdict_for("skew", 15.0)
+    assert calm["band"] == "cold" and "wings cheap" in calm["means"]
+    assert verdict_for("skew", 50.0)["band"] == "neutral"
     assert verdict_for("iv_rank", None) is None
-    assert verdict_for("term_slope", 0.4) is None
+    back = verdict_for("term_slope", 0.4)
+    assert back is not None and back["band"] == "hot" and "Backwardation" in back["means"]
 
 
 def test_categorical_verdicts() -> None:

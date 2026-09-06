@@ -58,6 +58,26 @@ def _connect_or_503() -> Any:
         raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
 
 
+def fwd20_by_band(row: Any) -> dict[str, Any]:
+    """Shape the six-column aggregate into ``{hot, cold}`` records."""
+
+    def _side(n: Any, median: Any, share: Any) -> dict[str, Any]:
+        count = int(n or 0)
+        return {
+            "n": count,
+            "median_fwd": float(median) if count and median is not None else None,
+            "share_positive": float(share) if count and share is not None else None,
+        }
+
+    return {
+        "horizon": 20,
+        "hot": _side(row[0], row[1], row[2]),
+        "cold": _side(row[3], row[4], row[5]),
+        "hot_band": ">= 80",
+        "cold_band": "<= 20",
+    }
+
+
 def _exhibit_vrp(conn: Any, symbol: str) -> ExhibitResponse:
     caveats: list[str] = []
     readings: dict[str, Any] = {}
@@ -88,6 +108,26 @@ def _exhibit_vrp(conn: Any, symbol: str) -> ExhibitResponse:
                 (symbol,),
             )
             hist = cur.fetchone()
+            # C2: what happened 20 sessions after this symbol's own hot / cold
+            # readings — the lab's record, from the fwd_ret_20d column A4 filled.
+            cur.execute(
+                f"""
+                SELECT
+                    COUNT(*) FILTER (WHERE vrp_pct_252d >= 80),
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY fwd_ret_20d)
+                        FILTER (WHERE vrp_pct_252d >= 80),
+                    AVG((fwd_ret_20d > 0)::int) FILTER (WHERE vrp_pct_252d >= 80),
+                    COUNT(*) FILTER (WHERE vrp_pct_252d <= 20),
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY fwd_ret_20d)
+                        FILTER (WHERE vrp_pct_252d <= 20),
+                    AVG((fwd_ret_20d > 0)::int) FILTER (WHERE vrp_pct_252d <= 20)
+                FROM {TABLE_STOCK_SIGNAL_VRP_DAILY}
+                WHERE symbol = %s AND fwd_ret_20d IS NOT NULL AND vrp_pct_252d IS NOT NULL
+                  AND trade_date >= CURRENT_DATE - INTERVAL '504 days'
+                """,
+                (symbol,),
+            )
+            fwd = cur.fetchone()
         if row:
             as_of = _iso_date(row[0])
             readings = {
@@ -105,6 +145,10 @@ def _exhibit_vrp(conn: Any, symbol: str) -> ExhibitResponse:
                 "avg_vrp_pct_252d": hist[1],
                 "avg_vrp_60d": hist[2],
             }
+        if fwd:
+            history["fwd20_by_band"] = fwd20_by_band(fwd)
+            if not history["fwd20_by_band"]["hot"]["n"] and not history["fwd20_by_band"]["cold"]["n"]:
+                caveats.append("No settled 20-session forward returns for hot / cold readings yet")
     except Exception as exc:
         caveats.append(f"VRP query failed: {exc}")
         try:

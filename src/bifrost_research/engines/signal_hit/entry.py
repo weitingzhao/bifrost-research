@@ -201,21 +201,39 @@ def _load_opex_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, flo
 
 
 def _load_skew_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, float]]:
+    # C2: today's near-30-DTE slope against the symbol's own prior 252 days —
+    # the percentile is the share of those days whose |slope| sat below today's.
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT DISTINCT ON (symbol) symbol, atm_slope::float
-            FROM features.option_surface_fit_daily
-            WHERE trade_date = %s AND atm_slope IS NOT NULL
-            ORDER BY symbol, ABS(dte - 30) ASC, expiry ASC
+            WITH today AS (
+                SELECT DISTINCT ON (symbol) symbol, atm_slope::float AS slope
+                FROM features.option_surface_fit_daily
+                WHERE trade_date = %s AND atm_slope IS NOT NULL
+                ORDER BY symbol, ABS(dte - 30) ASC, expiry ASC
+            ),
+            hist AS (
+                SELECT DISTINCT ON (symbol, trade_date) symbol, trade_date, ABS(atm_slope)::float AS a
+                FROM features.option_surface_fit_daily
+                WHERE atm_slope IS NOT NULL
+                  AND trade_date < %s AND trade_date >= %s::date - INTERVAL '252 days'
+                ORDER BY symbol, trade_date, ABS(dte - 30) ASC, expiry ASC
+            )
+            SELECT t.symbol, t.slope,
+                   100.0 * COUNT(h.a) FILTER (WHERE h.a < ABS(t.slope)) / NULLIF(COUNT(h.a), 0),
+                   COUNT(h.a)
+            FROM today t
+            LEFT JOIN hist h ON h.symbol = t.symbol
+            GROUP BY t.symbol, t.slope
             """,
-            (trade_date,),
+            (trade_date, trade_date, trade_date),
         )
         rows = cur.fetchall() or []
     out: list[tuple[str, str, float]] = []
     for row in rows:
         sym, slope = row[0], float(row[1])
-        side = classify_skew(slope)
+        pctile = float(row[2]) if row[2] is not None else None
+        side = classify_skew(slope, pctile, int(row[3] or 0))
         if side:
             out.append((str(sym).upper(), side, slope))
     return out

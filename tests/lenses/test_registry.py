@@ -45,9 +45,11 @@ def test_fractions_read_as_percent_only_when_asked() -> None:
 
 
 def test_severity_and_distance_kinds() -> None:
-    assert classify("skew", -0.30) == "hot"
-    assert classify("skew", 0.12) == "lean_hot"
-    assert classify("skew", 0.05) == "neutral"
+    # C2: skew is judged on its own 252-day percentile, so it reads as a score.
+    assert classify("skew", 85.0) == "hot"
+    assert classify("skew", 65.0) == "lean_hot"
+    assert classify("skew", 50.0) == "neutral"
+    assert classify("skew", 15.0) == "cold"
     assert classify("opex_pin", 0.010) == "hot"
     assert classify("opex_pin", -0.0099) == "hot"
     assert classify("opex_pin", 0.011) == "neutral"
@@ -58,7 +60,10 @@ def test_signed_and_categorical_kinds() -> None:
     assert classify("order_sentiment", -30) == "cold"
     assert classify("order_sentiment", 0) == "neutral"
     assert classify("terrain_regime", 1.0) is None
-    assert classify("term_slope", 0.4) is None
+    # C2: term_slope judged on near − far vol — backwardation hot, steep contango cold.
+    assert classify("term_slope", 0.4) == "hot"
+    assert classify("term_slope", -0.05) == "cold"
+    assert classify("term_slope", 0.0) == "neutral"
 
 
 def test_unknown_lens_is_an_error() -> None:

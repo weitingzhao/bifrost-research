@@ -93,21 +93,54 @@ def test_iv_rank_exhibit_carries_verdict_track_record_and_similar() -> None:
     assert exh.similar["median_fwd"] == 0.05
 
 
-def test_skew_reads_the_nearest_30dte_fit_and_judges_severity() -> None:
+def test_skew_reads_the_nearest_30dte_fit_and_judges_it_against_its_own_year() -> None:
     routes: list[Route] = [
-        (lambda sql: "option_surface_fit_daily" in sql and "COUNT(*)" in sql, [(120, 0.09)]),
+        # C2: (days, avg |slope|, percentile of today's |slope| in the symbol's year)
+        (lambda sql: "option_surface_fit_daily" in sql and "COUNT(*)" in sql, [(120, 0.09, 91.5)]),
         (lambda sql: "option_surface_fit_daily" in sql,
          [(TODAY, date(2026, 10, 2), 28, 0.41, -0.30, 0.004, 14, NOW)]),
     ]
     exh = build_exhibit(_Conn(routes), "skew", "NVDA")
     assert exh.readings["atm_slope"] == -0.30 and exh.readings["dte"] == 28
+    assert exh.readings["slope_pctile_252d"] == 91.5 and exh.readings["history_days"] == 120
     assert exh.history_summary == {"days": 120, "avg_abs_atm_slope": 0.09}
     assert exh.verdict is not None and exh.verdict["band"] == "hot"
+    assert exh.verdict["value"] == 91.5
     assert exh.track_record is None
     assert any("track record" in c for c in exh.caveats)
 
 
-def test_opex_pin_uses_close_on_the_max_pain_date() -> None:
+def test_skew_percentile_is_the_verdict_not_the_raw_slope() -> None:
+    # The same -0.30 slope is calm for a name whose year ran steeper.
+    routes: list[Route] = [
+        (lambda sql: "option_surface_fit_daily" in sql and "COUNT(*)" in sql, [(200, 0.35, 42.0)]),
+        (lambda sql: "option_surface_fit_daily" in sql,
+         [(TODAY, date(2026, 10, 2), 28, 0.41, -0.30, 0.004, 14, NOW)]),
+    ]
+    exh = build_exhibit(_Conn(routes), "skew", "NVDA")
+    assert exh.verdict is not None and exh.verdict["band"] == "neutral"
+    thin: list[Route] = [
+        (lambda sql: "option_surface_fit_daily" in sql and "COUNT(*)" in sql, [(12, 0.2, 100.0)]),
+        (lambda sql: "option_surface_fit_daily" in sql,
+         [(TODAY, date(2026, 10, 2), 28, 0.41, -0.30, 0.004, 14, NOW)]),
+    ]
+    exh = build_exhibit(_Conn(thin), "skew", "NVDA")
+    assert any("12 history days" in c for c in exh.caveats)
+
+
+def test_opex_pin_uses_close_on_the_max_pain_date(monkeypatch) -> None:
+    from bifrost_research.api import exhibit_lenses
+
+    monkeypatch.setattr(
+        exhibit_lenses.opex_repo,
+        "get_pin_analysis",
+        lambda conn, symbol, *, cycles=24: [
+            {"pct_distance": 0.002},
+            {"pct_distance": -0.011},
+            {"pct_distance": 0.004},
+            {"pct_distance": None},
+        ],
+    )
     routes: list[Route] = [
         (lambda sql: "option_metric_max_pain_daily" in sql, [(TODAY, date(2026, 9, 18), 230.0, 500_000, NOW, 14)]),
         (lambda sql: "raw_market.stock_daily" in sql and "bar_date = %s" in sql, [(231.0,)]),
@@ -118,6 +151,10 @@ def test_opex_pin_uses_close_on_the_max_pain_date() -> None:
     exh = build_exhibit(_Conn(routes), "opex_pin", "NVDA")
     assert exh.readings["max_pain_strike"] == 230.0 and exh.readings["close"] == 231.0
     assert abs(exh.readings["pin_pct_distance"] - (1.0 / 231.0)) < 1e-9
+    # C2: the magnet's record rides along — 2 of 3 settled cycles within 0.5%.
+    assert exh.history_summary["cycles"] == 3
+    assert exh.history_summary["pinned"] == 2
+    assert abs(exh.history_summary["pin_rate"] - 2 / 3) < 1e-9
     assert exh.verdict is not None and exh.verdict["band"] == "hot"
     assert exh.track_record is not None
 
@@ -181,7 +218,11 @@ def test_momentum_sepa_forecast_and_term_slope_readers() -> None:
     assert fc.readings["session_count"] == 15 and fc.readings["path_hit_rate"] == 0.6 and fc.verdict is None
     ts = build_exhibit(conn, "term_slope", "NVDA")
     assert ts.readings["near_dte"] == 28 and ts.readings["far_dte"] == 105
-    assert abs(ts.readings["term_slope"] - (0.38 - 0.41)) < 1e-9 and ts.verdict is None
+    assert abs(ts.readings["term_slope"] - (0.38 - 0.41)) < 1e-9
+    # C2: near − far of +3 vol points is backwardation, and the registry says so.
+    assert abs(ts.readings["backwardation"] - 0.03) < 1e-9
+    assert ts.readings["term_structure"] == "backwardation"
+    assert ts.verdict is not None and ts.verdict["band"] == "hot"
 
 
 def test_unknown_lens_and_the_registry_cover_each_other() -> None:

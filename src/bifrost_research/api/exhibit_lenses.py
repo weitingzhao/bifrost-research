@@ -18,6 +18,7 @@ from bifrost_research.lenses.registry import LENSES
 from bifrost_research.lenses.similar import summarize_forward_returns
 from bifrost_research.lenses.track_record import fetch_track_record
 from bifrost_research.lenses.verdict import verdict_for
+from bifrost_research.repositories import opex_cycle as opex_repo
 from bifrost_research.schema.schemas import (
     TABLE_OPTION_METRIC_GEX_LEVELS_DAILY,
     TABLE_OPTION_METRIC_IV_PERCENTILE_DAILY,
@@ -25,6 +26,7 @@ from bifrost_research.schema.schemas import (
     TABLE_STOCK_BACKTEST_SETTLEMENT,
     TABLE_STOCK_SIGNAL_MOMENTUM_DAILY,
     TABLE_STOCK_SIGNAL_SEPA_DAILY,
+    TABLE_STOCK_SIGNAL_VRP_DAILY,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,23 +75,36 @@ def exhibit_skew(conn: Any, symbol: str) -> ExhibitResponse:
             """,
             (symbol, symbol),
         )
+        today_abs = abs(float(row[4])) if row and row[4] is not None else None
+        # C2: the reading is judged against the symbol's own year, not a fixed
+        # slope. The percentile is the share of history days whose |slope| sat
+        # below today's — one near-30-DTE fit per day, today excluded.
         hist = _fetch_one(
             conn,
             f"""
-            SELECT COUNT(*)::bigint, AVG(ABS(atm_slope))
+            SELECT COUNT(*)::bigint,
+                   AVG(a),
+                   100.0 * COUNT(*) FILTER (WHERE a < %s) / NULLIF(COUNT(*), 0)
             FROM (
-                SELECT DISTINCT ON (trade_date) trade_date, atm_slope
+                SELECT DISTINCT ON (trade_date) trade_date, ABS(atm_slope) AS a
                 FROM {SURFACE_FIT}
-                WHERE symbol = %s AND trade_date >= CURRENT_DATE - INTERVAL '252 days'
-                ORDER BY trade_date, ABS(dte - 30) ASC
+                WHERE symbol = %s AND atm_slope IS NOT NULL
+                  AND trade_date < %s
+                  AND trade_date >= %s::date - INTERVAL '252 days'
+                ORDER BY trade_date, ABS(dte - 30) ASC, expiry ASC
             ) s
             """,
-            (symbol,),
-        )
+            (today_abs if today_abs is not None else -1.0, symbol, row[0] if row else None, row[0] if row else None),
+        ) if row else None
         if row:
+            days = int(hist[0] or 0) if hist else 0
+            pctile = float(hist[2]) if hist and hist[2] is not None else None
             exh.as_of = iso_date(row[0])
             exh.readings = {
                 "atm_slope": row[4],
+                "abs_atm_slope": today_abs,
+                "slope_pctile_252d": pctile,
+                "history_days": days,
                 "atm_vol": row[3],
                 "dte": row[2],
                 "expiry": iso_date(row[1]),
@@ -97,6 +112,10 @@ def exhibit_skew(conn: Any, symbol: str) -> ExhibitResponse:
                 "n_points": row[6],
             }
             exh.freshness = freshness_from(row[7], True)
+            if pctile is None:
+                exh.caveats.append("No prior fit days — skew percentile unknown")
+            elif days < 60:
+                exh.caveats.append(f"Skew percentile rests on {days} history days — thin")
         else:
             exh.caveats.append("No SVI fit rows for symbol")
         if hist:
@@ -104,6 +123,23 @@ def exhibit_skew(conn: Any, symbol: str) -> ExhibitResponse:
     except Exception as exc:
         return _failed(exh, "Skew", exc, conn)
     return exh
+
+
+# Term-structure bands on near − far ATM vol, mirrored from the registry's
+# term_slope spec (kept in one place there; the label is what the page prints).
+BACKWARDATION_MIN = 0.02
+STEEP_CONTANGO_MAX = -0.03
+
+
+def term_structure_label(backwardation: float | None) -> str | None:
+    """``backwardation`` / ``contango`` / ``flat`` for near − far ATM vol."""
+    if backwardation is None:
+        return None
+    if backwardation >= BACKWARDATION_MIN:
+        return "backwardation"
+    if backwardation <= STEEP_CONTANGO_MAX:
+        return "contango"
+    return "flat"
 
 
 def exhibit_term_slope(conn: Any, symbol: str) -> ExhibitResponse:
@@ -129,17 +165,21 @@ def exhibit_term_slope(conn: Any, symbol: str) -> ExhibitResponse:
         far = min(far_candidates, key=lambda r: abs(int(r[2]) - 90)) if far_candidates else None
         exh.as_of = iso_date(near[0])
         exh.freshness = freshness_from(near[4], True)
+        term_slope = (float(far[3]) - float(near[3])) if far else None
+        backwardation = (-term_slope) if term_slope is not None else None
         exh.readings = {
             "near_dte": near[2],
             "near_vol": near[3],
             "far_dte": far[2] if far else None,
             "far_vol": far[3] if far else None,
-            "term_slope": (float(far[3]) - float(near[3])) if far else None,
+            "term_slope": term_slope,
+            # C2: judged on near − far, so backwardation reads positive.
+            "backwardation": backwardation,
+            "term_structure": term_structure_label(backwardation),
             "expiries_fitted": len(rows),
         }
         if far is None:
             exh.caveats.append("Only one fitted expiry — no term slope")
-        exh.caveats.append("Term-structure bands land with the C2 verdict; reading only")
     except Exception as exc:
         return _failed(exh, "Term slope", exc, conn)
     return exh
@@ -184,9 +224,57 @@ def exhibit_gex_regime(conn: Any, symbol: str) -> ExhibitResponse:
             "major_put_wall": row[6],
             "expiry": iso_date(row[1]),
         }
+        # C2: the regime's claim is about realised vol, so the exhibit carries
+        # the realised-vs-implied reading it implies — positive gamma should
+        # keep RV under IV, negative gamma lets it run over.
+        vrp = _fetch_one(
+            conn,
+            f"""
+            SELECT trade_date, vrp_pct_252d, rv_20d, atm_iv_30d, vrp_20d
+            FROM {TABLE_STOCK_SIGNAL_VRP_DAILY}
+            WHERE symbol = %s AND atm_iv_30d IS NOT NULL
+            ORDER BY trade_date DESC
+            LIMIT 1
+            """,
+            (symbol,),
+        )
+        if vrp:
+            exh.readings["vrp_link"] = {
+                "as_of": iso_date(vrp[0]),
+                "vrp_pct_252d": vrp[1],
+                "rv_20d": vrp[2],
+                "atm_iv_30d": vrp[3],
+                "vrp_20d": vrp[4],
+                "consistent": (
+                    None
+                    if regime is None or vrp[2] is None or vrp[3] is None
+                    else (float(vrp[2]) <= float(vrp[3])) == (regime == "positive")
+                ),
+            }
+        else:
+            exh.caveats.append("No VRP row — the realised-vol side of the regime is unmeasured")
     except Exception as exc:
         return _failed(exh, "GEX regime", exc, conn)
     return exh
+
+
+PIN_CYCLES = 24
+PINNED_WITHIN = 0.005
+
+
+def pin_history(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Share of settled OpEx cycles that closed within 0.5% of max pain."""
+    dists = [abs(float(r["pct_distance"])) for r in rows if isinstance(r.get("pct_distance"), (int, float))]
+    if not dists:
+        return {"cycles": 0, "pin_rate": None, "pinned_within": PINNED_WITHIN}
+    pinned = sum(1 for d in dists if d < PINNED_WITHIN)
+    return {
+        "cycles": len(dists),
+        "pinned": pinned,
+        "pin_rate": pinned / len(dists),
+        "pinned_within": PINNED_WITHIN,
+        "median_abs_distance": sorted(dists)[len(dists) // 2],
+    }
 
 
 def exhibit_opex_pin(conn: Any, symbol: str) -> ExhibitResponse:
@@ -232,6 +320,17 @@ def exhibit_opex_pin(conn: Any, symbol: str) -> ExhibitResponse:
             "expiry": iso_date(row[1]),
             "total_oi": row[3],
         }
+        # C2: the magnet is only a claim until its record is next to it — how
+        # often this symbol actually settled within 0.5% of max pain.
+        try:
+            pin_rows = opex_repo.get_pin_analysis(conn, symbol, cycles=PIN_CYCLES)
+        except Exception as exc:  # noqa: BLE001 — history must not sink the reading
+            logger.debug("pin analysis failed for %s: %s", symbol, exc)
+            rollback_quietly(conn)
+            pin_rows = []
+        exh.history_summary = pin_history(pin_rows)
+        if not pin_rows:
+            exh.caveats.append("No settled OpEx cycles yet — pin rate unknown")
     except Exception as exc:
         return _failed(exh, "OpEx pin", exc, conn)
     return exh
@@ -429,8 +528,8 @@ VERDICT_INPUT: dict[str, tuple[str, bool]] = {
     "iv_rank": ("iv_rank_1y", False),
     "iv_percentile": ("iv_percentile_1y", False),
     "vrp": ("vrp_pct_252d", False),
-    "skew": ("atm_slope", False),
-    "term_slope": ("term_slope", False),
+    "skew": ("slope_pctile_252d", False),
+    "term_slope": ("backwardation", False),
     "opex_pin": ("pin_pct_distance", False),
     "gex_regime": ("regime", False),
     "terrain_regime": ("regime", False),

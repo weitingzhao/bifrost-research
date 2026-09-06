@@ -427,6 +427,77 @@ def list_forecast_sessions(
     return {"rows": rows, "count": len(rows)}
 
 
+def calibration_rows(raw: list[tuple[Any, ...]]) -> list[dict[str, Any]]:
+    """Per-regime reliability: what the model said vs how its paths settled.
+
+    ``avg_top_prob`` is the confidence the session put on its leading scenario;
+    ``hit_rate`` is how often the settled path matched. The gap between them is
+    the calibration — positive means the model is more right than it claims.
+    """
+    out: list[dict[str, Any]] = []
+    for regime, n, hits, avg_top, avg_miss in raw:
+        count = int(n or 0)
+        hit_rate = (int(hits or 0) / count) if count else None
+        top = float(avg_top) if avg_top is not None else None
+        out.append(
+            {
+                "regime": str(regime) if regime else "unknown",
+                "n": count,
+                "hits": int(hits or 0),
+                "hit_rate": hit_rate,
+                "avg_top_prob": top,
+                "calibration_gap": (hit_rate - top) if hit_rate is not None and top is not None else None,
+                "avg_close_miss_pct": float(avg_miss) if avg_miss is not None else None,
+            }
+        )
+    return out
+
+
+@router.get("/forecast/calibration")
+def forecast_calibration(
+    symbol: str = Query(..., min_length=1, max_length=32),
+    days: int = Query(180, ge=7, le=730),
+) -> dict[str, Any]:
+    """Reliability of the forecast per terrain regime (research-loop-automation C2).
+
+    Joins each settled session to its settlement and groups by the regime the
+    session was made in, so the four probabilities on the page sit next to how
+    often paths in that regime actually hit.
+    """
+    sym = symbol.strip().upper()
+    conn = _connect_or_503()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT s.regime,
+                       COUNT(*),
+                       COUNT(*) FILTER (WHERE st.path_hit),
+                       AVG(GREATEST(COALESCE(s.prob_rangy, 0), COALESCE(s.prob_bull, 0),
+                                    COALESCE(s.prob_bear, 0), COALESCE(s.prob_squeeze, 0))),
+                       AVG(ABS(st.close_miss_pct))
+                FROM features.stock_forecast_session s
+                JOIN features.stock_backtest_settlement st ON st.session_id = s.session_id
+                WHERE s.symbol = %s AND s.trade_date >= CURRENT_DATE - %s::int
+                GROUP BY s.regime
+                ORDER BY COUNT(*) DESC
+                """,
+                (sym, days),
+            )
+            raw = cur.fetchall() or []
+    finally:
+        conn.close()
+    rows = calibration_rows(list(raw))
+    total = sum(r["n"] for r in rows)
+    hits = sum(r["hits"] for r in rows)
+    return {
+        "symbol": sym,
+        "days": days,
+        "rows": rows,
+        "overall": {"n": total, "hits": hits, "hit_rate": (hits / total) if total else None},
+    }
+
+
 @router.get("/forecast/sessions/{session_id}")
 def get_forecast_session(session_id: str) -> dict[str, Any]:
     conn = _connect_or_503()

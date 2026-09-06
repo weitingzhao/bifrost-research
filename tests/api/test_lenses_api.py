@@ -28,5 +28,5 @@ def test_lenses_endpoint_lists_bands_and_routes() -> None:
     assert data["score_bands"] == {"hot": 80.0, "lean_hot": 60.0, "lean_cold": 40.0, "cold": 20.0}
     iv = next(r for r in data["lenses"] if r["id"] == "iv_rank")
     assert iv["bands"]["hot"] == 80.0
-    assert iv["page_route"] == "/research/iv-radar"
+    assert iv["page_route"] == "/research/vol-regime?view=iv-rank"  # C1 hub view
     assert iv["decay_lens"] == "iv_rank" and iv["scan_flag"] == "iv_rank"

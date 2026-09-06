@@ -262,6 +262,77 @@ def signal_decay(
     )
 
 
+def _rate(hits: Any, evaluated: Any) -> float | None:
+    e = int(evaluated or 0)
+    return (int(hits or 0) / e) if e else None
+
+
+def by_symbol_records(rows: list[tuple[Any, ...]]) -> dict[str, dict[str, dict[str, Any]]]:
+    """``{symbol: {side: {n, hit_rate_5d, hit_rate_20d, evaluated_5d, evaluated_20d}}}``."""
+    out: dict[str, dict[str, dict[str, Any]]] = {}
+    for symbol, side, n, ev5, hit5, ev20, hit20 in rows:
+        out.setdefault(str(symbol).upper(), {})[str(side)] = {
+            "n": int(n or 0),
+            "evaluated_5d": int(ev5 or 0),
+            "hit_rate_5d": _rate(hit5, ev5),
+            "evaluated_20d": int(ev20 or 0),
+            "hit_rate_20d": _rate(hit20, ev20),
+        }
+    return out
+
+
+@router.get("/by-symbol")
+def signal_decay_by_symbol(
+    lens: Lens = Query("iv_rank"),
+    symbols: str = Query(..., min_length=1, description="Comma list, up to 200"),
+    window_days: int = Query(90, ge=1, le=400),
+) -> dict[str, Any]:
+    """Per-symbol hit rates on one lens — the column a radar table needs (C2).
+
+    One grouped query for the whole table rather than one track-record call per
+    row; a symbol with no triggers in the window is simply absent.
+    """
+    if lens not in VALID_LENSES:
+        raise HTTPException(status_code=400, detail=f"unsupported lens: {lens}")
+    wanted = sorted({s.strip().upper() for s in symbols.split(",") if s.strip()})[:200]
+    if not wanted:
+        raise HTTPException(status_code=400, detail="symbols is empty")
+    conn = _connect_or_503()
+    try:
+        cutoff = date.today() - timedelta(days=window_days)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT symbol, trigger_side, COUNT(*),
+                       COUNT(hit_5d), COUNT(*) FILTER (WHERE hit_5d),
+                       COUNT(hit_20d), COUNT(*) FILTER (WHERE hit_20d)
+                FROM {TABLE_STOCK_SIGNAL_LENS_HIT_DAILY}
+                WHERE lens = %s AND trade_date >= %s AND symbol = ANY(%s::text[])
+                GROUP BY symbol, trigger_side
+                """,
+                (lens, cutoff, wanted),
+            )
+            rows = cur.fetchall() or []
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("signal_decay by-symbol query failed")
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return _ok(
+        {
+            "lens": lens,
+            "window_days": window_days,
+            "symbols": wanted,
+            "rows": by_symbol_records(list(rows)),
+        }
+    )
+
+
 @router.get("/intersect")
 def signal_decay_intersect(
     lens_pairs: str = Query(..., description="Comma pairs e.g. iv_rank:hot,vrp:hot"),

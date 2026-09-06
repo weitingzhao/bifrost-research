@@ -143,13 +143,13 @@ _SPECS: tuple[LensSpec, ...] = (
     LensSpec(
         id="skew",
         label="Skew (ATM slope)",
-        kind="severity",
+        kind="score",
         source_table="features.option_surface_fit_daily",
-        value_column="atm_slope",
-        unit="slope_at_30dte",
-        bands=Bands(hot=0.25, lean_hot=0.12),
-        hot_means="Skew extreme — size wings carefully, prefer defined risk.",
-        cold_means="Skew calm — structures are freer.",
+        value_column="slope_pctile_252d",
+        unit="pctile_of_abs_slope_252d",
+        bands=SCORE_BANDS,
+        hot_means="Skew at the top of its own year — wings are dear; size wings carefully, prefer defined risk.",
+        cold_means="Skew at the bottom of its own year — wings cheap, structures freer.",
         horizons=(5, 20),
         page_route="/research/vol-regime?view=skew",
         scan_flag="atm_slope",
@@ -157,11 +157,12 @@ _SPECS: tuple[LensSpec, ...] = (
         similar_lens="term_slope",
         hit_rule="mean_revert",
         notes=(
-            "Scan flags the signed slope on a normalised 0-100 score; the page verdict "
-            "reads the absolute slope as severity. similar-regime calls this lens term_slope. "
-            "Decay trigger is contrarian on the sign: call-skew extreme (slope <= -0.25) is the "
-            "hot side and expects the price down, put-skew extreme (slope >= +0.25) is the cold "
-            "side and expects it up."
+            "C2: the verdict reads |atm_slope| as a percentile of the symbol's own 252-day "
+            "history (near-30-DTE fit per day) — the raw ±0.25 threshold fired once in 25 "
+            "symbols × 179 days. Scan flags the signed slope on a normalised 0-100 score; "
+            "similar-regime calls this lens term_slope. Decay trigger stays contrarian on the "
+            "sign at the hot band: call-skew extreme (slope < 0) is the hot side and expects the "
+            "price down, put-skew extreme (slope > 0) is the cold side and expects it up."
         ),
     ),
     LensSpec(
@@ -169,14 +170,17 @@ _SPECS: tuple[LensSpec, ...] = (
         label="Term structure slope",
         kind="signed",
         source_table="features.option_surface_fit_daily",
-        value_column="atm_vol",
-        unit="far_minus_near_vol",
-        bands=Bands(),
-        hot_means="Backwardation — near-dated vol above far-dated; event or stress priced.",
-        cold_means="Steep contango — calendar sellers are paid to wait.",
+        value_column="backwardation",
+        unit="near_minus_far_vol",
+        bands=Bands(hot=0.02, cold=-0.03),
+        hot_means="Backwardation — near-dated vol above far-dated; event or stress priced up front.",
+        cold_means="Steep contango — far-dated vol well above near; calendar sellers are paid to wait.",
         horizons=(5, 20),
         page_route="/research/vol-regime?view=skew",
-        notes="Bands land with the term-structure verdict (Phase C2).",
+        notes=(
+            "C2: judged on near − far ATM vol (≈30 vs ≈90 DTE). ≥ +2 vol points is "
+            "backwardation (hot), ≤ −3 is steep contango (cold), between is a normal curve."
+        ),
     ),
     LensSpec(
         id="opex_pin",
