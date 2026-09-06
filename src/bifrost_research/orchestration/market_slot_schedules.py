@@ -12,8 +12,10 @@ from dagster import (
     AssetExecutionContext,
     AssetKey,
     AssetSelection,
+    Backoff,
     DefaultScheduleStatus,
     MaterializeResult,
+    RetryPolicy,
     ScheduleDefinition,
     asset,
     define_asset_job,
@@ -22,6 +24,12 @@ from dagster import (
 from bifrost_research.orchestration.plugin_http import enqueue_market_slots
 
 GROUP = "plugin_market_schedule"
+
+# One enqueue is one HTTP call to the Plugin API. A dropped connection (the
+# 2026-09-05 gap-heal: RemoteDisconnected after 12s) used to fail the run for
+# good and nothing re-fired until the next week; three retries with backoff
+# cover a pod restart or a slow enqueue without a human.
+ENQUEUE_RETRY = RetryPolicy(max_retries=3, delay=60, backoff=Backoff.EXPONENTIAL)
 
 
 def _make_slot_asset(asset_name: str, slots: tuple[str, ...], description: str):
@@ -33,6 +41,7 @@ def _make_slot_asset(asset_name: str, slots: tuple[str, ...], description: str):
         key=AssetKey(["batch", "market", asset_name]),
         group_name=GROUP,
         description=description,
+        retry_policy=ENQUEUE_RETRY,
     )(_impl)
 
 
@@ -92,10 +101,13 @@ market_option_bars = _make_slot_asset(
     ("option-bars",),
     "UTC 22:45 — option-bars",
 )
-market_corporate_trades = _make_slot_asset(
-    "market_corporate_trades",
-    ("corporate", "option-trades"),
-    "UTC 23:00 — corporate + option-trades",
+# option-trades left this asset on 2026-09-06: Options Starter has no trades
+# entitlement, so the Plugin retired the slot (it answers skipped, not failed)
+# until the subscription is upgraded. corporate is now a whole-market pull.
+market_corporate = _make_slot_asset(
+    "market_corporate",
+    ("corporate",),
+    "UTC 23:00 — corporate actions (dividends + splits, whole market)",
 )
 market_minute_bars = _make_slot_asset(
     "market_minute_bars",
@@ -108,6 +120,13 @@ market_fundamentals_rotate = _make_slot_asset(
     "market_fundamentals_rotate",
     ("fundamentals-rotate",),
     "UTC 03:00 — fundamentals-rotate (large financials batch)",
+)
+# Financials & Ratios, whole market by date: ratios + short volume for the
+# last completed session, short interest for the latest settlement.
+market_fundamentals_market = _make_slot_asset(
+    "market_fundamentals_market",
+    ("fundamentals-market",),
+    "UTC 04:30 Tue–Sat — ratios + short data for the last session (whole market)",
 )
 
 # Wave 3 — refresh + maintenance
@@ -134,9 +153,10 @@ MARKET_SCHEDULE_ASSETS = [
     market_universe_calendar,
     market_related,
     market_option_bars,
-    market_corporate_trades,
+    market_corporate,
     market_minute_bars,
     market_fundamentals_rotate,
+    market_fundamentals_market,
     market_option_refresh,
     market_trim,
     market_oi_gap_heal,
@@ -156,11 +176,11 @@ _MARKET_SPECS: list[tuple[str, str, Any, str, str]] = [
     ("market_related_schedule", "market_related_job", market_related, "30 22 * * *", "related-rotate"),
     ("market_option_bars_schedule", "market_option_bars_job", market_option_bars, "45 22 * * *", "option-bars"),
     (
-        "market_corporate_trades_schedule",
-        "market_corporate_trades_job",
-        market_corporate_trades,
+        "market_corporate_schedule",
+        "market_corporate_job",
+        market_corporate,
         "0 23 * * *",
-        "corporate+option-trades",
+        "corporate (whole market)",
     ),
     ("market_minute_bars_schedule", "market_minute_bars_job", market_minute_bars, "15 23 * * *", "minute-bars"),
     (
@@ -169,6 +189,13 @@ _MARKET_SPECS: list[tuple[str, str, Any, str, str]] = [
         market_fundamentals_rotate,
         "0 3 * * *",
         "fundamentals-rotate",
+    ),
+    (
+        "market_fundamentals_market_schedule",
+        "market_fundamentals_market_job",
+        market_fundamentals_market,
+        "30 4 * * 2-6",
+        "fundamentals-market",
     ),
     (
         "market_option_refresh_schedule",

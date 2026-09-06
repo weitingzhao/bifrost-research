@@ -22,9 +22,10 @@ make dagster-ensure-schedule
 | `market_universe_calendar_schedule` | `0 22 * * *` UTC (~17:00 America/Chicago) | universe-daily + calendar + stock-eod + eod-pipeline |
 | `market_related_schedule` | `30 22 * * *` UTC | related-rotate |
 | `market_option_bars_schedule` | `45 22 * * *` UTC | option-bars |
-| `market_corporate_trades_schedule` | `0 23 * * *` UTC | corporate + option-trades |
+| `market_corporate_schedule` | `0 23 * * *` UTC | corporate — dividends + splits, whole market (option-trades retired until an Options Developer upgrade) |
 | `market_minute_bars_schedule` | `15 23 * * *` UTC | minute-bars |
 | `market_fundamentals_rotate_schedule` | `0 3 * * *` UTC | fundamentals-rotate |
+| `market_fundamentals_market_schedule` | `30 4 * * 2-6` UTC | fundamentals-market — ratios + short data, whole market by date |
 | `market_option_refresh_schedule` | `20 */6 * * *` UTC | option-refresh |
 | `market_trim_schedule` | `15 2 * * *` UTC | trim (maintenance Cron) |
 | `market_oi_gap_heal_schedule` | `0 4 * * 6` UTC | oi-gap-heal |
@@ -47,3 +48,6 @@ make verify-husbandry-schedulers
 All Golden Source husbandry CronJobs must be `suspend: true`. Core schedules must be RUNNING after image roll.
 
 See Ops Console `dataHusbandryCatalog` `HUSBANDRY_SCHEDULER_NOTE` and Research `CLAUDE.md`.
+
+
+Every market slot asset carries `RetryPolicy(max_retries=3, delay=60, backoff=EXPONENTIAL)`; the `bifrost_run_failure_alert` sensor POSTs `BifrostDagsterRunFailed` to Alertmanager (`ALERTMANAGER_URL`, default kube-prometheus-stack in `monitoring`), which the Bifrost route forwards to the ops-agent webhook.

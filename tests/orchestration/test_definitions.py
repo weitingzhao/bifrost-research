@@ -121,3 +121,34 @@ def test_module_entrypoint_defs() -> None:
     vol_parents = graph.get(vol_key).parent_keys
     assert AssetKey(["batch", "market_eod"]) in vol_parents
     assert AssetKey(["batch", "husbandry_gate"]) in vol_parents
+
+
+def test_market_schedules_cover_the_subscribed_slots_only() -> None:
+    """option-trades left the schedule (Options Starter); ratios/short data joined it."""
+    from bifrost_research.orchestration.market_slot_schedules import (
+        ENQUEUE_RETRY,
+        MARKET_SCHEDULES,
+        market_corporate,
+        market_fundamentals_market,
+    )
+
+    names = {s.name for s in MARKET_SCHEDULES}
+    assert "market_corporate_schedule" in names
+    assert "market_fundamentals_market_schedule" in names
+    assert "market_corporate_trades_schedule" not in names
+    by_name = {s.name: s for s in MARKET_SCHEDULES}
+    assert by_name["market_fundamentals_market_schedule"].cron_schedule == "30 4 * * 2-6"
+    assert ENQUEUE_RETRY.max_retries == 3
+    assert market_corporate.op.retry_policy is ENQUEUE_RETRY
+    assert market_fundamentals_market.op.retry_policy is ENQUEUE_RETRY
+
+
+def test_definitions_include_the_failure_sensor() -> None:
+    from bifrost_research.orchestration.definitions import build_definitions
+
+    with patch(
+        "bifrost_research.orchestration.dbt_assets.dbt_manifest_exists",
+        return_value=False,
+    ):
+        defs = build_definitions()
+    assert "bifrost_run_failure_alert" in {s.name for s in defs.sensors}
