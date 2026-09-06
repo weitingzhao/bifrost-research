@@ -16,6 +16,7 @@ def register_all(mcp: FastMCP) -> None:
         discovery,
         exhibit,
         hypothesis,
+        lenses,
         opex_cycle,
         persona,
         playbook,
@@ -31,6 +32,7 @@ def register_all(mcp: FastMCP) -> None:
     hypothesis.register(mcp)
     backtest.register(mcp)
     vrp.register(mcp)
+    lenses.register(mcp)
     exhibit.register(mcp)
     vol_surface.register(mcp)
     opex_cycle.register(mcp)

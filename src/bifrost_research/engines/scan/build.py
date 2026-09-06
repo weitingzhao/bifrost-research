@@ -5,23 +5,16 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any
 
+from bifrost_research.lenses.registry import band_for_score, scan_flag
+
 
 def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
 def flag_for_score(value: float | None) -> str | None:
-    """Map a 0-100 score to sparse hot/cold/neutral flags."""
-    if value is None:
-        return None
-    v = float(value)
-    if v >= 80:
-        return "hot"
-    if v <= 20:
-        return "cold"
-    if 40 <= v <= 60:
-        return "neutral"
-    return None
+    """Map a 0-100 score to sparse hot/cold/neutral flags (bands from the lens registry)."""
+    return scan_flag(band_for_score(value))
 
 
 def normalize_atm_slope_score(atm_slope: float | None) -> float | None:

@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from bifrost_research.db.conn import connect
 from bifrost_research.db.upsert import batch_upsert
+from bifrost_research.lenses.registry import decay_lens_ids
 from bifrost_research.schema.schemas import (
     TABLE_STOCK_SIGNAL_ALERT_DAILY,
     TABLE_STOCK_SIGNAL_LENS_HIT_DAILY,
@@ -26,7 +27,7 @@ from bifrost_research.schema.schemas import (
 logger = logging.getLogger(__name__)
 _NY = ZoneInfo("America/New_York")
 
-LENSES = ("iv_rank", "vrp", "opex_pin")
+LENSES = decay_lens_ids()
 UPSERT_COLS = (
     "trade_date",
     "kind",

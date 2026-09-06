@@ -4,7 +4,7 @@
 
 | Wave | Deliverable | Status |
 |------|-------------|--------|
-| A | Lens registry · Exhibit for every lens · Signal Decay lens expansion · analysis defects · pages read the registry | A1 pending |
+| A | Lens registry · Exhibit for every lens · Signal Decay lens expansion · analysis defects · pages read the registry | **A1 ✅ 2026-09-06** (`lenses/registry.py`, `GET /research/lenses`, MCP `research.lenses.list`; signal_hit / scan / alert_scan read it) · A2–A5 pending |
 | B | LLM plan repair · two-model Persona judgement + caps · hypothesis auto-resolution · every objective runs | pending |
 | C | Analyze 12 → 5 hubs · per-lens depth · Daily Brief on exhibits | pending |
 | D | Copilot reads runs · daily digest · unattended on a leash · verdicts back on pages | pending |

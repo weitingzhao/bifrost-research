@@ -24,6 +24,8 @@ TOOL_NAMES: tuple[str, ...] = (
     # backtest
     "research.backtest.list_runs",
     "research.backtest.get_run",
+    # lenses — research-loop-automation A1
+    "research.lenses.list",
     # vrp
     "research.vrp.get_latest",
     "research.vrp.get_history",

@@ -1,49 +1,31 @@
-"""Pure helpers for lens trigger classification and side-aware hit."""
+"""Pure helpers for lens trigger classification and side-aware hit.
+
+The thresholds live in ``bifrost_research.lenses.registry`` (Phase A1 of
+research-loop-automation); these wrappers keep the trigger builder's call sites
+and read percentile fractions in [0, 1] as percent, as they always did.
+"""
 
 from __future__ import annotations
 
-HOT_THRESHOLD = 80.0
-COLD_THRESHOLD = 20.0
-OPEX_PIN_HOT_ABS = 0.010  # Wave J: was 0.005 (too sparse — 21 rows / 179d)
+from bifrost_research.lenses.registry import LENSES, trigger_side
 
-
-def _as_pct(value: float) -> float:
-    """Normalize 0-1 fractions into 0-100 percentile scale."""
-    v = float(value)
-    if 0.0 <= v <= 1.0:
-        return v * 100.0
-    return v
+# Kept for callers that still name the numbers; the registry owns them.
+HOT_THRESHOLD = LENSES["iv_rank"].bands.hot
+COLD_THRESHOLD = LENSES["iv_rank"].bands.cold
+OPEX_PIN_HOT_ABS = LENSES["opex_pin"].bands.hot
 
 
 def classify_iv_rank(value: float | None) -> str | None:
-    if value is None:
-        return None
-    v = _as_pct(value)
-    if v >= HOT_THRESHOLD:
-        return "hot"
-    if v <= COLD_THRESHOLD:
-        return "cold"
-    return None
+    return trigger_side("iv_rank", value, fractions_as_pct=True)
 
 
 def classify_vrp(value: float | None) -> str | None:
-    if value is None:
-        return None
-    v = _as_pct(value)
-    if v >= HOT_THRESHOLD:
-        return "hot"
-    if v <= COLD_THRESHOLD:
-        return "cold"
-    return None
+    return trigger_side("vrp", value, fractions_as_pct=True)
 
 
 def classify_opex_pin(pin_pct_distance: float | None) -> str | None:
     """Near-pin is hot (mean-revert / pin-converge hypothesis)."""
-    if pin_pct_distance is None:
-        return None
-    if abs(float(pin_pct_distance)) <= OPEX_PIN_HOT_ABS:
-        return "hot"
-    return None
+    return trigger_side("opex_pin", pin_pct_distance)
 
 
 def side_aware_hit(*, side: str, fwd_return: float | None) -> bool | None:
