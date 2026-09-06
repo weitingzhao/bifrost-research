@@ -16,6 +16,10 @@ from dagster import (
 )
 
 from bifrost_research.orchestration.engine_assets import canonical_pnl
+from bifrost_research.orchestration.market_self_heal import (
+    market_self_heal_job,
+    market_self_heal_schedule,
+)
 from bifrost_research.orchestration.market_slot_schedules import (
     MARKET_SCHEDULE_JOBS,
     MARKET_SCHEDULES,
@@ -116,6 +120,7 @@ RESEARCH_JOBS = [
     research_flex_morning_job,
     research_canonical_pnl_job,
     *MARKET_SCHEDULE_JOBS,
+    market_self_heal_job,
     *RESEARCH_AUX_JOBS,
 ]
 RESEARCH_SCHEDULES = [
@@ -123,5 +128,6 @@ RESEARCH_SCHEDULES = [
     research_flex_morning_schedule,
     research_canonical_pnl_schedule,
     *MARKET_SCHEDULES,
+    market_self_heal_schedule,
     *RESEARCH_AUX_SCHEDULES,
 ]

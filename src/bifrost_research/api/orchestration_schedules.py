@@ -27,6 +27,7 @@ HUSBANDRY_SCHEDULE_JOBS: tuple[tuple[str, str], ...] = (
     ("market_option_refresh_schedule", "market_option_refresh_job"),
     ("market_trim_schedule", "market_trim_job"),
     ("market_oi_gap_heal_schedule", "market_oi_gap_heal_job"),
+    ("market_self_heal_schedule", "market_self_heal_job"),
     ("research_vrp_schedule", "research_vrp_job"),
     ("research_opex_schedule", "research_opex_job"),
     ("research_vol_surface_svi_schedule", "research_vol_surface_svi_job"),
