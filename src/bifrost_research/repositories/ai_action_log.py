@@ -30,10 +30,15 @@ _COLUMNS: tuple[str, ...] = (
     "executed_at",
     "executed_result",
     "created_at",
+    # B2 (research-loop-automation): the spend ledger. Which provider a row
+    # cost, and how much, so a daily cap can be rebuilt from the table.
+    "provider",
+    "cost_usd",
 )
 
 _JSON_COLS = frozenset({"input", "output", "tool_calls", "executed_result"})
 _TS_COLS = frozenset({"approved_at", "executed_at", "created_at"})
+_NUM_COLS = frozenset({"cost_usd"})
 
 
 class _Connection(Protocol):
@@ -88,6 +93,12 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     for col in _TS_COLS:
         if col in out:
             out[col] = _iso(out[col])
+    for col in _NUM_COLS:
+        if out.get(col) is not None:
+            try:
+                out[col] = float(out[col])
+            except (TypeError, ValueError):
+                pass
     return out
 
 
@@ -107,15 +118,17 @@ def insert_action(
     status: str = "proposed",
     session_id: str | None = None,
     action_id: str | None = None,
+    provider: str | None = None,
+    cost_usd: float | None = None,
 ) -> dict[str, Any]:
     aid = (action_id or generate_action_id()).strip()
     validated = _validate_status(status)
     sql = f"""
         INSERT INTO {TABLE_RESEARCH_AI_ACTION_LOG} (
             id, session_id, action_kind, action_source, model,
-            input, output, tool_calls, status
+            input, output, tool_calls, status, provider, cost_usd
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING {_cols()}
     """
     params = (
@@ -128,6 +141,8 @@ def insert_action(
         _serialize_json(output_payload),
         _serialize_json(tool_calls),
         validated,
+        provider,
+        None if cost_usd is None else round(float(cost_usd), 6),
     )
     try:
         with conn.cursor() as cur:
@@ -230,6 +245,39 @@ def list_actions(
         cur.execute(sql, tuple(params))
         rows = cur.fetchall() or []
     return [_row_to_dict(r) for r in rows]
+
+
+def spend_today_by_provider(
+    conn: _Connection,
+    *,
+    action_kind: str,
+) -> dict[str, float]:
+    """Today's (UTC) recorded spend per provider for one action kind.
+
+    This is what lets a daily cap survive a process restart: the harness Cron
+    is a new process each day and replays this figure into its counters before
+    the first call.
+    """
+    sql = f"""
+        SELECT provider, COALESCE(SUM(cost_usd), 0)
+        FROM {TABLE_RESEARCH_AI_ACTION_LOG}
+        WHERE action_kind = %s
+          AND provider IS NOT NULL
+          AND created_at >= timezone('UTC', date_trunc('day', timezone('UTC', now())))
+        GROUP BY provider
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (action_kind,))
+        rows = cur.fetchall() or []
+    out: dict[str, float] = {}
+    for row in rows:
+        provider, cost = (row[0], row[1]) if not isinstance(row, Mapping) else (
+            row["provider"],
+            row["coalesce"] if "coalesce" in row else list(row.values())[1],
+        )
+        if provider:
+            out[str(provider).lower()] = float(cost or 0.0)
+    return out
 
 
 def log_guardrail_rejection(

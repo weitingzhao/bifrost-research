@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from bifrost_research.copilot.harness import persona_eval
+from bifrost_research.copilot.harness import persona_eval, persona_heuristic
 
 
 def test_the_snapshot_call_gets_a_short_budget(monkeypatch: Any) -> None:
@@ -79,7 +79,8 @@ def test_a_failed_probe_is_remembered(monkeypatch: Any) -> None:
 
 def test_the_memory_expires(monkeypatch: Any) -> None:
     persona_eval.reset_holdings_probe_cache()
-    monkeypatch.setattr(persona_eval, "HOLDINGS_UNAVAILABLE_TTL_S", 0.0)
+    # The probe lives in persona_heuristic since B2; patch the module that reads the TTL.
+    monkeypatch.setattr(persona_heuristic, "HOLDINGS_UNAVAILABLE_TTL_S", 0.0)
     calls = {"n": 0}
 
     def _boom(*a: Any, **k: Any) -> Any:

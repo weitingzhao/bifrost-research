@@ -444,7 +444,10 @@ def run_objective(
         persona_eval_summary: dict[str, Any] | None = None
         if want_persona and proposed_items:
             try:
-                from bifrost_research.copilot.harness.persona_eval import evaluate_candidates
+                from bifrost_research.copilot.harness.persona_eval import (
+                    TRACE_KEYS,
+                    evaluate_candidates,
+                )
 
                 persona_eval_summary = evaluate_candidates(
                     proposed_items,
@@ -453,12 +456,23 @@ def run_objective(
                         "require_validate_pass": loop_policy.require_validate_pass,
                     },
                     owner_id=str(objective.get("owner_id") or "owner"),
+                    conn=conn,
+                    run_id=run_id,
+                    objective_id=str(objective["id"]),
                 )
                 blocked = int(persona_eval_summary.get("blocked_by_validate") or 0)
                 eligible = persona_eval_summary.get("auto_approve_eligible")
+                judges = persona_eval_summary.get("models") or []
+                agreement = persona_eval_summary.get("agreement") or {}
                 persona_decision = (
                     f"mode={persona_eval_summary.get('mode')} "
-                    f"blocked_by_validate={blocked} "
+                    + (
+                        f"models={len(judges)} agree={agreement.get('agree', 0)} "
+                        f"dissent={agreement.get('dissent', 0)} "
+                        if judges
+                        else ""
+                    )
+                    + f"blocked_by_validate={blocked} "
                     f"auto_approve_eligible={eligible}"
                 )
                 trace.append(
@@ -466,23 +480,7 @@ def run_objective(
                         "step": "persona_evaluate",
                         "label": "Persona eval",
                         "decision": persona_decision,
-                        **{
-                            k: persona_eval_summary[k]
-                            for k in (
-                                "status",
-                                "mode",
-                                "fallback_used",
-                                "fallback_count",
-                                "holdings_status",
-                                "holdings_count",
-                                "symbols_evaluated",
-                                "blocked_by_validate",
-                                "auto_approve_eligible",
-                                "eligible_count",
-                                "per_symbol",
-                            )
-                            if k in persona_eval_summary
-                        },
+                        **{k: persona_eval_summary[k] for k in TRACE_KEYS if k in persona_eval_summary},
                     }
                 )
                 _flush_live_trace(
@@ -554,19 +552,16 @@ def run_objective(
         if gate.get("applied") and not gate.get("ok"):
             candidate_payload["hit_rate_warn"] = True
         if persona_eval_summary:
-            candidate_payload["persona_eval"] = {
-                "mode": persona_eval_summary.get("mode"),
-                "fallback_used": persona_eval_summary.get("fallback_used"),
-                "fallback_count": persona_eval_summary.get("fallback_count"),
-                "holdings_status": persona_eval_summary.get("holdings_status"),
-                "blocked_by_validate": persona_eval_summary.get("blocked_by_validate"),
-                "auto_approve_eligible": persona_eval_summary.get("auto_approve_eligible"),
-            }
+            from bifrost_research.copilot.harness.persona_eval import inbox_summary
+
+            # B2: which judges sat, what each cost, and whether they agreed.
+            candidate_payload["persona_eval"] = inbox_summary(persona_eval_summary)
             candidate_payload["auto_approve_eligible"] = bool(
                 persona_eval_summary.get("auto_approve_eligible")
             )
             if any(
-                i.get("blocked_by_validate") or i.get("net_stance") == "oppose"
+                i.get("blocked_by_validate")
+                or i.get("net_stance") in ("oppose", "dissent")
                 for i in proposed_items
             ):
                 candidate_payload["persona_dissent"] = True

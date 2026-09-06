@@ -22,6 +22,7 @@ FE acceptance uses local Vite against DEV API (`192.168.10.73:30882`) per D-IL1;
 
 1. Golden Source PG reachable (`ANALYTICS_PG_*` / CNPG NodePort).
 2. Apply Research DDL (hypothesis · backtest_run · **ai_action_log** · **ai_draft**):
+   - B2 (research-loop-automation, 0.69.0): `ai_action_log` gains `provider text` and `cost_usd numeric(12,6)` — the persona judges' spend ledger (`action_kind = persona_eval_spend`, one row per model per run). The per-provider daily caps (`PERSONA_EVAL_DAILY_CAP_USD_{DEEPSEEK,OPENAI}`) are rebuilt from today's rows on every harness start. Apply the DDL **before** rolling the 0.69.0 image: the repository selects both columns.
 
 ```bash
 cd bifrost-research

@@ -34,6 +34,9 @@ class _FakeCursor:
                 "executed_at": None,
                 "executed_result": None,
                 "created_at": "2026-08-25T00:00:00+00:00",
+                # B2 spend-ledger columns, bound after status.
+                "provider": params[9] if len(params) > 9 else None,
+                "cost_usd": params[10] if len(params) > 10 else None,
             }
             self._last = tuple(row[c] for c in action_repo._COLUMNS)
             self._conn.actions[params[0]] = row

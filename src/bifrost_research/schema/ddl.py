@@ -238,6 +238,22 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         ON {SCHEMA_RESEARCH}.ai_action_log (action_source, created_at DESC)
         """
     )
+    # B2 (research-loop-automation, D-RLA-3): the spend ledger. Each persona
+    # judge call is logged with its provider and estimated cost, and the daily
+    # per-provider cap is rebuilt from today's rows on every harness start —
+    # a cap that lived only in memory would reset with each Cron pod.
+    cur.execute(
+        f"""
+        ALTER TABLE {SCHEMA_RESEARCH}.ai_action_log
+        ADD COLUMN IF NOT EXISTS provider text
+        """
+    )
+    cur.execute(
+        f"""
+        ALTER TABLE {SCHEMA_RESEARCH}.ai_action_log
+        ADD COLUMN IF NOT EXISTS cost_usd numeric(12, 6)
+        """
+    )
     cur.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.ai_draft (
