@@ -43,6 +43,7 @@ from bifrost_research.copilot.harness.persona_judge import (
     _seed_spend_from_ledger,
     consensus,
     eval_models,
+    judge_max_turns,
     most_severe,
     provider_of,
 )
@@ -60,6 +61,7 @@ TRACE_KEYS = (
     "dissent_count",
     "budget_s",
     "budget_exhausted_symbols",
+    "judge_max_turns",
     "spend_rows_written",
     "fallback_used",
     "fallback_count",
@@ -327,6 +329,7 @@ def evaluate_candidates(
         "dissent_count": dissent_count,
         "budget_s": budget_s,
         "budget_exhausted_symbols": budget_exhausted,
+        "judge_max_turns": judge_max_turns() if use_agents else None,
         "spend_rows_written": spend_rows_written,
         "fallback_used": bool(use_agents and fallback_count > 0),
         "fallback_count": fallback_count,

@@ -40,6 +40,23 @@ from bifrost_research.repositories import ai_action_log as action_repo
 logger = logging.getLogger(__name__)
 
 PER_SYMBOL_TIMEOUT_S = float(os.environ.get("BIFROST_PERSONA_EVAL_SYMBOL_TIMEOUT_S", "45"))
+DEFAULT_MAX_TURNS = 8
+
+
+def judge_max_turns() -> int:
+    """How many turns a judge may take before it is a failed judgement.
+
+    Owner decision (2026-09-06): until the judges' analysis has been polished
+    into something worth paying for, they are kept on a short leash. The first
+    real run let deepseek-chat call its specialists round after round — 2.7M
+    input tokens over eight symbols, seven times what gpt-4o-mini spent for the
+    same verdicts. Read at call time so the Cron's env applies.
+    """
+    raw = os.environ.get("BIFROST_PERSONA_EVAL_MAX_TURNS", "").strip()
+    try:
+        return max(1, int(raw)) if raw else DEFAULT_MAX_TURNS
+    except ValueError:
+        return DEFAULT_MAX_TURNS
 
 # The judges. Two providers by default so one outage, one bad day of one
 # model, or one exhausted purse cannot pass as agreement.
@@ -149,7 +166,7 @@ async def _run_verdict_agent_async(
     agent = build_eval_verdict_agent(model_id, mcp=server, owner_id=owner_id)
     async with server:
         result = await asyncio.wait_for(
-            Runner.run(agent, input=prompt, max_turns=8),
+            Runner.run(agent, input=prompt, max_turns=judge_max_turns()),
             timeout=PER_SYMBOL_TIMEOUT_S,
         )
     final = getattr(result, "final_output", None)
@@ -444,11 +461,13 @@ def _persist_spend(
 
 __all__ = [
     "DEFAULT_EVAL_MODELS",
+    "DEFAULT_MAX_TURNS",
     "DISSENT",
     "PER_SYMBOL_TIMEOUT_S",
     "SPEND_ACTION_KIND",
     "consensus",
     "eval_models",
+    "judge_max_turns",
     "most_severe",
     "provider_of",
 ]

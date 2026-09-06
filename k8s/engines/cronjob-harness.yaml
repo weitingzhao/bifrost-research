@@ -78,8 +78,12 @@ spec:
                   value: "1"
                 - name: PERSONA_EVAL_MODELS
                   value: "deepseek-chat,gpt-4o-mini"
+                # Owner decision 2026-09-06: DeepSeek on a short leash until the judges'
+                # analysis is worth the tokens — $0.50/day and four turns per verdict.
                 - name: PERSONA_EVAL_DAILY_CAP_USD_DEEPSEEK
-                  value: "2.0"
+                  value: "0.50"
+                - name: BIFROST_PERSONA_EVAL_MAX_TURNS
+                  value: "4"
                 - name: PERSONA_EVAL_DAILY_CAP_USD_OPENAI
                   value: "2.0"
                 # 0.69.1 acceptance: deepseek-chat needed 13s when it answered and

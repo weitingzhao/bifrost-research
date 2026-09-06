@@ -473,3 +473,25 @@ def test_a_judge_timeout_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
     errors = {m["model"]: m["error"] for m in summary["per_symbol"][0]["models"]}
     assert errors["gpt-4o-mini"] == f"timeout after {persona_judge.PER_SYMBOL_TIMEOUT_S:.0f}s"
     assert errors["deepseek-chat"] == "RuntimeError"
+
+
+def test_judge_max_turns_reads_env_at_call_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BIFROST_PERSONA_EVAL_MAX_TURNS", raising=False)
+    assert persona_judge.judge_max_turns() == persona_judge.DEFAULT_MAX_TURNS
+    monkeypatch.setenv("BIFROST_PERSONA_EVAL_MAX_TURNS", "4")
+    assert persona_judge.judge_max_turns() == 4
+    monkeypatch.setenv("BIFROST_PERSONA_EVAL_MAX_TURNS", "0")
+    assert persona_judge.judge_max_turns() == 1
+    monkeypatch.setenv("BIFROST_PERSONA_EVAL_MAX_TURNS", "many")
+    assert persona_judge.judge_max_turns() == persona_judge.DEFAULT_MAX_TURNS
+
+
+def test_summary_records_the_leash(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BIFROST_PERSONA_EVAL_MAX_TURNS", "4")
+    _install_judges(
+        monkeypatch, {"deepseek-chat": ("support", "support"), "gpt-4o-mini": ("support", "support")}
+    )
+    summary = persona_eval.evaluate_candidates([_item("AAPL")])
+    assert summary["judge_max_turns"] == 4
+    monkeypatch.delenv("BIFROST_PERSONA_EVAL_AGENTS", raising=False)
+    assert persona_eval.evaluate_candidates([_item("AAPL")])["judge_max_turns"] is None
