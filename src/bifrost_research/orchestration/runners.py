@@ -23,6 +23,20 @@ def run_volatility(*, lookback_days: int = 3) -> dict[str, Any]:
     return {"engine": "volatility", "slots": results}
 
 
+def run_vrp(*, lookback_days: int = 3) -> dict[str, Any]:
+    """VRP for the last few sessions — after volatility, so the day's ATM IV exists."""
+    from bifrost_research.engines.vrp import entry as vrp_entry
+
+    return dict(vrp_entry.run(lookback_days=lookback_days))
+
+
+def run_vrp_fwd_ret_20d(*, lookback_days: int = 90) -> dict[str, Any]:
+    """Fill fwd_ret_20d on VRP rows whose 20 sessions have elapsed."""
+    from bifrost_research.engines.vrp import entry as vrp_entry
+
+    return dict(vrp_entry.backfill_fwd_ret_20d(lookback_days=lookback_days))
+
+
 def run_momentum(*, lookback_days: int = 2) -> dict[str, Any]:
     return engine_sched.run_slot("momentum", lookback_days=lookback_days)
 

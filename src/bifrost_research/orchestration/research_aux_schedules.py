@@ -52,15 +52,9 @@ def _run_asset(
     )(_impl)
 
 
-# Wave 4 — daily signals
-engines_vrp = _run_asset(
-    key_path=["engines", "vrp"],
-    group=GROUP_SIGNALS,
-    description="VRP daily (former research-vrp Cron)",
-    fn=lambda: __import__(
-        "bifrost_research.engines.vrp.entry", fromlist=["run"]
-    ).run(),
-)
+# Wave 4 daily-signal assets — VRP moved into the trading-day chain (engine_assets.vrp,
+# after volatility) in research-loop-automation A4: at 23:10 UTC the day's ATM IV
+# did not exist yet, so every day's latest VRP row was written with IV NULL.
 engines_opex = _run_asset(
     key_path=["engines", "opex_cycle"],
     group=GROUP_SIGNALS,
@@ -237,7 +231,6 @@ maint_vol_weekly_backfill = _run_asset(
 )
 
 RESEARCH_AUX_ASSETS = [
-    engines_vrp,
     engines_opex,
     engines_vol_surface_svi,
     engines_iv_solver,
@@ -283,7 +276,6 @@ RESEARCH_AUX_JOBS: list[Any] = []
 RESEARCH_AUX_SCHEDULES: list[ScheduleDefinition] = []
 
 _specs: list[tuple[str, str, list[Any], str, str, str]] = [
-    ("research_vrp_schedule", "research_vrp_job", [engines_vrp], "10 23 * * 1-5", "UTC", "VRP"),
     ("research_opex_schedule", "research_opex_job", [engines_opex], "30 23 * * 1-5", "UTC", "OpEx"),
     (
         "research_vol_surface_svi_schedule",

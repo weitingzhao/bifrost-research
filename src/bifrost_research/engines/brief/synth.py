@@ -6,6 +6,12 @@ from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
 from bifrost_research.engines.backtest.regime_stats import compute_regime_stats
+from bifrost_research.engines.brief.opportunity import (
+    TAPE_SOURCE,
+    load_sepa_symbol,
+    pick_opportunity,
+    sentiment_card_verdict,
+)
 
 LampColor = str  # green | yellow | red | gray
 
@@ -60,7 +66,8 @@ def iv_bucket(rank: float | None) -> str:
 
 
 def _spot_vs_close(spot: float, close: float) -> str:
-    pct = ((close - spot) / max(spot, 1.0)) * 100
+    """Spot relative to the expected close — the word and the sign describe the same gap."""
+    pct = ((spot - close) / max(close, 1.0)) * 100
     dir_word = "above" if pct >= 0 else "below"
     sign = "+" if pct >= 0 else ""
     return f"spot {spot:.2f} {dir_word} E[close] {close:.2f} ({sign}{pct:.2f}%)"
@@ -391,6 +398,7 @@ def _load_sentiment(conn: Any, symbol: str, trade_date: date) -> dict[str, Any] 
         "symbol",
         "trade_date",
         "sentiment_score",
+        "data_source",
         "computed_at",
     )
     sym = symbol.strip().upper()
@@ -520,23 +528,13 @@ def build_verdict(
         risk_text = "No risk signals loaded"
         risk_lamp = "gray"
 
-    opportunity_to = "/research/sepa-daily-core"
-    setup_first = next((r for r in sepa_candidates if r.get("path") == "SETUP"), None)
-    pivot_first = next((r for r in sepa_candidates if r.get("path") == "PIVOT"), None)
-    sepa_pick = setup_first or pivot_first or (sepa_candidates[0] if sepa_candidates else None)
-
-    if sepa_pick:
-        opportunity_text = f"SEPA {sepa_pick.get('symbol')} {sepa_pick.get('path')} · grade {sepa_pick.get('grade')}"
-        opportunity_lamp = sepa_lamp
-    else:
-        a_plus = next((r for r in mom_rows if r.get("grade") == "A+"), None)
-        if a_plus:
-            opportunity_text = f"Momentum {a_plus.get('symbol')} A+ · score {float(a_plus.get('score') or 0):.0f}"
-            opportunity_lamp = mom_lamp
-            opportunity_to = "/research/momentum-radar"
-        else:
-            opportunity_text = "No SEPA / Momentum opportunity today"
-            opportunity_lamp = "gray"
+    opportunity_text, opportunity_lamp, opportunity_to, sepa_pick = pick_opportunity(
+        symbol=symbol,
+        sepa_candidates=sepa_candidates,
+        mom_rows=mom_rows,
+        sepa_lamp=sepa_lamp,
+        mom_lamp=mom_lamp,
+    )
 
     action_hint = {"label": "Open narrative", "to": narrative_to}
     if risk_lamp in ("red", "yellow"):
@@ -594,8 +592,12 @@ def synthesize_daily_brief(conn: Any, symbol: str, trade_date: date | None = Non
     settlement: dict[str, Any] | None = None
     sentiment: dict[str, Any] | None = None
 
+    own_sepa: dict[str, Any] | None = None
     if resolved:
         sepa_candidates, _ = _load_sepa_candidates(conn, resolved)
+        own_sepa = load_sepa_symbol(conn, sym, resolved)
+        if own_sepa and not any(str(r.get("symbol") or "").upper() == sym for r in sepa_candidates):
+            sepa_candidates = [own_sepa, *sepa_candidates]
         mom_rows, _ = _load_momentum(conn, resolved)
         iv_row = _load_iv(conn, sym)
         terrain = _load_terrain(conn, sym, resolved)
@@ -730,6 +732,7 @@ def synthesize_daily_brief(conn: Any, symbol: str, trade_date: date | None = Non
                 else f"Setup {setup_count} · Pivot {pivot_count}"
             ),
             "candidates": sepa_candidates[:3],
+            "own": own_sepa,
         },
         "momentum": {
             "present": len(mom_rows) > 0,
@@ -761,11 +764,8 @@ def synthesize_daily_brief(conn: Any, symbol: str, trade_date: date | None = Non
         },
         "sentiment": {
             "present": sentiment is not None,
-            "verdict": (
-                f"No sentiment for {sym}"
-                if sentiment is None
-                else f"Net bias proxy · date {sentiment.get('trade_date') or '—'}"
-            ),
+            "verdict": sentiment_card_verdict(sentiment, sym),
+            "tape": bool(sentiment and sentiment.get("data_source") == TAPE_SOURCE),
             "detail": sentiment,
         },
     }

@@ -174,6 +174,26 @@ def classify_regime(
     return "range"
 
 
+GAMMA_ZONE_MIN_WIDTH = 0.002  # a zone narrower than 0.2% of spot is a point
+GAMMA_ZONE_WIDEN = 0.005  # …and is widened to ±0.5% around its middle
+
+
+def gamma_zone_source(
+    *,
+    spot: float,
+    call_wall: float | None,
+    put_wall: float | None,
+) -> str:
+    """Where the zone's bounds came from: the walls, widened walls, or a spot band."""
+    have_put = bool(put_wall and put_wall > 0)
+    have_call = bool(call_wall and call_wall > 0)
+    if not (have_put and have_call):
+        return "spot_band" if not (have_put or have_call) else "one_wall_spot_band"
+    if abs(float(call_wall) - float(put_wall)) < spot * GAMMA_ZONE_MIN_WIDTH:  # type: ignore[arg-type]
+        return "walls_widened"
+    return "walls"
+
+
 def expected_close_and_gamma_zone(
     *,
     spot: float,
@@ -189,6 +209,13 @@ def expected_close_and_gamma_zone(
     high = call_wall if call_wall and call_wall > 0 else spot * 1.01
     if low > high:
         low, high = high, low
+    # Walls on one strike (or on top of each other) are a point, not a zone. A
+    # zone of zero width printed as low == high on the page; widen it around its
+    # own middle so the band is readable, and let the caller name the source.
+    if high - low < spot * GAMMA_ZONE_MIN_WIDTH:
+        mid = (low + high) / 2.0
+        low = mid * (1.0 - GAMMA_ZONE_WIDEN)
+        high = mid * (1.0 + GAMMA_ZONE_WIDEN)
 
     if regime == "crash-risk":
         expected = min(spot, zg) * 0.995
@@ -274,6 +301,7 @@ def compute_market_terrain(
         "gex": dict(gex) if gex else {},
         "momentum": dict(momentum) if momentum else {},
         "iv": dict(iv) if iv else {},
+        "gamma_zone_source": gamma_zone_source(spot=spot, call_wall=call_wall, put_wall=put_wall),
         "advisory": "D10 BLOCKED — terrain is advisory only",
     }
     return MarketTerrain(

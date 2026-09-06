@@ -158,15 +158,34 @@ def fetch_stock_daily_closes(
     return out
 
 
+def interpolate_iv_at_dte(points: Sequence[tuple[int, float]], *, target_dte: int = 30) -> float | None:
+    """IV at ``target_dte`` from (dte, iv) points: linear between the two expiries
+    that bracket it, the nearest one when only one side exists, None when empty."""
+    clean = sorted((int(d), float(v)) for d, v in points)
+    if not clean:
+        return None
+    below = [pt for pt in clean if pt[0] <= target_dte]
+    above = [pt for pt in clean if pt[0] >= target_dte]
+    if below and above:
+        d0, v0 = below[-1]
+        d1, v1 = above[0]
+        if d1 == d0:
+            return round(v0, 8)
+        w = (target_dte - d0) / (d1 - d0)
+        return round(v0 + (v1 - v0) * w, 8)
+    nearest = min(clean, key=lambda pt: abs(pt[0] - target_dte))
+    return round(nearest[1], 8)
+
+
 def fetch_atm_iv_30d(
     conn: Any,
     symbol: str,
     *,
     trade_date: date,
 ) -> float | None:
-    """Median ATM IV for the expiry nearest to 30 DTE on ``trade_date``.
-
-    Falls back to any-expiry median when no expiry lies in the 15–60 day band.
+    """ATM IV at 30 DTE on ``trade_date``: interpolated between the expiries that
+    bracket 30 days inside the 15–60 day band, the nearest in-band expiry when only
+    one side exists, and the median over all expiries when none is in the band.
     """
     sym = symbol.strip().upper()
     with conn.cursor() as cur:
@@ -182,7 +201,7 @@ def fetch_atm_iv_30d(
         )
         raw = cur.fetchall() if hasattr(cur, "fetchall") else []
     cols = ("expiry", "atm_iv")
-    band: list[float] = []
+    band: list[tuple[int, float]] = []
     all_ivs: list[float] = []
     for r in raw or []:
         d = _row_to_dict(r, cols)
@@ -198,9 +217,9 @@ def fetch_atm_iv_30d(
             continue
         dte = (exp - trade_date).days
         if 15 <= dte <= 60:
-            band.append(iv)
+            band.append((dte, iv))
     if band:
-        return round(float(median(band)), 8)
+        return interpolate_iv_at_dte(band, target_dte=30)
     if all_ivs:
         return round(float(median(all_ivs)), 8)
     return None

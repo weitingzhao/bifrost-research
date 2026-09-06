@@ -44,6 +44,8 @@ def test_definitions_load_without_dbt_manifest() -> None:
         "forecast",
         "event_radar",
         "backtest",
+        "vrp",
+        "vrp_fwd_ret_20d",
     ):
         assert f"engines/{engine}" in keys
 
@@ -121,6 +123,11 @@ def test_module_entrypoint_defs() -> None:
     vol_parents = graph.get(vol_key).parent_keys
     assert AssetKey(["batch", "market_eod"]) in vol_parents
     assert AssetKey(["batch", "husbandry_gate"]) in vol_parents
+    # A4: VRP runs after volatility (the day's ATM IV must exist), fwd_ret after VRP,
+    # and the 23:10 UTC aux schedule that wrote IV-less rows is gone.
+    assert vol_key in graph.get(AssetKey(["engines", "vrp"])).parent_keys
+    assert AssetKey(["engines", "vrp"]) in graph.get(AssetKey(["engines", "vrp_fwd_ret_20d"])).parent_keys
+    assert "research_vrp_schedule" not in {s.name for s in defs.schedules}
 
 
 def test_market_schedules_cover_the_subscribed_slots_only() -> None:

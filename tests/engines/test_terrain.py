@@ -139,3 +139,39 @@ def test_load_upstream_signals_prefers_gex_spot_when_present() -> None:
     spot, gex, _mom, _iv = load_upstream_signals(conn, "SPY", date(2026, 8, 21))
     assert spot == 500.25
     assert gex["spot"] == 500.25
+
+
+# ─── research-loop-automation A4: a gamma zone is never a point ───
+
+from bifrost_research.engines.forecast.terrain import (  # noqa: E402
+    expected_close_and_gamma_zone,
+    gamma_zone_source,
+)
+
+
+def test_walls_on_one_strike_are_widened_and_named() -> None:
+    _, low, high = expected_close_and_gamma_zone(
+        spot=230.36, zero_gamma=236.0, call_wall=230.0, put_wall=230.0, regime="range", trend_release=50.0
+    )
+    assert low < high
+    assert abs((high - low) - 230.0 * 0.01) < 1e-6
+    assert gamma_zone_source(spot=230.36, call_wall=230.0, put_wall=230.0) == "walls_widened"
+    assert gamma_zone_source(spot=230.36, call_wall=240.0, put_wall=220.0) == "walls"
+    assert gamma_zone_source(spot=230.36, call_wall=None, put_wall=None) == "spot_band"
+    assert gamma_zone_source(spot=230.36, call_wall=240.0, put_wall=None) == "one_wall_spot_band"
+
+
+def test_compute_terrain_records_the_zone_source_and_keeps_a_readable_band() -> None:
+    t = compute_market_terrain(
+        "NVDA",
+        date(2026, 9, 4),
+        spot=230.36,
+        gex={"zero_gamma": 236.0, "major_call_wall": 230.0, "major_put_wall": 230.0, "total_net_gex": -5e8},
+        momentum={"score": 60, "path": "EXT", "crash": 40},
+        iv={"iv_percentile_1y": 16.0},
+    )
+    assert t.gamma_zone_low < t.gamma_zone_high
+    assert t.inputs_json["gamma_zone_source"] == "walls_widened"
+    plain = compute_market_terrain("NVDA", date(2026, 9, 4), spot=230.36, gex=None, momentum=None, iv=None)
+    assert plain.inputs_json["gamma_zone_source"] == "spot_band"
+    assert plain.gamma_zone_low < plain.gamma_zone_high

@@ -13,7 +13,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Sequence
 from zoneinfo import ZoneInfo
 
@@ -24,6 +24,7 @@ from bifrost_research.db.calendar import (
 )
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.vrp.compute import (
+    compute_fwd_ret_20d,
     compute_vrp_for_date,
     compute_vrp_for_symbol,
 )
@@ -31,6 +32,8 @@ from bifrost_research.engines.vrp.compute import (
 logger = logging.getLogger(__name__)
 
 _NY = ZoneInfo("America/New_York")
+# 20 sessions is about 28 calendar days; wait a little longer before trying a row.
+MIN_AGE_DAYS_FOR_20D = 30
 
 
 def _today_ny() -> date:
@@ -109,6 +112,78 @@ def run(
             totals["rows_written"],
             totals["skipped"],
         )
+        return result
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def backfill_fwd_ret_20d(*, lookback_days: int = 90, as_of: date | None = None) -> dict[str, object]:
+    """Fill ``fwd_ret_20d`` on VRP rows whose 20 sessions have since elapsed.
+
+    The daily compute leaves the column NULL on purpose (the future is not known
+    on the day). This walks the last ``lookback_days`` of rows that are still
+    NULL and old enough, and writes the log return from the close series.
+    """
+    day = as_of or _today_ny()
+    conn = connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT symbol, trade_date
+                FROM features.stock_signal_vrp_daily
+                WHERE fwd_ret_20d IS NULL
+                  AND trade_date >= %s
+                  AND trade_date <= %s
+                ORDER BY symbol, trade_date
+                """,
+                (day - timedelta(days=lookback_days), day - timedelta(days=MIN_AGE_DAYS_FOR_20D)),
+            )
+            pending = [(str(r[0]).upper(), r[1]) for r in (cur.fetchall() or [])]
+        by_symbol: dict[str, list[date]] = {}
+        for sym, td in pending:
+            by_symbol.setdefault(sym, []).append(td)
+        updated = 0
+        still_pending = 0
+        for sym, dates in by_symbol.items():
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT bar_date, close::float
+                    FROM raw_market.stock_daily
+                    WHERE symbol = %s AND bar_date >= %s AND close IS NOT NULL AND close > 0
+                    ORDER BY bar_date ASC
+                    """,
+                    (sym, min(dates)),
+                )
+                pairs = [(r[0], float(r[1])) for r in (cur.fetchall() or [])]
+            for td in dates:
+                fwd = compute_fwd_ret_20d(pairs, trade_date=td)
+                if fwd is None:
+                    still_pending += 1
+                    continue
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE features.stock_signal_vrp_daily
+                        SET fwd_ret_20d = %s
+                        WHERE symbol = %s AND trade_date = %s
+                        """,
+                        (fwd, sym, td),
+                    )
+                updated += 1
+        conn.commit()
+        result: dict[str, object] = {
+            "mode": "fwd_ret_20d",
+            "lookback_days": lookback_days,
+            "candidates": len(pending),
+            "updated": updated,
+            "still_pending": still_pending,
+        }
+        logger.info("vrp fwd_ret_20d backfill=%s", result)
         return result
     finally:
         try:

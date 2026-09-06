@@ -60,6 +60,33 @@ def volatility(context: AssetExecutionContext) -> MaterializeResult:
 
 
 @asset(
+    key=AssetKey(["engines", "vrp"]),
+    deps=[AssetKey(["engines", "volatility"])],
+    group_name="python_analytics",
+    description=(
+        "IV-RV spread (VRP) → features.stock_signal_vrp_daily. Runs after volatility so the "
+        "day's ATM IV exists; the 23:10 UTC aux schedule used to write the day with IV NULL."
+    ),
+)
+def vrp(context: AssetExecutionContext) -> MaterializeResult:
+    result = runners.run_vrp()
+    context.log.info("vrp result=%s", result)
+    return MaterializeResult(metadata=_metadata(result))
+
+
+@asset(
+    key=AssetKey(["engines", "vrp_fwd_ret_20d"]),
+    deps=[AssetKey(["engines", "vrp"])],
+    group_name="python_analytics",
+    description="fwd_ret_20d backfill on VRP rows whose 20 sessions have elapsed",
+)
+def vrp_fwd_ret_20d(context: AssetExecutionContext) -> MaterializeResult:
+    result = runners.run_vrp_fwd_ret_20d()
+    context.log.info("vrp_fwd_ret_20d result=%s", result)
+    return MaterializeResult(metadata=_metadata(result))
+
+
+@asset(
     key=AssetKey(["engines", "momentum"]),
     deps=_MARKET,
     group_name="python_analytics",
@@ -213,6 +240,8 @@ def candidate_outcome(context: AssetExecutionContext) -> MaterializeResult:
 
 ENGINE_ASSETS = [
     volatility,
+    vrp,
+    vrp_fwd_ret_20d,
     momentum,
     gex,
     surface,

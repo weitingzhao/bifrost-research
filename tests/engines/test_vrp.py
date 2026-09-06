@@ -305,3 +305,31 @@ def test_compute_fwd_ret_20d_needs_20_future_bars() -> None:
     trade_date = date(2026, 6, 1)
     pairs = [(trade_date + timedelta(days=i), 100.0) for i in range(10)]
     assert compute_fwd_ret_20d(pairs, trade_date=trade_date) is None
+
+
+# ─── research-loop-automation A4: IV at 30 DTE is interpolated, not the band median ───
+
+from bifrost_research.engines.vrp.compute import fetch_atm_iv_30d, interpolate_iv_at_dte  # noqa: E402
+
+
+def test_interpolate_iv_between_bracketing_expiries() -> None:
+    assert interpolate_iv_at_dte([(21, 0.30), (49, 0.34)], target_dte=30) == round(0.30 + 0.04 * 9 / 28, 8)
+    assert interpolate_iv_at_dte([(30, 0.31)], target_dte=30) == 0.31
+    assert interpolate_iv_at_dte([(45, 0.33), (58, 0.35)], target_dte=30) == 0.33  # nearest when one-sided
+    assert interpolate_iv_at_dte([], target_dte=30) is None
+
+
+def test_fetch_atm_iv_30d_interpolates_in_band_and_falls_back_to_the_median() -> None:
+    td = date(2026, 9, 4)
+    conn = _FakeConn()
+    conn.atm_iv_rows = [
+        ("NVDA", td, td + timedelta(days=7), 0.45),   # outside the band
+        ("NVDA", td, td + timedelta(days=21), 0.30),
+        ("NVDA", td, td + timedelta(days=49), 0.34),
+        ("NVDA", td, td + timedelta(days=105), 0.38),  # outside the band
+    ]
+    assert fetch_atm_iv_30d(conn, "NVDA", trade_date=td) == round(0.30 + 0.04 * 9 / 28, 8)
+    conn.atm_iv_rows = [("NVDA", td, td + timedelta(days=7), 0.45), ("NVDA", td, td + timedelta(days=105), 0.38)]
+    assert fetch_atm_iv_30d(conn, "NVDA", trade_date=td) == round((0.45 + 0.38) / 2, 8)
+    conn.atm_iv_rows = []
+    assert fetch_atm_iv_30d(conn, "NVDA", trade_date=td) is None
