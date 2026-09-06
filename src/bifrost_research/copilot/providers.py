@@ -59,9 +59,23 @@ _PRICE_PER_MTOK: dict[str, tuple[float, float]] = {
 }
 
 
+# List prices per million tokens for the small OpenAI models. The family table
+# above prices every "gpt*" as GPT-4o; on the first two-judge run that made
+# gpt-4o-mini look 16× dearer than it is ($0.67 for eight symbols) and would
+# have tripped the daily purse on phantom spend.
+_SMALL_OPENAI_PRICE_PER_MTOK = {
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4.1-mini": (0.40, 1.60),
+    "gpt-4.1-nano": (0.10, 0.40),
+}
+
+
 def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     key = "claude"
     lower = model.lower()
+    for small, (pin, pout) in _SMALL_OPENAI_PRICE_PER_MTOK.items():
+        if lower.startswith(small):
+            return (input_tokens / 1_000_000.0) * pin + (output_tokens / 1_000_000.0) * pout
     if lower.startswith("deepseek"):
         key = "deepseek"
     elif lower.startswith("gpt") or "openai" in lower:

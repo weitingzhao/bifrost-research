@@ -414,3 +414,14 @@ def test_provider_purses_are_separate(monkeypatch: pytest.MonkeyPatch) -> None:
     assert rate_limit.provider_remaining_usd("openai") == 0.0
     d = rate_limit.provider_usage_to_dict(rate_limit.provider_usage("openai"))
     assert d["provider"] == "openai" and d["tokens_today"] == 100
+
+
+def test_estimate_cost_prices_the_small_openai_models_by_name() -> None:
+    from bifrost_research.copilot.providers import estimate_cost
+
+    mini = estimate_cost("gpt-4o-mini", 1_000_000, 1_000_000)
+    full = estimate_cost("gpt-4o", 1_000_000, 1_000_000)
+    assert mini == pytest.approx(0.75)
+    assert full == pytest.approx(12.5)
+    # 231k in / 9k out — the first DEV run — is cents, not two thirds of a dollar.
+    assert estimate_cost("gpt-4o-mini", 231_056, 8_924) < 0.05

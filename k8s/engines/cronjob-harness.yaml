@@ -82,8 +82,14 @@ spec:
                   value: "2.0"
                 - name: PERSONA_EVAL_DAILY_CAP_USD_OPENAI
                   value: "2.0"
+                # 0.69.1 acceptance: deepseek-chat needed 13s when it answered and
+                # timed out at 45s on 5 of 8 symbols; the 240s batch budget then
+                # left the last two symbols unjudged. Judges get two minutes each,
+                # the stage fifteen — a daily job can afford the wait.
+                - name: BIFROST_PERSONA_EVAL_SYMBOL_TIMEOUT_S
+                  value: "120"
                 - name: BIFROST_PERSONA_EVAL_TIMEOUT_S
-                  value: "240"
+                  value: "900"
                 # No RESEARCH_MCP_SSE_URL on purpose: the judges and the curator use the
                 # in-process MCP server (ensure_local_mcp_url). The curator's batch-pass
                 # guard reads BIFROST_CURATOR_RUN_ID from the MCP tools' own process env,

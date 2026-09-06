@@ -208,8 +208,13 @@ async def _agent_verdicts_for_model_async(
             )
         call["ok"] = True
         return rows, call
+    except TimeoutError:
+        # asyncio's TimeoutError carries no message; an empty error read as
+        # "judge failed" for no reason on the first DEV run.
+        call["error"] = f"timeout after {PER_SYMBOL_TIMEOUT_S:.0f}s"
+        return [], call
     except Exception as exc:  # noqa: BLE001
-        call["error"] = str(exc)[:200]
+        call["error"] = (str(exc) or type(exc).__name__)[:200]
         return [], call
     finally:
         call["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
