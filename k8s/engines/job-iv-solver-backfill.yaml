@@ -1,6 +1,11 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
+  annotations:
+    # One-off Job: run by hand (kubectl create), never applied by Argo CD.
+    # A Job's pod template is immutable, so every image-pin bump made the app
+    # sync fail on "field is immutable" (research-loop-automation 0.68.0 release).
+    argocd.argoproj.io/hook: Skip
   name: research-iv-solver-backfill
   namespace: research
   labels:
