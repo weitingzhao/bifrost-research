@@ -3,6 +3,11 @@ kind: Job
 metadata:
   annotations:
     # One-off Job: run by hand (kubectl create), never applied by Argo CD.
+    # Runs as analytics_writer, which does not own the features / research
+    # schemas (owner: bifrost) — CREATE / ALTER fail with InsufficientPrivilege
+    # (seen 2026-09-06 on the B2 ai_action_log columns). Until the Owner grants
+    # the role or gives this Job the owner credentials, DDL is applied with the
+    # owner role by hand; this manifest records the intended path.
     # A Job's pod template is immutable, so every image-pin bump made the app
     # sync fail on "field is immutable" (research-loop-automation 0.68.0 release).
     argocd.argoproj.io/hook: Skip
@@ -37,7 +42,7 @@ spec:
               exit 1
       containers:
         - name: ddl
-          image: 192.168.10.73:30500/bifrost-research:0.68.0
+          image: 192.168.10.73:30500/bifrost-research:0.69.0
           imagePullPolicy: Always
           args:
             - python

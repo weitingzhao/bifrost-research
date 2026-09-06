@@ -44,7 +44,7 @@ spec:
                   exit 1
           containers:
             - name: compute
-              image: 192.168.10.73:30500/bifrost-research:0.68.0
+              image: 192.168.10.73:30500/bifrost-research:0.69.0
               imagePullPolicy: Always
               args:
                 - python
@@ -72,6 +72,20 @@ spec:
                   value: "1"
                 - name: BIFROST_LOOP_BATCH_MODE
                   value: "1"
+                # B2 (D-RLA-3): two judges per candidate, one purse per provider.
+                # Keys come from bifrost-research-secrets (DEEPSEEK_API_KEY, OPENAI_API_KEY).
+                - name: BIFROST_PERSONA_EVAL_AGENTS
+                  value: "1"
+                - name: PERSONA_EVAL_MODELS
+                  value: "deepseek-chat,gpt-4o-mini"
+                - name: PERSONA_EVAL_DAILY_CAP_USD_DEEPSEEK
+                  value: "2.0"
+                - name: PERSONA_EVAL_DAILY_CAP_USD_OPENAI
+                  value: "2.0"
+                - name: BIFROST_PERSONA_EVAL_TIMEOUT_S
+                  value: "240"
+                - name: RESEARCH_MCP_SSE_URL
+                  value: "http://research-mcp.research.svc.cluster.local:8796/sse"
                 - name: PLATFORM_API_URL
                   value: "http://platform-api.bifrost-platform-prod.svc.cluster.local:8780"
               resources:
