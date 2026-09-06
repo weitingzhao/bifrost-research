@@ -473,7 +473,7 @@ def build_verdict(
         forecast_latest is not None,
     )
 
-    narrative_to = "/research/analysis-model"
+    narrative_to = "/research/scenario?view=model"
     if terrain:
         narrative_text = f"{symbol} {terrain.get('regime')} — {_spot_vs_close(float(terrain['spot']), float(terrain['expected_close']))}"
         narrative_lamp = terrain_lamp
@@ -483,7 +483,7 @@ def build_verdict(
             f"E[close] {float(forecast_latest['expected_close']):.2f}"
         )
         narrative_lamp = forecast_lamp
-        narrative_to = "/research/forecast-sessions"
+        narrative_to = "/research/scenario?view=sessions"
     else:
         narrative_text = f"No terrain narrative for {symbol}"
         narrative_lamp = "gray"
@@ -504,14 +504,14 @@ def build_verdict(
         if dist_put < 0.5:
             risk_text = f"Near put wall {float(gex_latest['major_put_wall']):.0f} ({dist_put:.2f}% from spot)"
             risk_lamp = gex_lamp
-            risk_to = "/research/gex-intraday"
+            risk_to = "/research/dealer-levels?view=gex"
         elif iv_row and iv_row.get("iv_rank_1y") is not None:
             rank = float(iv_row["iv_rank_1y"])
             bucket = iv_bucket(rank)
             if bucket in ("High", "Low"):
                 risk_text = f"IV rank {rank:.0f} — {bucket} vol regime"
                 risk_lamp = iv_lamp
-                risk_to = "/research/iv-radar"
+                risk_to = "/research/vol-regime?view=iv-rank"
             else:
                 risk_text = "No elevated event or GEX tail risk flagged"
                 risk_lamp = "green"
@@ -523,7 +523,7 @@ def build_verdict(
         bucket = iv_bucket(rank)
         risk_text = f"IV rank {rank:.0f} — {bucket}"
         risk_lamp = iv_lamp
-        risk_to = "/research/iv-radar"
+        risk_to = "/research/vol-regime?view=iv-rank"
     else:
         risk_text = "No risk signals loaded"
         risk_lamp = "gray"
