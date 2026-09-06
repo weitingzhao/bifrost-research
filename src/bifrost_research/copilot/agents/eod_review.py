@@ -2,6 +2,12 @@
 
 For each active hypothesis, drafts an ``eod_verdict`` with a proposed status
 (keep / validated / rejected). Does not apply the status until user approves.
+
+B3 (research-loop-automation, D-RLA-2): before drafting, the outcome rule
+settles every candidate-born hypothesis whose forward window has closed
+unambiguously (``hypothesis_resolution``). Those need no draft; the ambiguous
+ones are drafted as before, with the settled excess return attached so the
+Owner decides with the number in front of them.
 """
 
 from __future__ import annotations
@@ -15,6 +21,8 @@ from bifrost_research.copilot.agents._context import (
     gather_symbol_context,
     utc_now_iso,
 )
+from bifrost_research.copilot.agents.hypothesis_resolution import AMBIGUOUS, resolve_active
+from bifrost_research.db.conn import rollback_quietly
 from bifrost_research.repositories import ai_action_log as action_repo
 from bifrost_research.repositories import ai_draft as draft_repo
 from bifrost_research.repositories import hypothesis as hyp_repo
@@ -191,6 +199,27 @@ def run_eod_review(
             print(json.dumps(result, indent=2, default=str))
             return result
 
+        # B3: the outcome rule first. What it settles leaves the active list
+        # and needs no draft; what it cannot settle carries its evidence into
+        # the draft below. A failure here must not cost the review its drafts.
+        try:
+            resolution = resolve_active(conn)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("EOD outcome resolution skipped: %s", str(exc)[:160])
+            rollback_quietly(conn)
+            resolution = {"ok": False, "error": str(exc)[:200], "counts": {}, "applied": [], "entries": []}
+        ambiguous = {
+            str(e.get("id")): e
+            for e in (resolution.get("entries") or [])
+            if isinstance(e, dict) and e.get("decision") == AMBIGUOUS
+        }
+        resolution_summary = {
+            "ok": resolution.get("ok"),
+            "counts": resolution.get("counts"),
+            "applied": resolution.get("applied"),
+            "error": resolution.get("error"),
+        }
+
         active = hyp_repo.list_hypotheses(conn, status="active", limit=100)
         if not active:
             return {
@@ -199,6 +228,7 @@ def run_eod_review(
                 "count": 0,
                 "draft_ids": [],
                 "active_hypotheses": 0,
+                "resolution": resolution_summary,
                 "message": "no active hypotheses",
             }
 
@@ -206,6 +236,15 @@ def run_eod_review(
             symbols = list(hyp.get("symbols") or [])
             ctx = gather_symbol_context(conn, symbols)
             payload = _heuristic_verdict(hyp, ctx)
+            evidence = ambiguous.get(str(hyp.get("id")))
+            if evidence:
+                payload["outcome"] = {
+                    k: evidence.get(k)
+                    for k in ("candidate_id", "horizon_days", "excess_return", "reason")
+                }
+                payload["rationale"] = f"{evidence.get('reason')} {payload.get('rationale') or ''}".strip()
+                payload["bullets"] = [f"Outcome rule: {evidence.get('reason')}", *payload.get("bullets", [])]
+                payload["markdown"] = "\n".join(f"- {b}" for b in payload["bullets"])
             prompt = (
                 f"Hypothesis: {hyp.get('title')}\nThesis: {hyp.get('thesis')}\n"
                 f"Context: {json.dumps(ctx, default=str)[:4000]}\n"
@@ -238,6 +277,7 @@ def run_eod_review(
             "count": len(drafts_out),
             "draft_ids": [d["id"] for d in drafts_out],
             "active_hypotheses": len(active),
+            "resolution": resolution_summary,
         }
     finally:
         if owns_conn and conn is not None:

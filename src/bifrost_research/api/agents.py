@@ -289,6 +289,10 @@ def _promote_candidate_batch(
                     "draft_id": draft_id,
                     "run_id": run_id,
                     "candidate_id": cid,
+                    # B3: the outcome rule that will settle this hypothesis lives
+                    # on the objective's policy; name it so the resolver need not
+                    # walk run → objective for every hypothesis.
+                    "objective_id": payload.get("objective_id"),
                 },
             )
             promoted_row = cand_repo.promote_candidate(

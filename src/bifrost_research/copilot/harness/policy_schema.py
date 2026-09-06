@@ -80,6 +80,25 @@ class DiscoveryAssistPolicy(BaseModel):
     max_veto_fraction: float = Field(default=0.35, ge=0.0, le=0.9)
 
 
+class ResolutionPolicy(BaseModel):
+    """B3 (research-loop-automation, D-RLA-2): the outcome rule that settles a
+    candidate-born hypothesis without a click.
+
+    At ``horizon_days`` sessions the candidate's excess return over
+    ``benchmark`` decides: at or above ``validate_excess`` the hypothesis is
+    validated, at or below ``reject_excess`` it is rejected, and anything in
+    between is ambiguous and goes to the Owner as a draft, as before. Excess
+    returns are fractions (0.03 = 3%). ``horizon_days`` must be one the
+    settlement engine writes (1, 5, 20).
+    """
+
+    enabled: bool = True
+    horizon_days: int = Field(default=20, ge=1, le=60)
+    validate_excess: float = Field(default=0.03, ge=0.0, le=1.0)
+    reject_excess: float = Field(default=-0.03, ge=-1.0, le=0.0)
+    benchmark: str = "SPY"
+
+
 class LoopPolicy(BaseModel):
     """Parsed harness policy — superset of legacy scan keys."""
 
@@ -87,6 +106,7 @@ class LoopPolicy(BaseModel):
     layers: LayersPolicy = Field(default_factory=LayersPolicy)
     option_overlay: OptionOverlayPolicy = Field(default_factory=OptionOverlayPolicy)
     discovery_assist: DiscoveryAssistPolicy = Field(default_factory=DiscoveryAssistPolicy)
+    resolution: ResolutionPolicy = Field(default_factory=ResolutionPolicy)
     # Legacy scan keys (scan_legacy + option overlay)
     preset: str = "neutral"
     flag_filter: str | list[str] | None = None

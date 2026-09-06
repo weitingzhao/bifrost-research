@@ -162,6 +162,16 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         WHERE retired_at IS NULL
         """
     )
+    # B3 (research-loop-automation, D-RLA-2): a hypothesis settled by the outcome
+    # rule keeps the evidence that settled it — the candidate, the horizon, the
+    # excess return over the benchmark, the thresholds — so the status is a
+    # finding with a receipt, not a click without one.
+    cur.execute(
+        f"""
+        ALTER TABLE {SCHEMA_RESEARCH}.hypothesis
+        ADD COLUMN IF NOT EXISTS resolution_json jsonb
+        """
+    )
     cur.execute(
         f"""
         CREATE INDEX IF NOT EXISTS hypothesis_symbols

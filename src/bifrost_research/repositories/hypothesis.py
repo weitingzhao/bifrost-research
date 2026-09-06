@@ -41,9 +41,11 @@ _HYPOTHESIS_COLUMNS: tuple[str, ...] = (
     "created_at",
     "updated_at",
     "retired_at",
+    # B3: how an outcome rule settled this hypothesis — the evidence, not a click.
+    "resolution_json",
 )
 
-_JSON_COLS = frozenset({"origin_ref"})
+_JSON_COLS = frozenset({"origin_ref", "resolution_json"})
 _ARRAY_COLS = frozenset({"symbols", "tags", "linked_opportunity_ids", "linked_backtest_ids"})
 _TS_COLS = frozenset({"created_at", "updated_at", "retired_at"})
 
@@ -382,6 +384,37 @@ def patch_hypothesis(
     if row is None:
         return None
     return _row_to_dict(row)
+
+
+def resolve_hypothesis(
+    conn: _Connection,
+    hypothesis_id: str,
+    *,
+    status: str,
+    conclusion: str,
+    resolution: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Settle a hypothesis by outcome rule (B3): status, conclusion and the
+    evidence in one write. Only ``validated`` / ``rejected`` are outcomes; an
+    active hypothesis is not resolved, it is waiting."""
+    if status not in {"validated", "rejected"}:
+        raise ValueError(f"resolution status must be validated or rejected, got {status!r}")
+    sql = f"""
+        UPDATE {TABLE_RESEARCH_HYPOTHESIS}
+        SET status = %s, conclusion = %s, resolution_json = %s, updated_at = now()
+        WHERE id = %s AND status = 'active' AND retired_at IS NULL
+        RETURNING {_column_list()}
+    """
+    params = (status, str(conclusion)[:4000], _serialize_json(dict(resolution)), hypothesis_id)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return _row_to_dict(row) if row is not None else None
 
 
 def retire_hypothesis(conn: _Connection, hypothesis_id: str) -> dict[str, Any] | None:

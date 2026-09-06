@@ -77,6 +77,7 @@ POLICY_SUGGESTION_KEYS = frozenset(
         "option_overlay",
         "require_validate_pass",
         "discovery_assist",
+        "resolution",
     }
 )
 
@@ -192,7 +193,8 @@ def _build_messages(
         '  {"steps": [{"op": <op>, "note": <string>}, ...],\n'
         '   "reasoning": <optional short string, <=400 chars>,\n'
         '   "policy_suggestion": <optional object with keys among preset, flag_filter, '
-        "min_composite_score, min_hit_rate, max_candidates, universe_mode, layers, option_overlay>}\n\n"
+        "min_composite_score, min_hit_rate, max_candidates, universe_mode, layers, option_overlay, "
+        "resolution>}\n\n"
         f"Allowed op values (whitelist): {sorted(VALID_OPS)}.\n"
         "Recommended order: scan_universe → signal_decay_check → analyze_symbol → "
         "run_backtest → propose_candidates → persona_evaluate → compose_report → await_approval.\n"

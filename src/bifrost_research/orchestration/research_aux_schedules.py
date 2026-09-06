@@ -20,7 +20,10 @@ from dagster import (
 
 from bifrost_research.orchestration.plugin_http import meta
 from bifrost_research.orchestration import runners
-from bifrost_research.orchestration.engine_assets import forecast as engines_forecast
+from bifrost_research.orchestration.engine_assets import (
+    candidate_outcome as engines_candidate_outcome,
+    forecast as engines_forecast,
+)
 from bifrost_research.scheduler import engines as engine_sched
 
 GROUP_SIGNALS = "research_signals"
@@ -35,6 +38,7 @@ def _run_asset(
     group: str,
     description: str,
     fn: Callable[[], dict[str, Any]],
+    deps: list[AssetKey] | None = None,
 ):
     asset_name = key_path[-1]
 
@@ -49,6 +53,7 @@ def _run_asset(
         key=AssetKey(key_path),
         group_name=group,
         description=description,
+        deps=deps or None,
     )(_impl)
 
 
@@ -204,11 +209,14 @@ agents_morning_prep = _run_asset(
     description="Morning prep agent",
     fn=_run_morning_prep_agent,
 )
+# B3: settle the candidates' forward windows before the review reads them, so
+# a hypothesis whose window closed today is resolved today, not tomorrow.
 agents_eod_review = _run_asset(
     key_path=["agents", "eod_review"],
     group=GROUP_AGENTS,
-    description="EOD review agent",
+    description="EOD review agent — outcome rule first, drafts for the rest",
     fn=_run_eod_review_agent,
+    deps=[AssetKey(["engines", "candidate_outcome"])],
 )
 
 maint_ensure_partitions = _run_asset(
@@ -344,7 +352,7 @@ _specs: list[tuple[str, str, list[Any], str, str, str]] = [
     (
         "research_eod_review_schedule",
         "research_eod_review_job",
-        [agents_eod_review],
+        [engines_candidate_outcome, agents_eod_review],
         "30 21 * * 1-5",
         "UTC",
         "eod-review",

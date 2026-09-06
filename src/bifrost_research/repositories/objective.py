@@ -179,6 +179,8 @@ POLICY_SUGGESTION_WHITELIST: frozenset[str] = frozenset(
         "universe_mode",
         "layers",
         "option_overlay",
+        # B3: the outcome rule that resolves candidate-born hypotheses.
+        "resolution",
         # Both are real LoopPolicy fields the runtime honours (policy_schema.py:89
         # and :102). They reached plan_llm's suggestion whitelist without reaching
         # this one, so the model could propose them, the Inbox would show the card,
