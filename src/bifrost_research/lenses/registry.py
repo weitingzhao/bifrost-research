@@ -78,6 +78,8 @@ class LensSpec:
     similar_lens: str | None = None
     data_dependency: str | None = None
     notes: str = ""
+    # Categorical lenses: (category value, band) pairs; empty for numeric lenses.
+    categories: tuple[tuple[str, str], ...] = ()
 
 
 _SPECS: tuple[LensSpec, ...] = (
@@ -191,6 +193,7 @@ _SPECS: tuple[LensSpec, ...] = (
         page_route="/research/gex-intraday",
         similar_lens="gex_notional",
         notes="Sign of total_net_gex plus spot vs zero-gamma; decay lens lands in Phase A3.",
+        categories=(("negative", "hot"), ("positive", "cold")),
     ),
     LensSpec(
         id="terrain_regime",
@@ -207,6 +210,7 @@ _SPECS: tuple[LensSpec, ...] = (
         scan_flag="terrain",
         similar_lens="regime",
         notes="Scan's terrain flag is the pin_score band, not the regime label.",
+        categories=(("crash-risk", "hot"), ("trending", "lean_hot"), ("range", "neutral")),
     ),
     LensSpec(
         id="momentum",
@@ -325,6 +329,18 @@ def classify(lens_id: str, value: float | None, *, fractions_as_pct: bool = Fals
     return "neutral"
 
 
+def classify_category(lens_id: str, category: str | None) -> Band | None:
+    """Band for a categorical reading (terrain regime, gamma regime); None when unmapped."""
+    spec = _spec(lens_id)
+    if category is None:
+        return None
+    key = str(category).strip().lower()
+    for value, band in spec.categories:
+        if value == key:
+            return band  # type: ignore[return-value]
+    return None
+
+
 def trigger_side(lens_id: str, value: float | None, *, fractions_as_pct: bool = False) -> str | None:
     """Signal Decay's trigger side: only hot and cold count as triggers."""
     band = classify(lens_id, value, fractions_as_pct=fractions_as_pct)
@@ -356,6 +372,7 @@ def public_registry() -> list[dict[str, Any]]:
     for spec in _SPECS:
         d = asdict(spec)
         d["horizons"] = list(spec.horizons)
+        d["categories"] = dict(spec.categories)
         out.append(d)
     return out
 

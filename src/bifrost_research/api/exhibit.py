@@ -1,21 +1,29 @@
-"""Analyze Exhibit contract — Wave 15.
+"""Analyze Exhibit contract — Wave 15, extended by research-loop-automation A2.
 
 GET /research/exhibit/{lens}?symbol=
 
-Lenses: vrp | iv_rank | terrain | order_sentiment
-Contract: lens, symbol, as_of, freshness, readings, history_summary, caveats
+Lenses: every id in the lens registry (``GET /research/lenses``), plus the legacy
+alias ``terrain`` → ``terrain_regime`` the ribbon still asks for.
+Contract: lens, symbol, as_of, freshness, readings, history_summary, caveats,
+lens_id, verdict, track_record, similar — the last four from the registry and the
+settled record, so a page verdict and a Copilot answer come from one object.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
 
+from bifrost_research.api.exhibit_lenses import NEW_LENS_BUILDERS, VERDICT_INPUT, enrich_exhibit
+from bifrost_research.api.exhibit_model import (
+    ExhibitResponse,
+    freshness_from,
+    iso_date,
+)
 from bifrost_research.db.conn import connect
+from bifrost_research.lenses.registry import LENSES
 from bifrost_research.schema.schemas import (
     TABLE_OPTION_FLOW_SENTIMENT_DAILY,
     TABLE_OPTION_METRIC_IV_PERCENTILE_DAILY,
@@ -26,20 +34,17 @@ from bifrost_research.schema.schemas import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/research/exhibit", tags=["research-exhibit"])
 
-LensName = Literal["vrp", "iv_rank", "terrain", "order_sentiment"]
-Freshness = Literal["fresh", "stale", "missing"]
+# Wave 15 named the terrain exhibit "terrain"; the registry calls the lens terrain_regime.
+LENS_ALIASES: dict[str, str] = {"terrain": "terrain_regime"}
+LEGACY_DEFAULT_LENSES = "vrp,iv_rank,terrain,order_sentiment"
 
-_STALE_HOURS = 36.0
+_freshness_from = freshness_from
+_iso_date = iso_date
 
 
-class ExhibitResponse(BaseModel):
-    lens: str
-    symbol: str
-    as_of: str | None = None
-    freshness: Freshness = "missing"
-    readings: dict[str, Any] = Field(default_factory=dict)
-    history_summary: dict[str, Any] = Field(default_factory=dict)
-    caveats: list[str] = Field(default_factory=list)
+def exhibit_lens_names() -> set[str]:
+    """Every name ``build_exhibit`` accepts: registry ids and the legacy aliases."""
+    return set(LENSES) | set(LENS_ALIASES)
 
 
 def _ok(data: Any) -> dict[str, Any]:
@@ -51,33 +56,6 @@ def _connect_or_503() -> Any:
         return connect()
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
-
-
-def _age_hours(ts: Any) -> float | None:
-    if ts is None:
-        return None
-    if isinstance(ts, datetime):
-        if ts.tzinfo is None:
-            return (datetime.utcnow() - ts).total_seconds() / 3600.0
-        return (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds() / 3600.0
-    return None
-
-
-def _freshness_from(ts: Any, has_row: bool) -> Freshness:
-    if not has_row:
-        return "missing"
-    age = _age_hours(ts)
-    if age is None:
-        return "fresh"  # have a row but no computed_at — treat as present
-    return "fresh" if age <= _STALE_HOURS else "stale"
-
-
-def _iso_date(d: Any) -> str | None:
-    if d is None:
-        return None
-    if isinstance(d, date):
-        return d.isoformat()
-    return str(d)[:10]
 
 
 def _exhibit_vrp(conn: Any, symbol: str) -> ExhibitResponse:
@@ -248,7 +226,7 @@ def _exhibit_terrain(conn: Any, symbol: str) -> ExhibitResponse:
         except Exception:
             pass
     return ExhibitResponse(
-        lens="terrain",
+        lens="terrain_regime",
         symbol=symbol,
         as_of=as_of,
         freshness=_freshness_from(computed_at, bool(readings)),
@@ -268,7 +246,7 @@ def _exhibit_order_sentiment(conn: Any, symbol: str) -> ExhibitResponse:
             cur.execute(
                 f"""
                 SELECT trade_date, sentiment_score, pcr_volume, pcr_oi,
-                       call_notional, put_notional, computed_at
+                       call_notional, put_notional, computed_at, data_source
                 FROM {TABLE_OPTION_FLOW_SENTIMENT_DAILY}
                 WHERE symbol = %s
                 ORDER BY trade_date DESC
@@ -285,6 +263,7 @@ def _exhibit_order_sentiment(conn: Any, symbol: str) -> ExhibitResponse:
                 "pcr_oi": row[3],
                 "call_notional": row[4],
                 "put_notional": row[5],
+                "data_source": row[7],
             }
             computed_at = row[6]
         else:
@@ -309,31 +288,43 @@ def _exhibit_order_sentiment(conn: Any, symbol: str) -> ExhibitResponse:
 _BUILDERS = {
     "vrp": _exhibit_vrp,
     "iv_rank": _exhibit_iv_rank,
-    "terrain": _exhibit_terrain,
+    "terrain_regime": _exhibit_terrain,
     "order_sentiment": _exhibit_order_sentiment,
+    **NEW_LENS_BUILDERS,
 }
 
 
 def build_exhibit(conn: Any, lens: str, symbol: str) -> ExhibitResponse:
-    builder = _BUILDERS.get(lens)
+    """The exhibit for a lens name (registry id or legacy alias), enriched from the registry."""
+    lens_id = LENS_ALIASES.get(lens, lens)
+    builder = _BUILDERS.get(lens_id)
     if builder is None:
         raise ValueError(f"unknown lens: {lens}")
-    return builder(conn, symbol.upper())
+    exh = builder(conn, symbol.upper())
+    exh.lens = lens  # answer with the name that was asked for
+    reading_key, fractions = VERDICT_INPUT[lens_id]
+    return enrich_exhibit(
+        conn,
+        exh,
+        lens_id=lens_id,
+        value=exh.readings.get(reading_key),
+        fractions_as_pct=fractions,
+    )
 
 
 @router.get("/composite")
 def get_exhibit_composite(
     symbol: str = Query(..., min_length=1, max_length=32),
     lenses: str = Query(
-        "vrp,iv_rank,terrain,order_sentiment",
-        description="Comma-separated lens ids to include",
+        LEGACY_DEFAULT_LENSES,
+        description="Comma-separated lens ids to include (any registry lens or legacy alias)",
     ),
 ) -> dict[str, Any]:
     """Composite regime ribbon — aggregated exhibit lamps for a symbol."""
     sym = symbol.strip().upper()
-    valid: set[str] = {"vrp", "iv_rank", "terrain", "order_sentiment"}
+    valid = exhibit_lens_names()
     requested = [x.strip() for x in lenses.split(",") if x.strip()]
-    ordered = [x for x in requested if x in valid] or list(valid)
+    ordered = [x for x in requested if x in valid] or LEGACY_DEFAULT_LENSES.split(",")
     conn = _connect_or_503()
     try:
         exhibits: list[dict[str, Any]] = []
@@ -363,10 +354,12 @@ def get_exhibit_composite(
 
 @router.get("/{lens}")
 def get_exhibit(
-    lens: LensName,
+    lens: str,
     symbol: str = Query(..., min_length=1, max_length=32),
 ) -> dict[str, Any]:
     sym = symbol.strip().upper()
+    if lens not in exhibit_lens_names():
+        raise HTTPException(status_code=400, detail=f"unknown lens: {lens}")
     conn = _connect_or_503()
     try:
         exhibit = build_exhibit(conn, lens, sym)
@@ -383,4 +376,4 @@ def get_exhibit(
             pass
 
 
-__all__ = ["router", "ExhibitResponse", "build_exhibit"]
+__all__ = ["router", "ExhibitResponse", "build_exhibit", "exhibit_lens_names", "LENS_ALIASES"]

@@ -443,6 +443,46 @@ def _similar_regime_categorical(
     return out, source
 
 
+def similar_rows(
+    conn: Any,
+    *,
+    lens: str,
+    symbol: str,
+    value: str | float,
+    k: int,
+    horizon: int,
+) -> tuple[list[dict[str, Any]], str, str | float]:
+    """Neighbours for a lens reading: ``(rows, source, value_as_used)``.
+
+    The HTTP endpoint and the exhibit share this so "similar regimes" means the
+    same thing on the page and in Copilot's answer.
+    """
+    sym = symbol.strip().upper()
+    if lens == "regime":
+        regime_value = str(value).strip()
+        if not regime_value:
+            raise HTTPException(status_code=400, detail="regime value required")
+        rows, source = _similar_regime_categorical(
+            conn, symbol=sym, regime=regime_value, k=k, horizon=horizon
+        )
+        return rows, source, regime_value
+    numeric_value = parse_numeric_lens_value(str(value))
+    source: str = TABLE_STOCK_SIGNAL_VRP_DAILY
+    if lens == "vrp":
+        rows = _similar_vrp(conn, symbol=sym, value=numeric_value, k=k, horizon=horizon)
+    elif lens == "iv_rank":
+        rows, source = _similar_iv_rank(conn, symbol=sym, value=numeric_value, k=k, horizon=horizon)
+    elif lens == "term_slope":
+        rows, source = _similar_term_slope(conn, symbol=sym, value=numeric_value, k=k, horizon=horizon)
+    elif lens == "gex_notional":
+        rows, source = _similar_gex_notional(conn, symbol=sym, value=numeric_value, k=k, horizon=horizon)
+    elif lens == "pin_distance":
+        rows, source = _similar_pin_distance(conn, symbol=sym, value=numeric_value, k=k, horizon=horizon)
+    else:
+        raise HTTPException(status_code=400, detail=f"unsupported lens: {lens}")
+    return rows, source, numeric_value
+
+
 @router.get("")
 def similar_regime(
     lens: Lens = Query("vrp"),
@@ -457,37 +497,9 @@ def similar_regime(
     sym = symbol.strip().upper()
     conn = _connect_or_503()
     try:
-        source: str = TABLE_STOCK_SIGNAL_VRP_DAILY
-        response_value: str | float
-        if lens == "regime":
-            regime_value = value.strip()
-            if not regime_value:
-                raise HTTPException(status_code=400, detail="regime value required")
-            rows, source = _similar_regime_categorical(
-                conn, symbol=sym, regime=regime_value, k=k, horizon=horizon
-            )
-            response_value = regime_value
-        else:
-            numeric_value = parse_numeric_lens_value(value)
-            response_value = numeric_value
-            if lens == "vrp":
-                rows = _similar_vrp(conn, symbol=sym, value=numeric_value, k=k, horizon=horizon)
-            elif lens == "iv_rank":
-                rows, source = _similar_iv_rank(
-                    conn, symbol=sym, value=numeric_value, k=k, horizon=horizon
-                )
-            elif lens == "term_slope":
-                rows, source = _similar_term_slope(
-                    conn, symbol=sym, value=numeric_value, k=k, horizon=horizon
-                )
-            elif lens == "gex_notional":
-                rows, source = _similar_gex_notional(
-                    conn, symbol=sym, value=numeric_value, k=k, horizon=horizon
-                )
-            else:
-                rows, source = _similar_pin_distance(
-                    conn, symbol=sym, value=numeric_value, k=k, horizon=horizon
-                )
+        rows, source, response_value = similar_rows(
+            conn, lens=lens, symbol=sym, value=value, k=k, horizon=horizon
+        )
         return _ok(
             {
                 "lens": lens,
@@ -512,4 +524,4 @@ def similar_regime(
             pass
 
 
-__all__ = ["router", "Lens", "parse_numeric_lens_value", "_fwd_return"]
+__all__ = ["router", "Lens", "parse_numeric_lens_value", "similar_rows", "_fwd_return"]
