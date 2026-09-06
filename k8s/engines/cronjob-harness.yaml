@@ -84,8 +84,11 @@ spec:
                   value: "2.0"
                 - name: BIFROST_PERSONA_EVAL_TIMEOUT_S
                   value: "240"
-                - name: RESEARCH_MCP_SSE_URL
-                  value: "http://research-mcp.research.svc.cluster.local:8796/sse"
+                # No RESEARCH_MCP_SSE_URL on purpose: the judges and the curator use the
+                # in-process MCP server (ensure_local_mcp_url). The curator's batch-pass
+                # guard reads BIFROST_CURATOR_RUN_ID from the MCP tools' own process env,
+                # so pointing this pod at the shared research-mcp made every curator
+                # write 403 (seen on the 0.69.0 acceptance run).
                 - name: PLATFORM_API_URL
                   value: "http://platform-api.bifrost-platform-prod.svc.cluster.local:8780"
               resources:

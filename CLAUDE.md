@@ -191,6 +191,7 @@ make dagster-dev
 - 编排依赖用 optional extra `[orchestration]`，避免默认安装膨胀
 - 新增 dbt 模型需更新 `_*__models.yml` 文档与测试
 - D10 BLOCKED — 不涉及交易执行路径
+- 版本：`0.69.1`（judge 阶段归 policy 管、plan 不能删 —— 0.69.0 在 DEV 的第一份 LLM plan 没写 `persona_evaluate`，整批候选没经 judge 就进了 Inbox；`want_persona = policy.persona_evaluate`，prompt 把该步写进推荐顺序；D10 仍 BLOCKED）
 - 版本：`0.69.0`（research-loop-automation Wave B1+B2 —— **B1** plan 链 `deepseek-chat`(json, 60s) → `gpt-4o-mini` → heuristic，每一跳记进 `llm_attempts`，回退原因逐跳点名（此前 reasoner 不吃 json 模式 + 15s 超时，DEV 每次都退回模板）；**B2** 每个候选由 `PERSONA_EVAL_MODELS`（默认 deepseek-chat + gpt-4o-mini）并行评估，`net_stance` 只取一致意见否则 `dissent`，validate 取最严厉者，失败的 judge 记 `heuristic_fallback` 且算 dissent；每个 provider 独立日上限 `PERSONA_EVAL_DAILY_CAP_USD_{DEEPSEEK,OPENAI}`，花费写 `ai_action_log`（新增列 `provider` / `cost_usd`，`action_kind=persona_eval_spend`）并在每次 run 起点回放；`persona_eval.py` 拆成 `persona_heuristic` / `persona_judge` / 入口；harness CronJob 开 `BIFROST_PERSONA_EVAL_AGENTS=1`；D10 仍 BLOCKED）
 - 版本：`0.66.1`（policy_suggestion 带 `current_policy` 快照 —— 缺它时 Inbox 差异表每行的 Current 都显示「未设置」，8 → 10 读起来像从无到有；快照记录的是提议者当时看到的值）
 - 版本：`0.66.0`（可调节的交易系统 —— `POST /objectives/{id}/policy-suggestion` 让 Owner 也能发起 policy 变更；走 draft 而非直写,系统提的和 Owner 提的留同一份记录,漂移才可归因;白名单在入口校验而非批准时静默丢弃;用严格 `LoopPolicy.model_validate` 而非 fail-soft 的 `parse_policy`;D10 仍 BLOCKED）

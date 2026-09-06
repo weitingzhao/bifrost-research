@@ -673,6 +673,86 @@ def test_run_objective_no_policy_suggestion_draft_when_diff_empty(
     assert result["outputs"]["policy_suggestion_draft_id"] is None
 
 
+def test_run_objective_judges_even_when_the_llm_plan_omits_the_step(
+    monkeypatch: pytest.MonkeyPatch, fake_conn: Any
+) -> None:
+    """0.69.1: the judge stage is governed by policy; a plan cannot drop it.
+
+    The first LLM-written plan on DEV left persona_evaluate out and the batch
+    reached the Inbox unjudged.
+    """
+    from bifrost_research.copilot.harness import plan_llm
+    from bifrost_research.copilot.harness import runtime as rt
+
+    def _plan_without_judges(obj, **_kw):
+        return (
+            {
+                "steps": [
+                    {"op": "scan_universe", "note": "llm"},
+                    {"op": "propose_candidates", "note": "llm"},
+                    {"op": "await_approval", "note": "llm"},
+                ],
+                "reasoning": None,
+                "policy_suggestion": None,
+                "llm_model": "deepseek-chat",
+                "llm_provider": "deepseek",
+                "attempts": [],
+            },
+            [],
+        )
+
+    monkeypatch.setattr(plan_llm, "plan_with_chain", _plan_without_judges)
+    monkeypatch.setattr(
+        rt.ds,
+        "top_scan_symbols",
+        lambda conn, **k: [{"symbol": "SPY", "composite_score": 75.0, "trade_date": None}],
+    )
+    monkeypatch.setattr(rt.ds, "global_signal_decay_summary", lambda conn, **k: {})
+    monkeypatch.delenv("BIFROST_PERSONA_EVAL_AGENTS", raising=False)
+    _patch_repos(monkeypatch)
+
+    result = run_objective(
+        fake_conn,
+        objective={"id": "obj-judged", "title": "Judged", "policy_json": {"use_llm_plan": True}},
+    )
+    persona = result["outputs"]["persona_eval"]
+    assert persona is not None
+    assert persona["mode"] == "heuristic"
+    assert persona["agreement"] == {"agree": 0, "dissent": 0, "single": 1}
+
+    # And the Owner's off switch still wins over a plan that asks for judges.
+    monkeypatch.setattr(
+        plan_llm,
+        "plan_with_chain",
+        lambda obj, **_kw: (
+            {
+                "steps": [
+                    {"op": "scan_universe", "note": "llm"},
+                    {"op": "propose_candidates", "note": "llm"},
+                    {"op": "persona_evaluate", "note": "llm"},
+                    {"op": "await_approval", "note": "llm"},
+                ],
+                "reasoning": None,
+                "policy_suggestion": None,
+                "llm_model": "deepseek-chat",
+                "llm_provider": "deepseek",
+                "attempts": [],
+            },
+            [],
+        ),
+    )
+    _patch_repos(monkeypatch)
+    result = run_objective(
+        fake_conn,
+        objective={
+            "id": "obj-unjudged",
+            "title": "Judges off",
+            "policy_json": {"use_llm_plan": True, "persona_evaluate": False},
+        },
+    )
+    assert result["outputs"]["persona_eval"] is None
+
+
 def test_run_objective_no_policy_suggestion_draft_on_heuristic_plan(
     monkeypatch: pytest.MonkeyPatch, fake_conn: Any
 ) -> None:

@@ -178,12 +178,14 @@ def run_objective(
         }
         want_evidence = OP_ANALYZE_SYMBOL in plan_ops
         want_backtest = OP_RUN_BACKTEST in plan_ops
-        # Persona eval + report default on for heuristic plans; LLM plans may omit.
-        want_persona = OP_PERSONA_EVALUATE in plan_ops or (
-            plan.get("generated_by") == "heuristic" and loop_policy.persona_evaluate
-        )
-        if not loop_policy.persona_evaluate:
-            want_persona = False
+        # The judge stage is governed by policy, not by the plan. The first
+        # LLM-written plan on DEV (0.69.0) left persona_evaluate out and the
+        # batch went to the Inbox unjudged — the Owner's rule silently dropped
+        # by a model's sense of order. A plan may still name the step so the
+        # trace reads honestly, but it cannot remove it.
+        want_persona = bool(loop_policy.persona_evaluate)
+        if want_persona and OP_PERSONA_EVALUATE not in plan_ops:
+            plan_ops.add(OP_PERSONA_EVALUATE)
         want_report = OP_COMPOSE_REPORT in plan_ops or plan.get("generated_by") == "heuristic"
         trace.append(
             {
