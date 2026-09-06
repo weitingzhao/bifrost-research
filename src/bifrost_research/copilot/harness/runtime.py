@@ -196,8 +196,13 @@ def run_objective(
             }
         )
         # Enrich plan event with a short decision for live UI.
+        provenance = str(plan.get("generated_by") or "heuristic")
+        if plan.get("llm_model"):
+            provenance = f"{provenance} · {plan['llm_model']}"
         if trace and trace[0].get("step") == "plan":
-            trace[0]["decision"] = f"generated_by={plan.get('generated_by')}"
+            trace[0]["decision"] = f"generated_by={plan.get('generated_by')}" + (
+                f" model={plan['llm_model']}" if plan.get("llm_model") else ""
+            )
             trace[0]["label"] = "Plan"
         _flush_live_trace(
             conn,
@@ -205,7 +210,7 @@ def run_objective(
             trace,
             step="plan",
             label="Plan",
-            detail=str(plan.get("generated_by") or "heuristic"),
+            detail=provenance,
         )
 
         # 1. Resolve universe --------------------------------------------------

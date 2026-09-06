@@ -140,9 +140,12 @@ def _plan_for_objective(
         return heuristic
 
     rules = _playbook_rules_for(conn, objective) if conn is not None else []
-    llm_result = plan_llm.generate_plan_llm(objective, playbook_rules=rules)
+    llm_result, attempts = plan_llm.plan_with_chain(objective, playbook_rules=rules)
     if not llm_result:
-        heuristic["fallback_reason"] = "llm_call_failed_or_invalid"
+        # Name every hop that failed — "call failed" told nobody which model,
+        # which provider, or whether it was the key, the clock or the JSON.
+        heuristic["fallback_reason"] = plan_llm.failure_reason(attempts)
+        heuristic["llm_attempts"] = attempts
         return heuristic
 
     return {
@@ -151,6 +154,8 @@ def _plan_for_objective(
         "policy": policy,
         "generated_by": "llm",
         "llm_model": llm_result.get("llm_model"),
+        "llm_provider": llm_result.get("llm_provider"),
+        "llm_attempts": attempts,
         "llm_reasoning": llm_result.get("reasoning"),
         "policy_suggestion": llm_result.get("policy_suggestion"),
         # Visible in the trace: a plan made under rules is a different plan.

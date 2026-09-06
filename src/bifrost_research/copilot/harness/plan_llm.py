@@ -11,10 +11,14 @@ Optional in-process LLM step that upgrades ``_plan_for_objective`` from a static
       stored ``objective.policy_json``).
   C1: No data reflow — LLM sees only the objective + policy; scan/decay reads
       remain in the propose stage.
-  E3: Default model ``deepseek-reasoner``; ``policy_json.llm_model`` may override.
+  E3: Default model ``deepseek-chat`` (B1 — the reasoner ignored json mode and
+      blew the old 15s budget, so every DEV run fell back); ``policy_json.llm_model``
+      may override. Provider chain (B1): the policy's model → ``deepseek-chat`` →
+      ``gpt-4o-mini`` → heuristic template; every hop is recorded in ``attempts``.
 
-All failures fall back silently by returning ``None`` so the runtime uses the
-heuristic template.  D10 BLOCKED — this module never touches Trade DB or the
+All failures fall back by returning ``None`` (plus the attempts, via
+``plan_with_chain``) so the runtime uses the heuristic template and the trace
+says which model failed how.  D10 BLOCKED — this module never touches Trade DB or the
 IB operator command stream.
 """
 
@@ -23,10 +27,15 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError, field_validator
+
+from bifrost_research.copilot.models import ChatEndpoint, ModelConfigError, resolve_chat_endpoint
+from bifrost_research.copilot.providers import estimate_cost
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +80,13 @@ POLICY_SUGGESTION_KEYS = frozenset(
     }
 )
 
-DEFAULT_TIMEOUT_SECONDS = 15.0
-DEFAULT_MODEL = "deepseek-reasoner"
-DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
+DEFAULT_TIMEOUT_SECONDS = 60.0
+# The chat model, not the reasoner: json mode works and a plan comes back in
+# seconds. ``policy_json.llm_model`` may still pick something else.
+DEFAULT_MODEL = "deepseek-chat"
+# Second hop on another provider, so one outage cannot take both.
+FALLBACK_MODEL = "gpt-4o-mini"
+JSON_RESPONSE_FORMAT: dict[str, str] = {"type": "json_object"}
 
 
 class LLMPlanStep(BaseModel):
@@ -196,7 +209,10 @@ def _build_messages(
         "do NOT mention IV hot watchlist unless option_overlay.enabled is true.\n"
         "signal_decay_check applies only to scan_legacy (option scan) mode.\n"
         "You may drop / reorder steps if the objective calls for it, but you must include propose_candidates and await_approval.\n"
-        "policy_suggestion is advisory only; the Owner still has to update the objective policy.\n"
+        "policy_suggestion is advisory only; the Owner still has to update the objective policy. "
+        "Include it ONLY when you recommend changing something, and then only the keys you "
+        "want changed with their new values — never echo the current policy_json back, and "
+        "omit the field entirely when the policy is fine as it is.\n"
         "D10 BLOCKED — you are proposing research candidates only, never orders."
         + _playbook_block(playbook_rules)
     )
@@ -247,50 +263,73 @@ def _parse_llm_json(raw: str) -> dict[str, Any] | None:
     return obj if isinstance(obj, dict) else None
 
 
-def generate_plan_llm(
-    objective: dict[str, Any],
-    *,
-    playbook_rules: list[dict[str, Any]] | None = None,
-    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
-) -> dict[str, Any] | None:
-    """Attempt to build a plan via LLM.  Returns None on any failure (fail-soft).
+def model_chain(policy: dict[str, Any] | None) -> list[str]:
+    """Models to try in order: the policy's pick (or the default), then the
+    remaining default hops. Distinct providers, so one outage cannot take both."""
+    chain = [_resolve_model(policy)]
+    for model in (DEFAULT_MODEL, FALLBACK_MODEL):
+        if model not in chain:
+            chain.append(model)
+    return chain
 
-    Success shape::
 
-        {
-          "steps": [{"op": str, "note": str}, ...],
-          "reasoning": str | None,
-          "policy_suggestion": dict | None,
-          "llm_model": str,
-        }
-    """
-    policy = objective.get("policy_json") or {}
+def _supports_json_mode(model: str) -> bool:
+    # DeepSeek's reasoner rejects ``response_format``; everything else in the
+    # chain honours it.
+    return "reasoner" not in model.lower()
 
-    enabled, reason = is_llm_plan_enabled(policy)
-    if not enabled:
-        logger.debug("harness LLM plan disabled: %s", reason)
-        return None
 
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-    if not api_key:
-        logger.info("harness LLM plan: DEEPSEEK_API_KEY not set; fallback heuristic")
-        return None
-
-    model = _resolve_model(policy)
-    base_url = os.environ.get("DEEPSEEK_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
-    messages = _build_messages(objective, playbook_rules)
-
-    body = {
+def _new_attempt(model: str, provider: str) -> dict[str, Any]:
+    return {
         "model": model,
+        "provider": provider,
+        "ok": False,
+        "elapsed_ms": 0,
+        "error": None,
+        "http_status": None,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_usd": 0.0,
+    }
+
+
+def _call_endpoint(
+    endpoint: ChatEndpoint,
+    messages: list[dict[str, str]],
+    timeout_seconds: float,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """One hop of the chain: call, parse, validate. Never raises.
+
+    Returns ``(validated plan fields | None, attempt record)``. The record is
+    what the trace shows, so every exit path names its failure.
+    """
+    attempt = _new_attempt(endpoint.model, endpoint.provider)
+    api_key = endpoint.api_key
+    if not api_key:
+        attempt["error"] = f"{endpoint.api_key_env} not configured"
+        return None, attempt
+
+    body: dict[str, Any] = {
+        "model": endpoint.model,
         "messages": messages,
         "temperature": 0.2,
         "stream": False,
     }
+    if _supports_json_mode(endpoint.model):
+        body["response_format"] = dict(JSON_RESPONSE_FORMAT)
+
+    started = time.perf_counter()
+
+    def fail(error: str, status: int | None = None) -> tuple[None, dict[str, Any]]:
+        attempt["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
+        attempt["error"] = error
+        attempt["http_status"] = status
+        return None, attempt
 
     try:
         with httpx.Client(timeout=timeout_seconds) as client:
             resp = client.post(
-                f"{base_url}/chat/completions",
+                f"{endpoint.base_url}/chat/completions",
                 json=body,
                 headers={
                     "Authorization": f"Bearer {api_key}",
@@ -298,47 +337,146 @@ def generate_plan_llm(
                 },
             )
     except httpx.TimeoutException:
-        logger.warning("harness LLM plan: timeout after %.1fs; fallback heuristic", timeout_seconds)
-        return None
+        return fail(f"timeout after {timeout_seconds:.0f}s")
     except httpx.HTTPError as exc:
-        logger.warning("harness LLM plan: httpx error %s; fallback heuristic", exc)
-        return None
+        return fail(f"httpx error {exc}")
 
     if resp.status_code >= 400:
         logger.warning(
-            "harness LLM plan: HTTP %s; fallback heuristic. body=%s",
+            "harness LLM plan: %s@%s HTTP %s body=%s",
+            endpoint.model,
+            endpoint.provider,
             resp.status_code,
             resp.text[:200],
         )
-        return None
+        return fail(f"HTTP {resp.status_code}", resp.status_code)
 
     try:
         payload = resp.json()
     except ValueError:
-        logger.warning("harness LLM plan: non-json response; fallback heuristic")
-        return None
+        return fail("non-json response", resp.status_code)
+
+    usage = payload.get("usage") or {}
+    attempt["input_tokens"] = int(usage.get("prompt_tokens") or 0)
+    attempt["output_tokens"] = int(usage.get("completion_tokens") or 0)
+    attempt["cost_usd"] = round(
+        estimate_cost(endpoint.model, attempt["input_tokens"], attempt["output_tokens"]), 6
+    )
 
     choices = payload.get("choices") or []
     if not choices:
-        logger.warning("harness LLM plan: empty choices; fallback heuristic")
-        return None
+        return fail("empty choices", resp.status_code)
     message = (choices[0] or {}).get("message") or {}
     content = str(message.get("content") or "")
 
     parsed = _parse_llm_json(content)
     if parsed is None:
-        logger.warning("harness LLM plan: could not parse JSON; fallback heuristic")
-        return None
+        return fail("unparseable content", resp.status_code)
 
     try:
         validated = LLMPlanResponse.model_validate(parsed)
     except ValidationError as exc:
-        logger.warning("harness LLM plan: schema violation %s; fallback heuristic", exc.errors()[:1])
-        return None
+        first = exc.errors()[:1]
+        detail = first[0].get("msg") if first else "invalid"
+        return fail(f"schema violation: {detail}", resp.status_code)
 
-    return {
-        "steps": [step.model_dump() for step in validated.steps],
-        "reasoning": validated.reasoning,
-        "policy_suggestion": validated.policy_suggestion,
-        "llm_model": model,
-    }
+    attempt["ok"] = True
+    attempt["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
+    attempt["http_status"] = resp.status_code
+    return (
+        {
+            "steps": [step.model_dump() for step in validated.steps],
+            "reasoning": validated.reasoning,
+            "policy_suggestion": validated.policy_suggestion,
+        },
+        attempt,
+    )
+
+
+def plan_with_chain(
+    objective: dict[str, Any],
+    *,
+    playbook_rules: list[dict[str, Any]] | None = None,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    models: Sequence[str] | None = None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """Walk the model chain until one hop returns a valid plan.
+
+    Returns ``(plan | None, attempts)``. Success shape::
+
+        {
+          "steps": [{"op": str, "note": str}, ...],
+          "reasoning": str | None,
+          "policy_suggestion": dict | None,
+          "llm_model": str,
+          "llm_provider": str,
+          "attempts": [{"model", "provider", "ok", "elapsed_ms", "error", ...}],
+        }
+
+    ``attempts`` is returned alongside on failure too, so the caller can say
+    which model failed how instead of a bare "call failed".
+    """
+    policy = objective.get("policy_json") or {}
+
+    enabled, reason = is_llm_plan_enabled(policy)
+    if not enabled:
+        logger.debug("harness LLM plan disabled: %s", reason)
+        return None, []
+
+    messages = _build_messages(objective, playbook_rules)
+    attempts: list[dict[str, Any]] = []
+    for model in list(models) if models else model_chain(policy):
+        try:
+            endpoint = resolve_chat_endpoint(model)
+        except ModelConfigError as exc:
+            attempt = _new_attempt(model, "unknown")
+            attempt["error"] = str(exc)
+            attempts.append(attempt)
+            continue
+        result, attempt = _call_endpoint(endpoint, messages, timeout_seconds)
+        attempts.append(attempt)
+        if result is not None:
+            logger.info(
+                "harness LLM plan: %s@%s in %dms",
+                endpoint.model,
+                endpoint.provider,
+                attempt["elapsed_ms"],
+            )
+            return (
+                {
+                    **result,
+                    "llm_model": endpoint.model,
+                    "llm_provider": endpoint.provider,
+                    "attempts": attempts,
+                },
+                attempts,
+            )
+        logger.warning(
+            "harness LLM plan: %s@%s failed: %s",
+            endpoint.model,
+            endpoint.provider,
+            attempt["error"],
+        )
+    return None, attempts
+
+
+def failure_reason(attempts: list[dict[str, Any]]) -> str:
+    """The fallback reason the trace shows: every hop, named, in order."""
+    if not attempts:
+        return "llm_failed: no model attempted"
+    parts = [
+        f"{a.get('model')}@{a.get('provider')} {a.get('error') or 'failed'}" for a in attempts
+    ]
+    return "llm_failed: " + "; ".join(parts)
+
+
+def generate_plan_llm(
+    objective: dict[str, Any],
+    *,
+    playbook_rules: list[dict[str, Any]] | None = None,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+) -> dict[str, Any] | None:
+    """Plan via the model chain; ``None`` when every hop failed (fail-soft)."""
+    return plan_with_chain(
+        objective, playbook_rules=playbook_rules, timeout_seconds=timeout_seconds
+    )[0]

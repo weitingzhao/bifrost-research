@@ -1,15 +1,56 @@
-"""Model resolution for openai-agents SDK (Wave RS-F2.1)."""
+"""Model resolution for the openai-agents SDK (Wave RS-F2.1) and the
+chat-completions endpoint table the SDK path and the harness plan step share
+(Wave B1 of research-loop-automation).
+
+The agents SDK is the optional ``copilot`` extra, so it is imported lazily —
+``resolve_chat_endpoint`` must stay importable from a bare research image.
+"""
 
 from __future__ import annotations
 
 import os
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from agents.models.interface import Model
+if TYPE_CHECKING:
+    from agents.models.interface import Model
 
 
 class ModelConfigError(Exception):
     """Missing API key or invalid model id."""
+
+
+@dataclass(frozen=True)
+class ChatEndpoint:
+    """Where a plain chat-completions call for a model id goes."""
+
+    provider: str
+    model: str
+    base_url: str
+    api_key_env: str
+
+    @property
+    def api_key(self) -> str:
+        return os.environ.get(self.api_key_env, "").strip()
+
+
+def resolve_chat_endpoint(model_id: str) -> ChatEndpoint:
+    """Provider facts for ``model_id``: base URL, key env, resolved model id.
+
+    One table, read by the SDK resolver below and by the harness planner, so
+    the two paths cannot drift on which env names a provider. Only providers
+    that speak the OpenAI chat-completions protocol belong here.
+    """
+    lower = (model_id or "").strip().lower()
+    if lower.startswith("deepseek"):
+        base = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
+        mid = model_id if model_id.startswith("deepseek") else "deepseek-chat"
+        return ChatEndpoint("deepseek", mid, base, "DEEPSEEK_API_KEY")
+    if lower.startswith(("gpt", "openai")):
+        base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+        mid = model_id if model_id.startswith("gpt") else "gpt-4o-mini"
+        return ChatEndpoint("openai", mid, base, "OPENAI_API_KEY")
+    raise ModelConfigError(f"No chat-completions endpoint for model id {model_id!r}")
 
 
 def _require_key(env_name: str, model_label: str) -> str:
@@ -30,11 +71,10 @@ def resolve_model_for_agent(model_id: str) -> Model:
 
         from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 
-        base = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
-        api_key = _require_key("DEEPSEEK_API_KEY", model_id)
-        client = AsyncOpenAI(base_url=base, api_key=api_key)
-        mid = model_id if model_id.startswith("deepseek") else "deepseek-chat"
-        return OpenAIChatCompletionsModel(model=mid, openai_client=client)
+        endpoint = resolve_chat_endpoint(model_id)
+        api_key = _require_key(endpoint.api_key_env, model_id)
+        client = AsyncOpenAI(base_url=endpoint.base_url, api_key=api_key)
+        return OpenAIChatCompletionsModel(model=endpoint.model, openai_client=client)
 
     if lower.startswith("ollama") or lower.startswith("llama"):
         from openai import AsyncOpenAI
@@ -78,4 +118,4 @@ def resolve_model_for_agent(model_id: str) -> Model:
     raise ModelConfigError(f"Unknown model id: {model_id!r}")
 
 
-__all__ = ["ModelConfigError", "resolve_model_for_agent"]
+__all__ = ["ChatEndpoint", "ModelConfigError", "resolve_chat_endpoint", "resolve_model_for_agent"]

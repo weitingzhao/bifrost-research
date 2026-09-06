@@ -145,6 +145,10 @@ def _env_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setenv("BIFROST_HARNESS_LLM_PLAN", "1")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-123")
+    # B1 added a second hop on OpenAI; these tests pin the first hop's fail-soft
+    # matrix, so the second hop is skipped for want of a key. The chain itself
+    # is covered in test_plan_llm_chain.py.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
 
 def _install_client(monkeypatch: pytest.MonkeyPatch, fake: _FakeClient) -> None:
@@ -221,6 +225,10 @@ def test_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "OBJECTIVE" in body["messages"][1]["content"]
     assert fake.captured_headers["Authorization"] == "Bearer sk-test-123"
     assert fake.captured_url.endswith("/chat/completions")
+    # B1: json mode on, and the attempt is recorded on the result.
+    assert body["response_format"] == {"type": "json_object"}
+    assert result["llm_provider"] == "deepseek"
+    assert [a["ok"] for a in result["attempts"]] == [True]
 
 
 def test_policy_overrides_model(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -228,11 +236,13 @@ def test_policy_overrides_model(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_client(monkeypatch, fake)
 
     result = plan_llm.generate_plan_llm(
-        _obj(policy_json={"llm_model": "deepseek-chat", "max_candidates": 3})
+        _obj(policy_json={"llm_model": "deepseek-reasoner", "max_candidates": 3})
     )
     assert result is not None
-    assert result["llm_model"] == "deepseek-chat"
-    assert fake.captured_body["model"] == "deepseek-chat"
+    assert result["llm_model"] == "deepseek-reasoner"
+    assert fake.captured_body["model"] == "deepseek-reasoner"
+    # The reasoner rejects json mode, so the body must not ask for it.
+    assert "response_format" not in fake.captured_body
 
 
 def test_env_base_url_used(monkeypatch: pytest.MonkeyPatch) -> None:

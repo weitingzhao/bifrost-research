@@ -52,22 +52,28 @@ def test_plan_for_objective_returns_steps(monkeypatch: pytest.MonkeyPatch) -> No
 def test_plan_for_objective_uses_llm_when_available(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Y.2: policy.use_llm_plan=true + mock generate_plan_llm → generated_by=llm."""
+    """Y.2: policy.use_llm_plan=true + mock plan_with_chain → generated_by=llm."""
     from bifrost_research.copilot.harness import plan_llm
 
+    attempt = {"model": "deepseek-chat", "provider": "deepseek", "ok": True, "elapsed_ms": 900}
     monkeypatch.setattr(
         plan_llm,
-        "generate_plan_llm",
-        lambda obj, **_kw: {
-            "steps": [
-                {"op": "scan_universe", "note": "llm-picked scan"},
-                {"op": "propose_candidates", "note": "llm-picked propose"},
-                {"op": "await_approval", "note": "llm-picked approval"},
-            ],
-            "reasoning": "LLM decided to skip decay check for narrow universe.",
-            "policy_suggestion": {"min_composite_score": 65.0},
-            "llm_model": "deepseek-reasoner",
-        },
+        "plan_with_chain",
+        lambda obj, **_kw: (
+            {
+                "steps": [
+                    {"op": "scan_universe", "note": "llm-picked scan"},
+                    {"op": "propose_candidates", "note": "llm-picked propose"},
+                    {"op": "await_approval", "note": "llm-picked approval"},
+                ],
+                "reasoning": "LLM decided to skip decay check for narrow universe.",
+                "policy_suggestion": {"min_composite_score": 65.0},
+                "llm_model": "deepseek-chat",
+                "llm_provider": "deepseek",
+                "attempts": [attempt],
+            },
+            [attempt],
+        ),
     )
     plan = _plan_for_objective(
         {
@@ -77,7 +83,9 @@ def test_plan_for_objective_uses_llm_when_available(
         }
     )
     assert plan["generated_by"] == "llm"
-    assert plan["llm_model"] == "deepseek-reasoner"
+    assert plan["llm_model"] == "deepseek-chat"
+    assert plan["llm_provider"] == "deepseek"
+    assert plan["llm_attempts"] == [attempt]
     assert plan["llm_reasoning"].startswith("LLM decided")
     assert plan["policy_suggestion"] == {"min_composite_score": 65.0}
     ops = [s.get("op") for s in plan["steps"]]
@@ -90,10 +98,14 @@ def test_plan_for_objective_uses_llm_when_available(
 def test_plan_for_objective_falls_back_when_llm_returns_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Y.2: LLM enabled but generate_plan_llm returns None → heuristic + fallback_reason."""
+    """Y.2: LLM enabled but every hop fails → heuristic + a reason naming each hop."""
     from bifrost_research.copilot.harness import plan_llm
 
-    monkeypatch.setattr(plan_llm, "generate_plan_llm", lambda obj, **_kw: None)
+    attempts = [
+        {"model": "deepseek-chat", "provider": "deepseek", "ok": False, "error": "timeout after 60s"},
+        {"model": "gpt-4o-mini", "provider": "openai", "ok": False, "error": "HTTP 500"},
+    ]
+    monkeypatch.setattr(plan_llm, "plan_with_chain", lambda obj, **_kw: (None, attempts))
     plan = _plan_for_objective(
         {
             "id": "obj-fallback",
@@ -102,7 +114,10 @@ def test_plan_for_objective_falls_back_when_llm_returns_none(
         }
     )
     assert plan["generated_by"] == "heuristic"
-    assert plan["fallback_reason"] == "llm_call_failed_or_invalid"
+    assert plan["fallback_reason"] == (
+        "llm_failed: deepseek-chat@deepseek timeout after 60s; gpt-4o-mini@openai HTTP 500"
+    )
+    assert plan["llm_attempts"] == attempts
     ops = [s.get("op") for s in plan["steps"]]
     assert set(ops) == {
         "scan_universe",
@@ -567,15 +582,15 @@ def test_run_objective_creates_policy_suggestion_draft_from_llm_plan(
     monkeypatch: pytest.MonkeyPatch, fake_conn: Any
 ) -> None:
     """Y.3 A1: LLM plan with non-trivial policy_suggestion → separate draft."""
+    from bifrost_research.copilot.harness import plan_llm
     from bifrost_research.copilot.harness import runtime as rt
 
     # LLM plan with actionable suggestion
-    from bifrost_research.copilot.harness import plan_llm
 
     monkeypatch.setattr(
         plan_llm,
-        "generate_plan_llm",
-        lambda obj, **_kw: {
+        "plan_with_chain",
+        lambda obj, **_kw: ({
             "steps": [
                 {"op": "scan_universe", "note": "llm"},
                 {"op": "propose_candidates", "note": "llm"},
@@ -584,7 +599,7 @@ def test_run_objective_creates_policy_suggestion_draft_from_llm_plan(
             "reasoning": "raise min_hit_rate for higher confidence.",
             "policy_suggestion": {"min_hit_rate": 0.7, "max_candidates": 5},
             "llm_model": "deepseek-reasoner",
-        },
+        }, []),
     )
     monkeypatch.setattr(
         rt.ds,
@@ -627,8 +642,8 @@ def test_run_objective_no_policy_suggestion_draft_when_diff_empty(
 
     monkeypatch.setattr(
         plan_llm,
-        "generate_plan_llm",
-        lambda obj, **_kw: {
+        "plan_with_chain",
+        lambda obj, **_kw: ({
             "steps": [
                 {"op": "propose_candidates", "note": "llm"},
                 {"op": "await_approval", "note": "llm"},
@@ -636,7 +651,7 @@ def test_run_objective_no_policy_suggestion_draft_when_diff_empty(
             "reasoning": None,
             "policy_suggestion": {"min_hit_rate": 0.55},  # same as current
             "llm_model": "deepseek-reasoner",
-        },
+        }, []),
     )
     monkeypatch.setattr(
         rt.ds,
