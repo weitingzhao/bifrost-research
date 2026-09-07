@@ -74,6 +74,26 @@ def _drop_legacy_bare_schemas(cur: _Cursor) -> None:
             cur.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
 
 
+def _try_each(cur: _Cursor, statements: list[str]) -> None:
+    """Run best-effort statements, each isolated by a savepoint.
+
+    Without the savepoint a single failing GRANT aborts the whole transaction:
+    the bare `except` hides it, every later statement dies with
+    InFailedSqlTransaction, and the `conn.commit()` at the end of
+    apply_*_ddl silently becomes a rollback that discards the tables the
+    same transaction just created.
+    """
+    for i, sql in enumerate(statements):
+        name = f"grant_{i}"
+        cur.execute(f"SAVEPOINT {name}")
+        try:
+            cur.execute(sql)
+        except Exception:
+            cur.execute(f"ROLLBACK TO SAVEPOINT {name}")
+        else:
+            cur.execute(f"RELEASE SAVEPOINT {name}")
+
+
 def _grant_features_schema_privileges(cur: _Cursor) -> None:
     """Best-effort GRANT on features schema (roles may not exist in dev)."""
     grants = [
@@ -84,11 +104,7 @@ def _grant_features_schema_privileges(cur: _Cursor) -> None:
           GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON TABLES TO bifrost, analytics_writer
         """,
     ]
-    for sql in grants:
-        try:
-            cur.execute(sql)
-        except Exception:
-            pass
+    _try_each(cur, grants)
 
 
 def apply_features_ddl(conn: _Connection) -> None:
@@ -121,11 +137,7 @@ def _grant_research_schema_privileges(cur: _Cursor) -> None:
           GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON TABLES TO bifrost, analytics_writer
         """,
     ]
-    for sql in grants:
-        try:
-            cur.execute(sql)
-        except Exception:
-            pass
+    _try_each(cur, grants)
 
 
 def _create_research_workflow_tables(cur: _Cursor) -> None:
@@ -494,6 +506,15 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
     )
 
     # --- RS-KB5: semantic retrieval store (pgvector optional) ---
+    # The SAVEPOINT is the whole point of this block. `CREATE EXTENSION` needs
+    # superuser and the DDL runs as `bifrost`, so it raises; the bare `except`
+    # below swallows the exception but PostgreSQL has already aborted the
+    # transaction, and every statement after this point died with
+    # InFailedSqlTransaction. That is why research.candidate_pool,
+    # copilot_bridge_event and the three playbook_* tables were missing from
+    # Golden Source for weeks while the Job reported nothing wrong. Rolling back
+    # to the savepoint keeps the failure local to the optional block.
+    cur.execute("SAVEPOINT rs_kb5_vector")
     try:
         cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
         cur.execute(
@@ -519,7 +540,9 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         )
     except Exception:
         # pgvector not available — keyword search fallback (RS-KB5)
-        pass
+        cur.execute("ROLLBACK TO SAVEPOINT rs_kb5_vector")
+    else:
+        cur.execute("RELEASE SAVEPOINT rs_kb5_vector")
 
     # --- Wave Loop v1: research.candidate_pool ---
     cur.execute(

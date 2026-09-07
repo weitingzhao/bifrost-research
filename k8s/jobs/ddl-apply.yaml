@@ -3,20 +3,25 @@ kind: Job
 metadata:
   annotations:
     # One-off Job: run by hand (kubectl create), never applied by Argo CD.
-    # Runs as analytics_writer, which does not own the features / research
-    # schemas (owner: bifrost) — CREATE / ALTER fail with InsufficientPrivilege
-    # (seen 2026-09-06 on the B2 ai_action_log columns). Until the Owner grants
-    # the role or gives this Job the owner credentials, DDL is applied with the
-    # owner role by hand; this manifest records the intended path.
+    # Runs as analytics_writer, which is a member of the owning role `bifrost`
+    # and holds CREATE on both schemas, so CREATE / ALTER succeed. The
+    # InsufficientPrivilege seen on 2026-09-06 (B2 ai_action_log columns) came
+    # from research.agent_persona still being owned by `postgres`: one ALTER
+    # aborted the transaction and took the rest of the batch with it. Ownership
+    # was transferred to `bifrost` on 2026-09-07 and the whole schema is uniform.
+    # Scope is `all` — features + the research workflow tables. Anything the Job
+    # creates is owned by analytics_writer, so sweep ownership back to `bifrost`
+    # afterwards to keep the schema single-owner:
+    #   ALTER TABLE research.<t> OWNER TO bifrost;
     # A Job's pod template is immutable, so every image-pin bump made the app
     # sync fail on "field is immutable" (research-loop-automation 0.68.0 release).
     argocd.argoproj.io/hook: Skip
-  name: research-ddl-apply-analyze-def
+  name: research-ddl-apply-rla-postreview
   namespace: research
   labels:
     app.kubernetes.io/name: research-ddl-apply
     app.kubernetes.io/part-of: bifrost-research
-    bifrost.research/wave: analyze-def
+    bifrost.research/wave: rla-postreview
 spec:
   backoffLimit: 2
   ttlSecondsAfterFinished: 86400
@@ -50,9 +55,7 @@ spec:
             - bifrost_research.schema.init
             - --apply
             - --scope
-            - features
-            - --tables
-            - stock_signal_playbook_trigger_intraday,stock_signal_scan_daily
+            - all
           envFrom:
             - secretRef:
                 name: bifrost-research-secrets
