@@ -55,8 +55,27 @@ def strip_meta_args(arguments: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def _without_empties(value: Any) -> Any:
+    """Drop None / {} / [] recursively — an absent optional and an empty one carry the same intent."""
+    if isinstance(value, dict):
+        out = {k: _without_empties(v) for k, v in value.items()}
+        return {k: v for k, v in out.items() if v is not None and v != {} and v != []}
+    if isinstance(value, list):
+        return [_without_empties(v) for v in value]
+    return value
+
+
 def canonical_input_hash(tool: str, arguments: dict[str, Any] | None) -> str:
-    payload = {"tool": tool, "args": strip_meta_args(arguments)}
+    """The hash a token is bound to.
+
+    Computed once when the token is issued over the arguments the Owner saw,
+    and again inside the write tool over the arguments it is about to use.
+    The tool fills optional arguments with their defaults (``lens_snapshot or
+    {}``, ``tags or []``), so a proposal that left them out used to hash
+    differently from the same proposal executed — every such approval failed
+    as "tampering". Empties are dropped on both sides before hashing.
+    """
+    payload = {"tool": tool, "args": _without_empties(strip_meta_args(arguments))}
     raw = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
