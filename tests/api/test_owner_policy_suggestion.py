@@ -92,9 +92,11 @@ def test_a_field_that_would_be_dropped_is_refused(
     # patch_policy_json filters silently at approval. Accepting the field here
     # would put a card in the Inbox that changes nothing when approved — the
     # exact failure the "0 fields to merge" work exists to surface.
-    r = _post(client, {"suggestion": {"use_llm_plan": False}})
+    # use_llm_plan became an Owner knob (OWNER_POLICY_WHITELIST); auto_validate is
+    # a real LoopPolicy field that neither whitelist admits, so it would be dropped.
+    r = _post(client, {"suggestion": {"auto_validate": True}})
     assert r.status_code == 400
-    assert "use_llm_plan" in r.text
+    assert "auto_validate" in r.text
     assert "silently" in r.text
     assert captured == {}, "a refused suggestion must not create a draft"
 

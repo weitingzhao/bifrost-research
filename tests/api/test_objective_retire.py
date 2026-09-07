@@ -37,7 +37,7 @@ def test_archiving_keeps_the_objective_row(monkeypatch: pytest.MonkeyPatch) -> N
         return {**OBJ, "status": status}
 
     monkeypatch.setattr(obj_repo, "set_objective_status", _set)
-    out = api.set_objective_status("obj-x", api.ObjectiveStatusPatch(status="archived"))
+    out = api.patch_objective("obj-x", api.ObjectiveStatusPatch(status="archived"))
     assert out["data"]["status"] == "archived"
     assert seen == {"id": "obj-x", "status": "archived"}
 
@@ -45,7 +45,7 @@ def test_archiving_keeps_the_objective_row(monkeypatch: pytest.MonkeyPatch) -> N
 def test_archiving_an_unknown_objective_is_404(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(obj_repo, "set_objective_status", lambda *a, **k: None)
     with pytest.raises(HTTPException) as e:
-        api.set_objective_status("nope", api.ObjectiveStatusPatch(status="archived"))
+        api.patch_objective("nope", api.ObjectiveStatusPatch(status="archived"))
     assert e.value.status_code == 404
 
 
@@ -199,8 +199,8 @@ def test_archiving_is_reversible(monkeypatch: pytest.MonkeyPatch) -> None:
         "set_objective_status",
         lambda conn, oid, *, status: seen.append(status) or {**OBJ, "status": status},
     )
-    api.set_objective_status("obj-x", api.ObjectiveStatusPatch(status="archived"))
-    out = api.set_objective_status("obj-x", api.ObjectiveStatusPatch(status="active"))
+    api.patch_objective("obj-x", api.ObjectiveStatusPatch(status="archived"))
+    out = api.patch_objective("obj-x", api.ObjectiveStatusPatch(status="active"))
     assert seen == ["archived", "active"]
     assert out["data"]["status"] == "active"
 

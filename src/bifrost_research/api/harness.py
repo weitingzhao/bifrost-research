@@ -159,6 +159,8 @@ def patch_objective(objective_id: str, body: ObjectiveStatusPatch) -> dict[str, 
                 raise HTTPException(status_code=404, detail="objective not found")
         if body.status is not None:
             row = obj_repo.set_objective_status(conn, objective_id, status=body.status)
+            if row is None:
+                raise HTTPException(status_code=404, detail="objective not found")
         if row is None:
             row = obj_repo.get_objective(conn, objective_id)
     finally:

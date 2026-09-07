@@ -60,7 +60,7 @@ def env(monkeypatch: pytest.MonkeyPatch) -> _Env:
         lambda conn, oid: e.get_objective_return,
     )
 
-    def _patch_policy(conn, oid, patch):
+    def _patch_policy(conn, oid, patch, **_kw):
         e.patch_policy_captured = {"objective_id": oid, "patch": patch}
         return e.patch_policy_return
 
