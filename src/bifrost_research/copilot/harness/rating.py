@@ -470,6 +470,51 @@ def rating_decision(ratings: list[dict[str, Any]]) -> str:
     return f"best ★{best} · " + " · ".join(parts)
 
 
+def rate_run(conn: Any, run_id: str) -> dict[str, Any]:
+    """Rate an existing run from its candidate batch, and record it.
+
+    The rating is a pure function of what the run stored, so a run made before
+    the stage existed can be rated after the fact and reads exactly as it would
+    have on the day. Idempotent: rating again appends a fresh ``rate`` event and
+    replaces ``outputs.ratings``; readers take the last event.
+    """
+    from bifrost_research.repositories import ai_draft as draft_repo
+    from bifrost_research.repositories import objective as obj_repo
+
+    run = obj_repo.get_run(conn, run_id)
+    if run is None:
+        raise LookupError(f"run not found: {run_id}")
+    outputs = _mapping(run.get("outputs"))
+    draft_ids = [str(d) for d in (outputs.get("draft_ids") or []) if d]
+    batch: dict[str, Any] | None = None
+    for did in draft_ids:
+        d = draft_repo.get_draft(conn, did)
+        if d and d.get("kind") == "candidate_batch":
+            batch = d
+            break
+    if batch is None:
+        raise LookupError("run has no candidate_batch draft to rate from")
+    payload = _mapping(batch.get("payload"))
+    items = [dict(i) for i in (payload.get("items") or []) if isinstance(i, dict)]
+    if not items:
+        raise LookupError("candidate_batch draft carries no items")
+
+    objective_id = str(run.get("objective_id") or payload.get("objective_id") or "")
+    priors = prior_scores(conn, [str(i.get("symbol") or "") for i in items], objective_id=objective_id or None)
+    ratings = rate_items(items, priors=priors)
+    detail = rating_decision(ratings)
+    obj_repo.append_run_trace_event(
+        conn,
+        run_id,
+        {"step": "rate", "label": "Rate", "decision": detail, "ratings": ratings, "rated_after": True},
+    )
+    obj_repo.patch_run_outputs(conn, run_id, {"ratings": ratings})
+    # The Inbox reads the draft; give its rows the same rating the memo shows.
+    payload["items"] = items
+    draft_repo.patch_draft_payload(conn, str(batch["id"]), payload)
+    return {"run_id": run_id, "draft_id": batch["id"], "decision": detail, "ratings": ratings}
+
+
 __all__ = [
     "ACTION_LABELS",
     "BUY_ZONE_PCT",
@@ -485,6 +530,7 @@ __all__ = [
     "prior_scores",
     "rate_candidate",
     "rate_items",
+    "rate_run",
     "rating_decision",
     "rating_rank_key",
     "settled_record",

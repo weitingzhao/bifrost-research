@@ -180,3 +180,73 @@ def test_a_candidate_with_no_evidence_still_rates_without_raising():
     assert r["symbol"] == "EE" and r["grade"] is None and r["levels"] is None
     assert r["conviction"] == 2 and r["action"] == "watch"
     assert r["timing"]["zone"] == "unknown"
+
+
+def test_rate_run_reads_the_stored_batch_and_writes_back_everywhere(monkeypatch):
+    from bifrost_research.copilot.harness import rating as mod
+
+    batch_items = [item(), item(symbol="LPG", agreement="agree", net_stance="abstain")]
+    draft = {"id": "drf_1", "kind": "candidate_batch", "payload": {"objective_id": "obj-x", "items": batch_items}}
+    run = {"id": "run_1", "objective_id": "obj-x", "outputs": {"draft_ids": ["drf_other", "drf_1"]}}
+    written: dict = {}
+
+    class FakeObj:
+        @staticmethod
+        def get_run(conn, rid):
+            return run if rid == "run_1" else None
+
+        @staticmethod
+        def append_run_trace_event(conn, rid, event):
+            written["event"] = event
+
+        @staticmethod
+        def patch_run_outputs(conn, rid, patch):
+            written["outputs"] = patch
+
+    class FakeDraft:
+        @staticmethod
+        def get_draft(conn, did):
+            return draft if did == "drf_1" else {"id": did, "kind": "policy_suggestion", "payload": {}}
+
+        @staticmethod
+        def patch_draft_payload(conn, did, payload):
+            written["draft"] = (did, payload)
+
+    # `from bifrost_research.repositories import objective` reads the package
+    # attribute, so the fakes go on the package, not into sys.modules.
+    import bifrost_research.repositories as repos
+
+    monkeypatch.setattr(repos, "objective", FakeObj)
+    monkeypatch.setattr(repos, "ai_draft", FakeDraft)
+    monkeypatch.setattr(mod, "prior_scores", lambda conn, syms, objective_id=None: {"NVDA": 82.0})
+
+    out = mod.rate_run(None, "run_1")
+    assert out["draft_id"] == "drf_1"
+    assert [r["symbol"] for r in out["ratings"]] == ["LPG", "NVDA"] or [r["symbol"] for r in out["ratings"]] == ["NVDA", "LPG"]
+    # The event is marked as rated after the fact, the outputs carry the same
+    # list, and the draft's rows now carry their rating for the Inbox.
+    assert written["event"]["step"] == "rate" and written["event"]["rated_after"] is True
+    assert written["outputs"]["ratings"] == out["ratings"]
+    assert written["draft"][0] == "drf_1"
+    assert all("rating" in i for i in written["draft"][1]["items"])
+    # The prior was scoped to the objective and drove the outlook.
+    nvda = next(r for r in out["ratings"] if r["symbol"] == "NVDA")
+    assert nvda["score_drift"]["from"] == 82.0
+
+
+def test_rate_run_refuses_a_run_with_nothing_to_rate(monkeypatch):
+    import bifrost_research.repositories as repos
+    from bifrost_research.copilot.harness import rating as mod
+
+    class FakeObj:
+        @staticmethod
+        def get_run(conn, rid):
+            return None if rid == "missing" else {"id": rid, "outputs": {"draft_ids": []}}
+
+    monkeypatch.setattr(repos, "objective", FakeObj)
+    import pytest
+
+    with pytest.raises(LookupError, match="run not found"):
+        mod.rate_run(None, "missing")
+    with pytest.raises(LookupError, match="no candidate_batch"):
+        mod.rate_run(None, "run_no_draft")

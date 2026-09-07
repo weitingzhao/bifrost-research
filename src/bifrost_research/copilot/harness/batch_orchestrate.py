@@ -16,6 +16,7 @@ from bifrost_research.copilot.harness.runtime import run_objective
 from bifrost_research.copilot.harness.trust_gate import (
     SKILL_ID,
     batch_mode_enabled,
+    matrix_level,
     trust_l0_research_loop_batch,
 )
 from bifrost_research.copilot.curator.runtime import run_curator_for_run
@@ -32,19 +33,30 @@ def trust_status() -> dict[str, Any]:
         "true",
         "yes",
     )
+    level = matrix_level()
+    matrix_l0 = level == "L0"
     l0 = trust_l0_research_loop_batch()
-    reason = "ok"
-    if not env_on and not override:
-        reason = "BIFROST_LOOP_BATCH_MODE not set — auto-approve disabled"
-    elif not l0:
+    # Two facts, kept apart: what the Owner granted (the matrix) and whether
+    # this process may act on it (the gate). The API pod serving the console
+    # is never the unattended loop, so its gate is closed by design — and the
+    # console pill must report the grant, not this pod's gate.
+    if level is None:
+        reason = "trust matrix unreachable — grant unknown, gate closed"
+    elif not matrix_l0:
+        reason = f"research-loop-batch at Trust {level} — promote to L0 in Ops Console"
+    elif not env_on and not override:
         reason = (
-            "research-loop-batch not at Trust L0 "
-            "(promote in Ops Console or set BIFROST_LOOP_TRUST_L0_OVERRIDE=1)"
+            "Trust L0 granted; this process is not the unattended loop "
+            "(BIFROST_LOOP_BATCH_MODE unset), so it auto-approves nothing"
         )
+    else:
+        reason = "ok"
     return {
         "skill": SKILL_ID,
         "batch_mode_env": env_on,
         "trust_l0_override": override,
+        "matrix_level": level,
+        "matrix_l0": matrix_l0,
         "l0": l0,
         "reason": reason,
         "advisory": "D10 BLOCKED — auto-approve is research drafts only, never orders",

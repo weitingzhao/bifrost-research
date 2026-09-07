@@ -270,6 +270,28 @@ def objective_run_estimate(
     return _ok(est)
 
 
+@router.post("/objective-runs/{run_id}/rate")
+def rate_objective_run(run_id: str) -> dict[str, Any]:
+    """Rate a run after the fact, from the candidate batch it stored.
+
+    The rating is a pure function of the run's own record, so a run made before
+    the stage existed reads exactly as it would have on the day. Writes a
+    ``rate`` trace event, ``outputs.ratings`` and the draft's rows. Research
+    drafts only; D10 BLOCKED.
+    """
+    from bifrost_research.copilot.harness.rating import rate_run
+
+    conn = _connect_or_503()
+    try:
+        try:
+            out = rate_run(conn, run_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    finally:
+        conn.close()
+    return _ok(out)
+
+
 @router.get("/loop/trust")
 def get_loop_trust() -> dict[str, Any]:
     """Trust gate observability for Harness Console (batch auto-approve)."""
