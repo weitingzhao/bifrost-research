@@ -191,6 +191,13 @@ def _run_daily_digest_agent() -> dict[str, Any]:
     return out if isinstance(out, dict) else {"ok": True, "engine": "daily_digest", "advisory": "D10 BLOCKED"}
 
 
+def _run_weekly_policy_review_agent() -> dict[str, Any]:
+    from bifrost_research.copilot.agents.weekly_policy_review import run_weekly_policy_review
+
+    out = run_weekly_policy_review()
+    return out if isinstance(out, dict) else {"ok": True, "engine": "weekly_policy_review", "advisory": "D10 BLOCKED"}
+
+
 def _run_eod_review_agent() -> dict[str, Any]:
     from bifrost_research.copilot.agents.eod_review import run_eod_review
 
@@ -225,6 +232,14 @@ agents_daily_digest = _run_asset(
     group=GROUP_AGENTS,
     description="Daily digest — one briefing per trading day (morning prep folded in)",
     fn=_run_daily_digest_agent,
+)
+# D3: once a week the rules get a proposal from settled outcomes — a
+# policy_suggestion draft per objective whose record calls for a change.
+agents_weekly_policy_review = _run_asset(
+    key_path=["agents", "weekly_policy_review"],
+    group=GROUP_AGENTS,
+    description="Weekly policy review — policy_suggestion from settled candidate outcomes",
+    fn=_run_weekly_policy_review_agent,
 )
 # B3: settle the candidates' forward windows before the review reads them, so
 # a hypothesis whose window closed today is resolved today, not tomorrow.
@@ -267,6 +282,7 @@ RESEARCH_AUX_ASSETS = [
     engines_event_radar_sched,
     agents_morning_prep,
     agents_daily_digest,
+    agents_weekly_policy_review,
     agents_eod_review,
     maint_ensure_partitions,
     maint_vol_weekly_backfill,
@@ -375,6 +391,15 @@ _specs: list[tuple[str, str, list[Any], str, str, str]] = [
         "30 21 * * 1-5",
         "UTC",
         "eod-review",
+    ),
+    # D3: Sunday 22:00 UTC, before Monday's runs — the week's settled outcomes speak first.
+    (
+        "research_weekly_policy_review_schedule",
+        "research_weekly_policy_review_job",
+        [agents_weekly_policy_review],
+        "0 22 * * 0",
+        "UTC",
+        "weekly-policy-review",
     ),
     (
         "research_ensure_partitions_schedule",

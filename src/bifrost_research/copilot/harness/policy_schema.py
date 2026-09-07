@@ -122,6 +122,9 @@ class LoopPolicy(BaseModel):
     require_validate_pass: bool = True
     # Wave 1 — heuristic persona eval on by default; set false to skip
     persona_evaluate: bool = True
+    # D3 — the leash: an unattended run accepts a candidate only when its source's
+    # settled hit rate (longest judged horizon, ≥ 5 outcomes) clears this floor.
+    min_source_hit_rate: float = Field(default=0.45, ge=0.0, le=1.0)
 
     model_config = {"extra": "allow"}
 

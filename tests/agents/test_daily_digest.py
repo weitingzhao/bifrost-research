@@ -25,7 +25,7 @@ def _facts(**over: Any) -> dict[str, Any]:
             },
             "candidates": [{"symbol": "WT", "source": "harness", "score": 82.1, "status": "open"}],
             "batches": [
-                {"run_id": "run_1", "objective_id": "obj_stock", "objective_title": "Daily Loop Stock Explorer", "status": "awaiting_approval", "started_at": FRESH, "candidates": ["WT", "LPG"], "draft_ids": ["draft_1"], "dissent": 1, "persona_mode": "agent", "plan_generated_by": "llm"}
+                {"run_id": "run_1", "objective_id": "obj_stock", "objective_title": "Daily Loop Stock Explorer", "status": "awaiting_approval", "started_at": FRESH, "candidates": ["WT", "LPG"], "draft_ids": ["draft_1"], "dissent": 1, "persona_mode": "agent", "plan_generated_by": "llm", "auto_accepted": ["LPG"], "held": [{"symbol": "WT", "reasons": ["judges did not agree (dissent)"]}]}
             ],
             "dissents": [
                 {"symbol": "WT", "run_id": "run_1", "objective_title": "Daily Loop Stock Explorer", "net_stance": "dissent", "blocked_by_validate": False, "judges": ["deepseek-chat: support", "gpt-4o-mini: oppose"], "wrong_if": ["close below the 50-day"]}
@@ -58,7 +58,7 @@ def test_markdown_carries_every_section_from_the_facts() -> None:
     assert "1 candidate(s) proposed (WT) · 1 hypothesis resolution(s) · 1 dissent(s) · 36 active hypothesis(es)" in md
     assert "- **NVDA**: iv_rank cold (19) · vrp lean_cold (21) — Implied vol near its 1y low" in md
     assert "- No lens readings yet (no option / terrain data): WT" in md
-    assert "Daily Loop Stock Explorer (`run_1`, awaiting_approval): WT, LPG — 1 dissent(s)" in md
+    assert "Daily Loop Stock Explorer (`run_1`, awaiting_approval): WT, LPG — 1 dissent(s) · auto-accepted: LPG · held: WT" in md
     assert "**WT** (Daily Loop Stock Explorer): deepseek-chat: support; gpt-4o-mini: oppose · wrong if: close below the 50-day" in md
     assert "LPG breakout → **validated** (by outcome rule excess +3.43%; LPG)" in md
     assert "SEPA PAYS score 82.75 grade A stage STAGE_2" in md
@@ -171,6 +171,7 @@ def test_gather_reads_runs_candidates_and_resolutions_since_yesterday(monkeypatc
             "drafts": [{"id": "draft_1", "kind": "candidate_batch", "status": "pending"}],
             "persona": {"mode": "agent"},
             "plan": {"generated_by": "llm"},
+            "outputs": {"approve_all": {"accepted": ["LPG"], "held_symbols": [{"symbol": "WT", "reasons": ["judges did not agree (dissent)", "net stance dissent", "a third"]}]}},
         },
     )
 
@@ -191,6 +192,8 @@ def test_gather_reads_runs_candidates_and_resolutions_since_yesterday(monkeypatc
     # the identical re-run folds into the newest batch; the split name is listed once
     assert len(facts["batches"]) == 1 and facts["batches"][0]["repeats"] == 2
     assert facts["batches"][0]["run_ids"] == ["run_new", "run_repeat"] and len(facts["dissents"]) == 1
+    assert facts["batches"][0]["auto_accepted"] == ["LPG"]
+    assert facts["batches"][0]["held"] == [{"symbol": "WT", "reasons": ["judges did not agree (dissent)", "net stance dissent"]}]
     assert [c["symbol"] for c in facts["candidates"]] == ["WT"]
     assert facts["symbols"] == ["NVDA", "WT"]  # holdings first, then the new candidates, de-duplicated
     assert facts["batches"][0]["candidates"] == ["WT", "LPG"] and facts["batches"][0]["dissent"] == 1

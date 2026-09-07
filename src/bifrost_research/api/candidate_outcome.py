@@ -29,13 +29,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/research/candidate-outcome", tags=["research-candidate-outcome"])
 
 
-def build_summary(conn: Any, *, source: str | None = None, days: int = 90) -> dict[str, Any]:
-    """Hit rate per horizon, plus how much of the pool is still unsettled."""
+def build_summary(
+    conn: Any,
+    *,
+    source: str | None = None,
+    objective_id: str | None = None,
+    days: int = 90,
+) -> dict[str, Any]:
+    """Hit rate per horizon, plus how much of the pool is still unsettled.
+
+    ``objective_id`` narrows to the candidates one objective proposed (their
+    ``source_ref.objective_id``) — the weekly policy review judges each
+    objective on its own record, not on the pool every objective shares.
+    """
     where = ["c.trade_date >= CURRENT_DATE - %s::int"]
     params: list[Any] = [days]
     if source:
         where.append("c.source = %s")
         params.append(source)
+    if objective_id:
+        where.append("c.source_ref->>'objective_id' = %s")
+        params.append(objective_id)
     clause = " AND ".join(where)
 
     with conn.cursor() as cur:
@@ -87,6 +101,7 @@ def build_summary(conn: Any, *, source: str | None = None, days: int = 90) -> di
     settled_any = max((h["settled"] for h in horizons), default=0)
     return {
         "source": source,
+        "objective_id": objective_id,
         "days": days,
         "candidates": candidates,
         "horizons": horizons,

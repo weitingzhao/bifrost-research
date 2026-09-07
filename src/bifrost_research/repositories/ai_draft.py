@@ -263,3 +263,27 @@ def update_draft_status(
         conn.rollback()
         raise
     return _row_to_dict(row) if row is not None else None
+
+
+def patch_draft_payload(
+    conn: _Connection,
+    draft_id: str,
+    payload: Any,
+) -> dict[str, Any] | None:
+    """Replace a draft's payload in place — the leash records who it accepted and why the rest stay."""
+    sql = f"""
+        UPDATE {TABLE_RESEARCH_AI_DRAFT}
+        SET payload = %s
+        WHERE id = %s
+        RETURNING {_cols()}
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, (_serialize_json(payload), draft_id))
+            row = cur.fetchone()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return _row_to_dict(row) if row is not None else None
+

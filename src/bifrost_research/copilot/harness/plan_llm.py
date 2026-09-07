@@ -78,6 +78,7 @@ POLICY_SUGGESTION_KEYS = frozenset(
         "require_validate_pass",
         "discovery_assist",
         "resolution",
+        "min_source_hit_rate",
     }
 )
 

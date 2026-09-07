@@ -93,6 +93,27 @@ def run_digest_now(body: DigestRunBody | None = None) -> dict[str, Any]:
     return _ok(result)
 
 
+class WeeklyReviewBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    force: bool = False
+    days: int = Field(default=90, ge=7, le=730)
+
+
+@agents_router.post("/weekly-policy/run")
+def run_weekly_policy_now(body: WeeklyReviewBody | None = None) -> dict[str, Any]:
+    """Review every active objective against its settled outcomes (D3) — a no-op per objective when this week already has a proposal, unless ``force``."""
+    from bifrost_research.copilot.agents.weekly_policy_review import run_weekly_policy_review
+
+    payload = body or WeeklyReviewBody()
+    try:
+        result = run_weekly_policy_review(days=payload.days, force=payload.force)
+    except Exception as exc:
+        logger.exception("weekly policy review failed")
+        _err(f"weekly policy review failed: {exc}", 500)
+    return _ok(result)
+
+
 @agents_router.post("/eod/run")
 def run_eod(body: RunBody | None = None) -> dict[str, Any]:
     from bifrost_research.copilot.agents.eod_review import run_eod_review

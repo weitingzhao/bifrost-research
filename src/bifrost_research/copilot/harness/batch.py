@@ -49,9 +49,23 @@ def approve_all_for_run(
     owner_id: str = "owner",
     kinds_whitelist: frozenset[str] | None = None,
     auto_validate: bool = False,
+    min_source_hit_rate: float | None = None,
 ) -> dict[str, Any]:
-    from bifrost_research.api.agents import apply_draft_approval
+    """Approve what the run produced — every candidate through the leash (D3).
+
+    A candidate_batch is not one decision: each name passes ``leash.accept_gate``
+    on its own (judges agree, validate did not block, evidence measured, the
+    source's settled hit rate clears ``min_source_hit_rate``). The names that
+    pass become hypotheses; the rest stay on the draft with their reasons, and
+    the draft stays pending for the Owner. Other whitelisted kinds approve as
+    before. D10 BLOCKED — a hypothesis, never an order.
+    """
+    from bifrost_research.api.agents import _promote_candidate_batch, apply_draft_approval
+    from bifrost_research.copilot.harness.leash import DEFAULT_MIN_SOURCE_HIT_RATE, split_batch
     from bifrost_research.copilot.harness.validate_hook import run_validate_hooks_for_run
+    from bifrost_research.repositories import ai_action_log as action_repo
+
+    knob = DEFAULT_MIN_SOURCE_HIT_RATE if min_source_hit_rate is None else float(min_source_hit_rate)
 
     run = obj_repo.get_run(conn, run_id)
     if run is None:
@@ -66,32 +80,15 @@ def approve_all_for_run(
             draft_ids = list(dict.fromkeys(draft_ids + [str(x) for x in extra if x]))
 
     approved: list[str] = []
+    partial: list[str] = []
     held: list[dict[str, Any]] = []
     executed: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     hypothesis_ids: list[str] = []
+    accepted_symbols: list[str] = []
+    held_symbols: list[dict[str, Any]] = []
 
     whitelist = kinds_whitelist
-    run_auto_ok = outputs.get("auto_approve_eligible")
-    if run_auto_ok is False:
-        # Wave 4 — batch path refuses when persona eval marked dissent / validate block.
-        return {
-            "approved": [],
-            "held": [
-                {
-                    "reason": "persona_dissent_or_validate_block",
-                    "auto_approve_eligible": False,
-                }
-            ],
-            "count": 0,
-            "held_count": 1,
-            "executed": [],
-            "errors": [],
-            "validate": None,
-            "hypothesis_ids": [],
-            "skipped_batch": True,
-            "advisory": "D10 — auto-approve holds research drafts with Persona dissent",
-        }
 
     for did in draft_ids:
         draft = draft_repo.get_draft(conn, did)
@@ -102,19 +99,44 @@ def approve_all_for_run(
             continue
         payload = draft.get("payload") if isinstance(draft.get("payload"), dict) else {}
         # Never auto-approve policy_suggestion / order_intent (whitelist already
-        # excludes them). Extra guard for candidate_batch dissent.
+        # excludes them). A candidate_batch goes through the leash, name by name.
         if kind == "candidate_batch":
-            if payload.get("auto_approve_eligible") is False or payload.get("persona_dissent"):
-                held.append(
-                    {
-                        "draft_id": did,
-                        "reason": "persona_dissent_or_blocked",
-                        "blocked_by_validate": (payload.get("persona_eval") or {}).get(
-                            "blocked_by_validate"
-                        ),
-                    }
-                )
+            items = [i for i in (payload.get("items") or []) if isinstance(i, dict)]
+            split = split_batch(items, min_source_hit_rate=knob)
+            leash = {
+                "min_source_hit_rate": knob,
+                "accepted": split["accepted"],
+                "held": split["held"],
+                "decided_by": approved_by,
+            }
+            accepted_symbols.extend(a["symbol"] for a in split["accepted"])
+            held_symbols.extend({"draft_id": did, **h} for h in split["held"])
+            patched = {**payload, "leash": leash}
+            if not split["accepted"]:
+                held.append({"draft_id": did, "reason": "leash_held_all", "held": len(split["held"])})
+                _patch_payload_quietly(conn, did, patched)
                 continue
+            if split["held"]:
+                # Partial: promote the names that passed; the draft stays pending
+                # with the held names and their reasons for the Owner.
+                try:
+                    promoted = _promote_candidate_batch(
+                        conn,
+                        draft_id=did,
+                        payload={**patched, "items": [i for i in items if str(i.get("id")) in split["accepted_ids"]]},
+                    )
+                    _patch_payload_quietly(conn, did, patched)
+                    partial.append(did)
+                    held.append({"draft_id": did, "reason": "leash_held_some", "held": len(split["held"])})
+                    executed.append({"draft_id": did, "partial": True, **promoted})
+                    for h in promoted.get("hypotheses") or []:
+                        if isinstance(h, dict) and h.get("id"):
+                            hypothesis_ids.append(str(h["id"]))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("partial accept of draft %s failed: %s", did, exc)
+                    errors.append({"draft_id": did, "detail": str(exc)})
+                continue
+            draft = {**draft, "payload": patched}
         try:
             result = apply_draft_approval(
                 conn, draft, approved_by=approved_by, owner_id=owner_id
@@ -154,17 +176,33 @@ def approve_all_for_run(
 
     if approved and not held:
         obj_repo.update_run_status(conn, run_id, status="completed")
-    elif held and not approved:
-        # Keep awaiting_approval so Owner sees dissent held in Inbox
-        pass
-    elif approved:
-        obj_repo.update_run_status(conn, run_id, status="completed")
+    # Anything held keeps the run awaiting_approval so the Owner sees it in the Inbox.
+
+    if accepted_symbols or held_symbols:
+        try:
+            action_repo.insert_action(
+                conn,
+                action_kind="loop_auto_accept",
+                action_source="loop_batch",
+                input_payload={"run_id": run_id, "min_source_hit_rate": knob, "decided_by": approved_by},
+                output_payload={"accepted": accepted_symbols, "held": held_symbols},
+                status="executed",
+            )
+        except Exception as exc:  # noqa: BLE001 — the ledger row must not sink the accept
+            logger.warning("loop_auto_accept ledger row failed for %s: %s", run_id, exc)
+            rollback_quietly(conn)
 
     return {
         "approved": approved,
+        "partial": partial,
         "held": held,
         "count": len(approved),
         "held_count": len(held),
+        "accepted_symbols": accepted_symbols,
+        "accepted_count": len(accepted_symbols),
+        "held_symbols": held_symbols,
+        "held_symbol_count": len(held_symbols),
+        "leash": {"min_source_hit_rate": knob},
         "executed": executed,
         "errors": errors,
         "validate": validate_result,
@@ -172,6 +210,21 @@ def approve_all_for_run(
         "curator_after_approve": curator_after,
         "advisory": "D10 BLOCKED — auto-approve is research drafts only, never orders",
     }
+
+
+def _patch_payload_quietly(conn: _Connection, draft_id: str, payload: dict[str, Any]) -> None:
+    try:
+        draft_repo.patch_draft_payload(conn, draft_id, payload)
+    except Exception as exc:  # noqa: BLE001 — the reasons are for the Owner; losing them must not lose the run
+        logger.warning("leash note on draft %s failed: %s", draft_id, exc)
+        rollback_quietly(conn)
+
+
+def rollback_quietly(conn: Any) -> None:
+    try:
+        conn.rollback()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 __all__ = ["RESEARCH_AUTO_APPROVE_KINDS", "approve_all_for_run"]

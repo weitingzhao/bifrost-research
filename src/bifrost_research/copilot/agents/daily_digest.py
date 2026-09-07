@@ -159,10 +159,19 @@ def _batches_and_dissents(
             folded["repeats"] += 1
             folded["run_ids"].append(d["run"]["id"])
             continue
+        approve = (d.get("outputs") or {}).get("approve_all") if isinstance(d.get("outputs"), dict) else None
+        approve = approve if isinstance(approve, dict) else {}
         batch = {
             "run_id": d["run"]["id"],
             "run_ids": [d["run"]["id"]],
             "repeats": 1,
+            # D3: what the leash let through on its own, and what it held.
+            "auto_accepted": [str(x) for x in (approve.get("accepted") or [])],
+            "held": [
+                {"symbol": str(h.get("symbol") or ""), "reasons": list(h.get("reasons") or [])[:2]}
+                for h in (approve.get("held_symbols") or [])
+                if isinstance(h, dict)
+            ],
             "objective_id": objective_id,
             "objective_title": d["run"]["objective_title"],
             "status": d["run"]["status"],
@@ -367,9 +376,14 @@ def compose_markdown(facts: dict[str, Any]) -> str:
         for b in facts["batches"]:
             syms = ", ".join(b["candidates"]) or "no candidates"
             repeats = f" ×{b['repeats']} runs" if b.get("repeats", 1) > 1 else ""
+            leash = ""
+            if b.get("auto_accepted") or b.get("held"):
+                accepted = ", ".join(b.get("auto_accepted") or []) or "none"
+                held_names = ", ".join(h["symbol"] for h in b.get("held") or []) or "none"
+                leash = f" · auto-accepted: {accepted} · held: {held_names}"
             out.append(
                 f"- {b['objective_title'] or b['objective_id']} (`{b['run_id']}`{repeats}, {b['status']}): {syms}"
-                f" — {b['dissent']} dissent(s)"
+                f" — {b['dissent']} dissent(s){leash}"
             )
     else:
         out.append("- No run since yesterday.")

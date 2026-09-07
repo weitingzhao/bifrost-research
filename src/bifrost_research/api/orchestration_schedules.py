@@ -39,6 +39,7 @@ HUSBANDRY_SCHEDULE_JOBS: tuple[tuple[str, str], ...] = (
     ("research_intraday_schedule", "research_intraday_job"),
     ("research_event_radar_schedule", "research_event_radar_job"),
     ("research_daily_digest_schedule", "research_daily_digest_job"),
+    ("research_weekly_policy_review_schedule", "research_weekly_policy_review_job"),
     ("research_eod_review_schedule", "research_eod_review_job"),
     ("research_ensure_partitions_schedule", "research_ensure_partitions_job"),
     ("research_vol_weekly_backfill_schedule", "research_vol_weekly_backfill_job"),

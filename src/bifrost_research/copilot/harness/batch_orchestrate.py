@@ -11,6 +11,7 @@ import os
 from typing import Any
 
 from bifrost_research.copilot.harness.batch import RESEARCH_AUTO_APPROVE_KINDS, approve_all_for_run
+from bifrost_research.copilot.harness.leash import DEFAULT_MIN_SOURCE_HIT_RATE
 from bifrost_research.copilot.harness.runtime import run_objective
 from bifrost_research.copilot.harness.trust_gate import (
     SKILL_ID,
@@ -251,6 +252,10 @@ def process_objective(
                 except Exception as exc:
                     logger.warning("batch curate skipped: %s", exc)
             logger.info("batch auto-approve for %s", run_id)
+            try:
+                knob = float(policy.get("min_source_hit_rate", DEFAULT_MIN_SOURCE_HIT_RATE))
+            except (TypeError, ValueError):
+                knob = DEFAULT_MIN_SOURCE_HIT_RATE
             approve_result = approve_all_for_run(
                 conn,
                 run_id,
@@ -258,22 +263,24 @@ def process_objective(
                 owner_id=str(obj.get("owner_id") or "owner"),
                 kinds_whitelist=RESEARCH_AUTO_APPROVE_KINDS,
                 auto_validate=auto_validate,
+                min_source_hit_rate=knob,
             )
             result["approve_all"] = approve_result
             held = int(approve_result.get("held_count") or 0)
             approved_n = int(approve_result.get("count") or 0)
-            step = "held" if approve_result.get("skipped_batch") else "approve_all"
+            accepted = list(approve_result.get("accepted_symbols") or [])
+            held_names = [str(h.get("symbol") or "") for h in (approve_result.get("held_symbols") or [])]
+            step = "held" if not approved_n and not accepted else "approve_all"
             _append_batch_event(
                 conn,
                 run_id,
                 step,
-                label="Auto-approve",
-                detail=f"approved={approved_n} held={held}",
-                decision=(
-                    "skipped_dissent"
-                    if approve_result.get("skipped_batch")
-                    else f"approved_{approved_n}"
+                label="Auto-accept",
+                detail=(
+                    f"accepted={len(accepted)} ({', '.join(accepted) or '—'}) "
+                    f"held={len(held_names)} ({', '.join(held_names) or '—'}) drafts_approved={approved_n}"
                 ),
+                decision=f"accepted_{len(accepted)}_held_{len(held_names)}",
             )
             try:
                 obj_repo.patch_run_outputs(
@@ -283,7 +290,11 @@ def process_objective(
                         "approve_all": {
                             "count": approved_n,
                             "held_count": held,
-                            "skipped_batch": bool(approve_result.get("skipped_batch")),
+                            "accepted": accepted,
+                            "held_symbols": approve_result.get("held_symbols") or [],
+                            "partial": approve_result.get("partial") or [],
+                            "leash": approve_result.get("leash"),
+                            "skipped_batch": False,
                         },
                         "trust": trust,
                     },
