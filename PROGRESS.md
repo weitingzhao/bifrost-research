@@ -1,6 +1,26 @@
 ## Research Loop Automation — Waves A–D — planned 2026-09-06
 
-**Status:** 🟢 Wave D code complete — D1–D4 released as **0.76.1** (api · mcp · engines; dagster `0.75.0-dagster`), frontend D1–D4 in `bifrost-trade-frontend` (`36c0de0`, Satellite chain). Open: D3 acceptance waits on the Owner's L0 (trust matrix still L1) and one unattended day; the DeepSeek $0.50/day cap makes judge fallback (= dissent) the norm after the first run. Program next: Owner sign-off on D3, then post-program review. Plan: `docs/plans/RESEARCH_LOOP_AUTOMATION_PLAN.md`. D10 BLOCKED.
+**Status:** 🟢 Wave D complete and reviewed — D1–D4 plus the post-program fix batch released as **0.77.0** (api · mcp · engines; dagster `0.75.0-dagster`), frontend D1–D4 in `bifrost-trade-frontend` (`36c0de0`, Satellite chain). Open: D3 acceptance waits on the Owner's L0 (trust matrix still L1) and one unattended day; the DeepSeek $0.50/day cap makes judge fallback (= dissent) the norm after the first run. Program next: Owner sign-off on D3 (Console → Agent Governance → Research · Loop Batch → **Set level L0**), then a real unattended day.
+
+**Post-program review, 2026-09-07** — seven dimensions reviewed against the plan's acceptance criteria, every finding adversarially verified: **59 confirmed** (14 high / 26 medium / 19 low), 10 refuted. The three walls hold: no order path, no Trade DB write, no secret in either tree, and the trust gate fails closed. Fixed and released in `0.77.0` + frontend `3c2d41f`:
+
+| | What the Owner would have seen |
+|---|---|
+| IV Radar | still bucketed at >60 / <30, the thresholds this program retired — a rank of 65 tagged red "High" beside a strip calling it "leaning rich", and shown the ≥80 side's settled record |
+| Sessions | verdict flipped green "Paths reliable" on one clicked session, above a line reading "30d path hit 0% across 15" |
+| Verdict strips | printed the trigger count beside rates computed over the settled subset, overstating every 20d sample |
+| Approve-all | read "Auto-approved 0" after creating hypotheses, blamed "(dissent)" whatever the leash said, and applied 0.45 instead of the objective's own floor |
+| Lean bands | spoke with the extreme's voice — IV Rank 62 read word-for-word like 95 |
+| Chat writes | **every write tool with a non-empty default failed approval as "tampering"** — `research.loop.run_objective` has never been executable from the Copilot since D1 |
+| Audit ledger | `/approve` `/execute` `/dismiss` and approve-all took no owner and recorded the caller's self-reported `approved_by` |
+| Approval key | the HMAC fallback is a constant in this PUBLIC repo and nothing said which key was in force; `/health` now reports `approval_secret` |
+| D10 chat guard | one whitelisted phrase exempted the whole message from every pattern |
+| Cron summary | read `approve_result`, a key nothing writes, so it could never report an acceptance — and a test pinned that key |
+| Digest | approving today's digest sent every hub's verdict strip back a day |
+| Judge errors | a judge stage that raised was still marked eligible for auto-accept |
+| CronJobs | `research-gex-intraday` / `research-settlement` manifests carried no `suspend` while Dagster owns their exact cron minutes |
+
+Open, reported not fixed: the skew exhibit feeds a 0–100 percentile into the term_slope k-NN so its "similar readings" line is the year's most extreme put-skew days regardless of today (registry needs a `similar_value_column`); `forecast/calibration` compares two different events and labels the gap "claimed"; a specialist tool error inside a judge is indistinguishable from a considered abstain; judge prose is not checked against the evidence it was given (gpt-4o-mini wrote "hit rate of 0%" where the evidence said 0.5 over 8). Full list: `scratchpad/review-confirmed.json`. Plan: `docs/plans/RESEARCH_LOOP_AUTOMATION_PLAN.md`. D10 BLOCKED.
 
 DEV acceptance 2026-09-06: every registry lens exhibits 200 with `verdict` / `track_record` / `similar` for NVDA and SPY; Brief NVDA narrative sign correct, Opportunity is NVDA's own PIVOT, sentiment card says no tape; NVDA VRP `atm_iv_30d` populated after the recompute Job; terrain gamma zone 228.85–231.15 (`walls_widened`) after the terrain recompute Job; similar-regime returns resolved-only, de-clustered neighbours with `summary`; `scripts/backfill_signal_hit.py` walked 252 sessions (706 rows: gex_regime 704 · skew 1 · terrain_regime 1 — skew / crash-risk thresholds are too strict for this universe; calibration lands in C2).
 
