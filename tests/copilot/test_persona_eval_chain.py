@@ -162,3 +162,79 @@ def test_policy_suggestion_from_weak_candidate_outcomes():
     assert sug["suggestion"]["layers"]["sepa"]["min_score"] == 78.0
     assert sug["suggestion"]["max_candidates"] == 7
     assert "candidate_outcome" in sug["reasoning"]
+
+
+# --- persona_stage: the judge stage records itself (extracted from runtime) ---
+
+
+def _stage_args(**over):
+    args = {
+        "policy": {},
+        "owner_id": "owner",
+        "conn": None,
+        "run_id": "run_x",
+        "objective_id": "obj_x",
+        "trace": [],
+    }
+    args.update(over)
+    return args
+
+
+def test_persona_stage_returns_none_only_when_the_judges_were_never_asked(monkeypatch):
+    from bifrost_research.copilot.harness import persona_eval as mod
+
+    # No items: nobody was asked. None is the honest answer, and it is the only
+    # state the run may treat as auto-approvable-by-default.
+    trace: list[dict] = []
+    assert mod.persona_stage([], **_stage_args(trace=trace)) is None
+    assert trace == []
+
+
+def test_persona_stage_reports_a_failure_as_a_summary_not_as_silence(monkeypatch):
+    from bifrost_research.copilot.harness import persona_eval as mod
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("judge exploded")
+
+    monkeypatch.setattr(mod, "evaluate_candidates", boom)
+    trace: list[dict] = []
+    flushed: list[dict] = []
+    errors: list[BaseException] = []
+    out = mod.persona_stage(
+        [{"symbol": "AAA"}],
+        **_stage_args(trace=trace, flush=lambda **kw: flushed.append(kw), on_error=errors.append),
+    )
+    # A stage that blew up must be distinguishable from a stage never run: the
+    # first is not eligible for auto-approve, the second is.
+    assert out == {"status": "error", "error": "judge exploded"}
+    assert trace[0]["step"] == "persona_evaluate" and trace[0]["decision"] == "error"
+    assert flushed[0]["step"] == "persona_evaluate"
+    assert isinstance(errors[0], RuntimeError)
+
+
+def test_persona_stage_traces_the_decision_line_it_shows_the_owner(monkeypatch):
+    from bifrost_research.copilot.harness import persona_eval as mod
+
+    summary = {
+        "mode": "agent",
+        "models": [{"model": "a"}, {"model": "b"}],
+        "agreement": {"agree": 1, "dissent": 2},
+        "blocked_by_validate": 3,
+        "auto_approve_eligible": False,
+    }
+    monkeypatch.setattr(mod, "evaluate_candidates", lambda *_a, **_kw: dict(summary))
+    trace: list[dict] = []
+    out = mod.persona_stage([{"symbol": "AAA"}], **_stage_args(trace=trace))
+    assert out["mode"] == "agent"
+    line = trace[0]["decision"]
+    assert "models=2 agree=1 dissent=2" in line
+    assert "blocked_by_validate=3" in line
+    assert "auto_approve_eligible=False" in line
+
+
+def test_decision_line_omits_the_model_clause_for_a_heuristic_run():
+    from bifrost_research.copilot.harness.persona_eval import persona_decision_line
+
+    line = persona_decision_line({"mode": "heuristic", "blocked_by_validate": 0})
+    assert "models=" not in line
+    assert line.startswith("mode=heuristic")

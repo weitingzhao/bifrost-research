@@ -344,6 +344,73 @@ def evaluate_candidates(
     }
 
 
+def persona_decision_line(summary: dict[str, Any]) -> str:
+    """The one line the stepper shows for the judge stage."""
+    judges = summary.get("models") or []
+    agreement = summary.get("agreement") or {}
+    head = f"mode={summary.get('mode')} "
+    if judges:
+        head += (
+            f"models={len(judges)} agree={agreement.get('agree', 0)} "
+            f"dissent={agreement.get('dissent', 0)} "
+        )
+    return (
+        head
+        + f"blocked_by_validate={int(summary.get('blocked_by_validate') or 0)} "
+        f"auto_approve_eligible={summary.get('auto_approve_eligible')}"
+    )
+
+
+def persona_stage(
+    items: list[dict[str, Any]],
+    *,
+    policy: dict[str, Any],
+    owner_id: str,
+    conn: Any,
+    run_id: str,
+    objective_id: str,
+    trace: list[dict[str, Any]],
+    flush: Any = None,
+    on_error: Any = None,
+) -> dict[str, Any] | None:
+    """Judge the items and record the stage. Mirrors ``triage.triage_stage``.
+
+    A stage that raises returns ``{"status": "error", ...}`` rather than None:
+    None means the judges were never asked, and the two must stay distinguishable
+    because only the first is safe to treat as auto-approvable.
+    """
+    if not items:
+        return None
+    try:
+        summary = evaluate_candidates(
+            items,
+            policy=policy,
+            owner_id=owner_id,
+            conn=conn,
+            run_id=run_id,
+            objective_id=objective_id,
+        )
+        detail = persona_decision_line(summary)
+        trace.append(
+            {
+                "step": "persona_evaluate",
+                "label": "Persona eval",
+                "decision": detail,
+                **{k: summary[k] for k in TRACE_KEYS if k in summary},
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("persona_evaluate failed for run %s: %s", run_id, exc)
+        if callable(on_error):
+            on_error(exc)
+        summary = {"status": "error", "error": str(exc)[:200]}
+        detail = str(exc)[:120]
+        trace.append({"step": "persona_evaluate", "error": str(exc)[:200], "decision": "error"})
+    if callable(flush):
+        flush(step="persona_evaluate", label="Persona eval", detail=detail)
+    return summary
+
+
 __all__ = [
     "DEFAULT_EVAL_MODELS",
     "DISSENT",
@@ -363,6 +430,8 @@ __all__ = [
     "load_held_symbols",
     "most_severe",
     "net_stance_from_verdicts",
+    "persona_decision_line",
+    "persona_stage",
     "provider_of",
     "reset_holdings_probe_cache",
     "validate_stance",

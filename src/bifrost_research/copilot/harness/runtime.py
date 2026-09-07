@@ -5,35 +5,37 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol
 
-from bifrost_research.db.conn import rollback_quietly
+from bifrost_research.copilot.harness import data_sources as ds
+from bifrost_research.copilot.harness.backtest_baseline import template_baseline
 from bifrost_research.copilot.harness.evidence import build_candidate_evidence
+from bifrost_research.copilot.harness.gate import (
+    apply_hit_rate_gate,
+    lenses_from_flag_filter,
+)
+from bifrost_research.copilot.harness.persona_eval import persona_stage
 from bifrost_research.copilot.harness.plan_llm import (
     OP_ANALYZE_SYMBOL,
     OP_COMPOSE_REPORT,
     OP_PERSONA_EVALUATE,
     OP_RUN_BACKTEST,
 )
-from bifrost_research.copilot.harness import data_sources as ds
-from bifrost_research.copilot.harness.gate import (
-    apply_hit_rate_gate,
-    lenses_from_flag_filter,
+from bifrost_research.copilot.harness.planning import (
+    _heuristic_plan as _heuristic_plan,  # re-export: api/harness.py fast-create path
 )
 from bifrost_research.copilot.harness.planning import (
     _plan_for_objective,
     _playbook_rules_for,
 )
-from bifrost_research.copilot.harness.planning import (
-    _heuristic_plan as _heuristic_plan,  # re-export: api/harness.py fast-create path
-)
 from bifrost_research.copilot.harness.policy_schema import parse_policy
-from bifrost_research.copilot.harness.backtest_baseline import template_baseline
-from bifrost_research.copilot.harness.trace import RunTrace
 from bifrost_research.copilot.harness.suggestion import (
     policy_suggestion_from_outcomes,
     policy_suggestion_from_plan,
 )
+from bifrost_research.copilot.harness.trace import RunTrace
+from bifrost_research.copilot.harness.triage import triage_stage
 from bifrost_research.copilot.harness.universe.registry import resolve_universe
 from bifrost_research.copilot.harness.universe.types import FunnelStep
+from bifrost_research.db.conn import rollback_quietly
 from bifrost_research.repositories import ai_action_log as action_repo
 from bifrost_research.repositories import ai_draft as draft_repo
 from bifrost_research.repositories import candidate_pool as cand_repo
@@ -451,76 +453,29 @@ def run_objective(
             detail=propose_decision,
         )
 
-        # 4b. Persona eval (Wave 1) — before candidate_batch draft --------------
-        persona_eval_summary: dict[str, Any] | None = None
-        if want_persona and proposed_items:
-            try:
-                from bifrost_research.copilot.harness.persona_eval import (
-                    TRACE_KEYS,
-                    evaluate_candidates,
-                )
+        # Rank the candidates before judging them. Advisory unless the objective
+        # sets policy.triage.deep_judge_top_n; the stage records itself.
+        judge_items, triage_summary, _held = triage_stage(
+            proposed_items,
+            policy=policy_raw,
+            trace=trace,
+            flush=lambda **kw: _flush_live_trace(conn, run_id, trace, **kw),
+        )
 
-                persona_eval_summary = evaluate_candidates(
-                    proposed_items,
-                    policy={
-                        **policy_raw,
-                        "require_validate_pass": loop_policy.require_validate_pass,
-                    },
-                    owner_id=str(objective.get("owner_id") or "owner"),
-                    conn=conn,
-                    run_id=run_id,
-                    objective_id=str(objective["id"]),
-                )
-                blocked = int(persona_eval_summary.get("blocked_by_validate") or 0)
-                eligible = persona_eval_summary.get("auto_approve_eligible")
-                judges = persona_eval_summary.get("models") or []
-                agreement = persona_eval_summary.get("agreement") or {}
-                persona_decision = (
-                    f"mode={persona_eval_summary.get('mode')} "
-                    + (
-                        f"models={len(judges)} agree={agreement.get('agree', 0)} "
-                        f"dissent={agreement.get('dissent', 0)} "
-                        if judges
-                        else ""
-                    )
-                    + f"blocked_by_validate={blocked} "
-                    f"auto_approve_eligible={eligible}"
-                )
-                trace.append(
-                    {
-                        "step": "persona_evaluate",
-                        "label": "Persona eval",
-                        "decision": persona_decision,
-                        **{k: persona_eval_summary[k] for k in TRACE_KEYS if k in persona_eval_summary},
-                    }
-                )
-                _flush_live_trace(
-                    conn,
-                    run_id,
-                    trace,
-                    step="persona_evaluate",
-                    label="Persona eval",
-                    detail=persona_decision,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("persona_evaluate failed for run %s: %s", run_id, exc)
-                rollback_quietly(conn)
-                persona_eval_summary = {"status": "error", "error": str(exc)[:200]}
-                trace.append(
-                    {
-                        "step": "persona_evaluate",
-                        "error": str(exc)[:200],
-                        "decision": "error",
-                    }
-                )
-                _flush_live_trace(
-                    conn,
-                    run_id,
-                    trace,
-                    step="persona_evaluate",
-                    label="Persona eval",
-                    detail=str(exc)[:120],
-                )
+        # Judge the survivors. Same shape as triage: the stage records itself.
+        persona_eval_summary: dict[str, Any] | None = None
+        if want_persona:
+            persona_eval_summary = persona_stage(
+                judge_items,
+                policy={**policy_raw, "require_validate_pass": loop_policy.require_validate_pass},
+                owner_id=str(objective.get("owner_id") or "owner"),
+                conn=conn,
+                run_id=run_id,
+                objective_id=str(objective["id"]),
+                trace=trace,
+                flush=lambda **kw: _flush_live_trace(conn, run_id, trace, **kw),
+                on_error=lambda _exc: rollback_quietly(conn),
+            )
 
         # 5. Draft candidate_batch --------------------------------------------
         action = action_repo.insert_action(
@@ -747,6 +702,7 @@ def run_objective(
             "top_symbols": universe_symbols,
             "policy_suggestion_draft_id": policy_suggestion_draft_id,
             "hit_rate_gate": gate,
+            "triage": triage_summary,
             "persona_eval": persona_eval_summary,
             # The default is True for "the judges were never asked" (persona_evaluate
             # off). It must not also cover "the judges were asked and the stage blew

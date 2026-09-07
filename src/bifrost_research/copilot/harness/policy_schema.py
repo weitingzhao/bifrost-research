@@ -99,6 +99,22 @@ class ResolutionPolicy(BaseModel):
     benchmark: str = "SPY"
 
 
+class TriagePolicy(BaseModel):
+    """The cheap pass that ranks candidates before the expensive one judges them.
+
+    ``deep_judge_top_n`` is 0 by default, which means every proposed candidate
+    still reaches the judges and the ranking is advisory. Set it and the run
+    judges that many and holds the rest — held candidates carry no verdicts, so
+    the leash cannot accept them, and holding is never silently an approval.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = True
+    model: str | None = None
+    deep_judge_top_n: int = Field(default=0, ge=0, le=50)
+
+
 class LoopPolicy(BaseModel):
     """Parsed harness policy — superset of legacy scan keys."""
 
@@ -125,6 +141,7 @@ class LoopPolicy(BaseModel):
     # D3 — the leash: an unattended run accepts a candidate only when its source's
     # settled hit rate (longest judged horizon, ≥ 5 outcomes) clears this floor.
     min_source_hit_rate: float = Field(default=0.45, ge=0.0, le=1.0)
+    triage: TriagePolicy = Field(default_factory=lambda: TriagePolicy())
 
     model_config = {"extra": "allow"}
 
@@ -211,6 +228,7 @@ __all__ = [
     "MomentumLayerPolicy",
     "OptionOverlayPolicy",
     "SepaLayerPolicy",
+    "TriagePolicy",
     "UniverseMode",
     "default_stock_composite_policy",
     "parse_policy",
