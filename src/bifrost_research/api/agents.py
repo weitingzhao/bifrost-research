@@ -69,6 +69,30 @@ def run_morning(body: RunBody | None = None) -> dict[str, Any]:
     return _ok(result)
 
 
+class DigestRunBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    dry_run: bool = False
+    force: bool = False
+    use_llm: bool = True
+
+
+@agents_router.post("/digest/run")
+def run_digest_now(body: DigestRunBody | None = None) -> dict[str, Any]:
+    """Post today's digest (D2) — a no-op when the day already has one unless ``force``."""
+    from bifrost_research.copilot.agents.daily_digest import run_daily_digest
+
+    payload = body or DigestRunBody()
+    if payload.dry_run:
+        return _ok(run_daily_digest(dry_run=True))
+    try:
+        result = run_daily_digest(dry_run=False, force=payload.force, use_llm=payload.use_llm)
+    except Exception as exc:
+        logger.exception("digest agent failed")
+        _err(f"digest agent failed: {exc}", 500)
+    return _ok(result)
+
+
 @agents_router.post("/eod/run")
 def run_eod(body: RunBody | None = None) -> dict[str, Any]:
     from bifrost_research.copilot.agents.eod_review import run_eod_review
@@ -363,6 +387,9 @@ def apply_draft_approval(
         else:
             executed["hypothesis"] = None
             executed["note"] = "no status applied (missing proposed_status or id)"
+
+    elif draft["kind"] == "daily_digest":
+        executed["note"] = "daily_digest approved (read; no write)"
 
     elif draft["kind"] == "morning_brief":
         if payload.get("create_hypothesis") is True:

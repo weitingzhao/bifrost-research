@@ -16,6 +16,8 @@ _ALLOWED_KINDS = frozenset(
     {
         "morning_brief",
         "eod_verdict",
+        # research-loop-automation D2 — one digest per trading day
+        "daily_digest",
         "hypothesis_suggestion",
         "playbook_rule",
         "playbook_note",

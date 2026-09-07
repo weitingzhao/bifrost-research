@@ -184,6 +184,13 @@ def _run_morning_prep_agent() -> dict[str, Any]:
     return out if isinstance(out, dict) else {"ok": True, "engine": "morning_prep", "advisory": "D10 BLOCKED"}
 
 
+def _run_daily_digest_agent() -> dict[str, Any]:
+    from bifrost_research.copilot.agents.daily_digest import run_daily_digest
+
+    out = run_daily_digest()
+    return out if isinstance(out, dict) else {"ok": True, "engine": "daily_digest", "advisory": "D10 BLOCKED"}
+
+
 def _run_eod_review_agent() -> dict[str, Any]:
     from bifrost_research.copilot.agents.eod_review import run_eod_review
 
@@ -208,6 +215,16 @@ agents_morning_prep = _run_asset(
     group=GROUP_AGENTS,
     description="Morning prep agent",
     fn=_run_morning_prep_agent,
+)
+# D2: one digest per trading day — holdings ∪ new candidates through the lenses,
+# loop state, resolutions and dissents since yesterday. Morning Prep's per-
+# hypothesis posts fold into it; the asset stays for manual runs, its schedule
+# does not.
+agents_daily_digest = _run_asset(
+    key_path=["agents", "daily_digest"],
+    group=GROUP_AGENTS,
+    description="Daily digest — one briefing per trading day (morning prep folded in)",
+    fn=_run_daily_digest_agent,
 )
 # B3: settle the candidates' forward windows before the review reads them, so
 # a hypothesis whose window closed today is resolved today, not tomorrow.
@@ -249,6 +266,7 @@ RESEARCH_AUX_ASSETS = [
     engines_gex_intraday,
     engines_event_radar_sched,
     agents_morning_prep,
+    agents_daily_digest,
     agents_eod_review,
     maint_ensure_partitions,
     maint_vol_weekly_backfill,
@@ -341,13 +359,14 @@ _specs: list[tuple[str, str, list[Any], str, str, str]] = [
         "UTC",
         "event-radar",
     ),
+    # D2: the digest takes Morning Prep's slot; one post a day instead of one per hypothesis.
     (
-        "research_morning_prep_schedule",
-        "research_morning_prep_job",
-        [agents_morning_prep],
+        "research_daily_digest_schedule",
+        "research_daily_digest_job",
+        [agents_daily_digest],
         "30 11 * * 1-5",
         "UTC",
-        "morning-prep",
+        "daily-digest",
     ),
     (
         "research_eod_review_schedule",
