@@ -21,9 +21,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from bifrost_research.auth.deps import require_owner
 from bifrost_research.copilot.approvals import (
     ApprovalError,
+    fill_tool_defaults,
     issue_token,
     strip_meta_args,
 )
+from bifrost_research.mcp.server import create_mcp_server
 from bifrost_research.copilot.orchestrator import execute_approved_write, orchestrate
 from bifrost_research.copilot.bridge_presets import list_presets
 from bifrost_research.copilot.rate_limit import check_rate_limit, get_usage, usage_to_dict
@@ -388,13 +390,24 @@ async def copilot_stream(
 
 
 @router.post("/approve")
-def copilot_approve(body: ApproveBody) -> dict[str, Any]:
+def copilot_approve(
+    body: ApproveBody,
+    request: Request,
+    owner_id: str = Depends(require_owner),
+) -> dict[str, Any]:
+    """Mint an approval token for a write tool.
+
+    The owner comes from the bearer token, never from the request body: a caller
+    that names itself in ``approved_by`` writes that name into the audit ledger,
+    which is the one field the ledger exists to be trusted on.
+    """
     if body.tool_name not in WRITE_TOOL_NAMES:
         raise HTTPException(
             status_code=400,
             detail=f"tool_name must be a write tool; got {body.tool_name!r}",
         )
-    args = strip_meta_args(body.arguments)
+    # Hash what the tool will run with, not what the caller happened to send.
+    args = fill_tool_defaults(getattr(request.app.state, "copilot_mcp", None) or create_mcp_server(), body.tool_name, body.arguments)
     action_id = (body.action_id or "").strip() or action_repo.generate_action_id()
 
     try:
@@ -430,7 +443,7 @@ def copilot_approve(body: ApproveBody) -> dict[str, Any]:
                     conn,
                     action_id,
                     status="approved",
-                    approved_by=body.approved_by,
+                    approved_by=owner_id,
                 )
                 action_row = action_repo.get_action(conn, action_id)
             else:
@@ -438,7 +451,7 @@ def copilot_approve(body: ApproveBody) -> dict[str, Any]:
                     conn,
                     action_id,
                     status="approved",
-                    approved_by=body.approved_by,
+                    approved_by=owner_id,
                 )
         finally:
             conn.close()
@@ -456,7 +469,11 @@ def copilot_approve(body: ApproveBody) -> dict[str, Any]:
 
 
 @router.post("/execute")
-async def copilot_execute(body: ExecuteBody, request: Request) -> dict[str, Any]:
+async def copilot_execute(
+    body: ExecuteBody,
+    request: Request,
+    owner_id: str = Depends(require_owner),
+) -> dict[str, Any]:
     if body.tool_name not in WRITE_TOOL_NAMES:
         raise HTTPException(
             status_code=400,
@@ -465,8 +482,8 @@ async def copilot_execute(body: ExecuteBody, request: Request) -> dict[str, Any]
     if not body.approval_token or not body.approval_token.strip():
         raise HTTPException(status_code=403, detail="approval token required")
 
-    args = strip_meta_args(body.arguments)
     mcp = getattr(request.app.state, "copilot_mcp", None)
+    args = fill_tool_defaults(mcp or create_mcp_server(), body.tool_name, body.arguments)
 
     result = await execute_approved_write(
         tool_name=body.tool_name,
@@ -511,7 +528,7 @@ async def copilot_execute(body: ExecuteBody, request: Request) -> dict[str, Any]
                     conn,
                     action_id,
                     status="executed" if result.get("ok") else "error",
-                    approved_by=body.approved_by,
+                    approved_by=owner_id,
                     executed_result=result,
                 )
             else:
@@ -529,7 +546,7 @@ async def copilot_execute(body: ExecuteBody, request: Request) -> dict[str, Any]
                         conn,
                         action_row["id"],
                         status="executed",
-                        approved_by=body.approved_by,
+                        approved_by=owner_id,
                         executed_result=result,
                     )
         finally:
@@ -541,7 +558,11 @@ async def copilot_execute(body: ExecuteBody, request: Request) -> dict[str, Any]
 
 
 @router.post("/dismiss")
-def copilot_dismiss(body: DismissBody) -> dict[str, Any]:
+def copilot_dismiss(
+    body: DismissBody,
+    owner_id: str = Depends(require_owner),
+) -> dict[str, Any]:
+    """Mark a proposed write rejected. The rejecting owner comes from the token."""
     """Reject a proposed write (FE dismiss) — optional telemetry into ai_action_log."""
     args = strip_meta_args(body.arguments)
     action_id = (body.action_id or "").strip() or action_repo.generate_action_id()
@@ -568,7 +589,7 @@ def copilot_dismiss(body: DismissBody) -> dict[str, Any]:
                     conn,
                     action_id,
                     status="rejected",
-                    approved_by=body.approved_by,
+                    approved_by=owner_id,
                     executed_result={"dismissed": True, "reason": body.reason},
                 )
             else:
@@ -576,7 +597,7 @@ def copilot_dismiss(body: DismissBody) -> dict[str, Any]:
                     conn,
                     action_id,
                     status="rejected",
-                    approved_by=body.approved_by,
+                    approved_by=owner_id,
                     executed_result={"dismissed": True, "reason": body.reason},
                 )
         finally:

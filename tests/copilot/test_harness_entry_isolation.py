@@ -102,9 +102,17 @@ def test_summary_lines_say_what_happened() -> None:
     ok = entry.objective_outcome({"id": "obj-a", "title": "A"}, result=_result("run_1", 8))
     assert entry.summary_line(ok) == "objective obj-a (A): ok run=run_1 status=awaiting_approval candidates=8"
     approved = entry.objective_outcome(
-        {"id": "obj-b", "title": "B"}, result={**_result("run_2", 2), "approve_result": {"n": 2}, "approve_skipped": False}
+        # process_objective writes the outcome under "approve_all". This test used to
+        # pin "approve_result", a key nothing has ever written, so the summary line
+        # could never say auto-accepted and the test still passed.
+        {"id": "obj-b", "title": "B"},
+        result={
+            **_result("run_2", 2),
+            "approve_all": {"accepted_symbols": ["WT", "BG"], "held_symbols": []},
+            "approve_skipped": False,
+        },
     )
-    assert entry.summary_line(approved).endswith("candidates=2 auto-approved")
+    assert entry.summary_line(approved).endswith("candidates=2 auto-accepted=WT,BG")
     failed = entry.objective_outcome({"id": "obj-c", "title": "C"}, error=RuntimeError("boom"))
     assert entry.summary_line(failed) == "objective obj-c (C): FAILED RuntimeError: boom"
     assert entry.batch_summary([ok, approved, failed]) == "2/3 objectives ok; failed: obj-c (RuntimeError: boom)"

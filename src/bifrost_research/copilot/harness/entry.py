@@ -92,7 +92,13 @@ def objective_outcome(
     out["run_id"] = run.get("id")
     out["status"] = run.get("status")
     out["candidates"] = len(outputs.get("candidate_ids") or [])
-    out["approved"] = bool(result.get("approve_result")) and not result.get("approve_skipped")
+    # process_objective stores the outcome under "approve_all"; "approve_result" was
+    # never written by anything, so the Cron's one-line summary could not say
+    # "auto-accepted" even on a run that accepted candidates.
+    approve = result.get("approve_all") if isinstance(result.get("approve_all"), dict) else {}
+    accepted = list(approve.get("accepted_symbols") or [])
+    out["accepted"] = accepted
+    out["approved"] = bool(accepted or approve.get("approved")) and not result.get("approve_skipped")
     return out
 
 
@@ -103,7 +109,11 @@ def summary_line(outcome: dict) -> str:
     return (
         f"{head}: ok run={outcome.get('run_id')} status={outcome.get('status')} "
         f"candidates={outcome.get('candidates')}"
-        + (" auto-approved" if outcome.get("approved") else "")
+        + (
+            f" auto-accepted={','.join(outcome.get('accepted') or []) or 'yes'}"
+            if outcome.get("approved")
+            else ""
+        )
     )
 
 

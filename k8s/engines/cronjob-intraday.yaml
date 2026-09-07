@@ -89,6 +89,11 @@ metadata:
 spec:
   schedule: "30 14-20 * * 1-5"
   timeZone: UTC
+  # Suspended: Dagster multi-schedule owns this slot (research_intraday_schedule /
+  # research_settlement_schedule). The cluster already has these suspended by hand;
+  # without the field the manifest disagrees, and any recreate would start a second
+  # writer on the same features table at the same minute.
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -162,6 +167,11 @@ metadata:
 spec:
   schedule: "0 22 * * 1-5"
   timeZone: UTC
+  # Suspended: Dagster multi-schedule owns this slot (research_intraday_schedule /
+  # research_settlement_schedule). The cluster already has these suspended by hand;
+  # without the field the manifest disagrees, and any recreate would start a second
+  # writer on the same features table at the same minute.
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 5
   failedJobsHistoryLimit: 3

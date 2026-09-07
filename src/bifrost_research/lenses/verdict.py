@@ -21,6 +21,9 @@ BAND_LABEL = {
 _NO_EDGE = "No standalone edge from this lens — wait for another lens to confirm."
 
 
+LEAN_HEDGE = "Leaning that way, not at the extreme — "
+
+
 def verdict_for(
     lens_id: str,
     value: Any,
@@ -35,10 +38,17 @@ def verdict_for(
         band = classify(lens_id, value, fractions_as_pct=fractions_as_pct)
     if band is None:
         return None
-    if band in ("hot", "lean_hot"):
+    if band == "hot":
         means = spec.hot_means
-    elif band in ("cold", "lean_cold"):
+    elif band == "cold":
         means = spec.cold_means
+    # A lean band is partway to the extreme, so it must not be handed the extreme's
+    # sentence. IV Rank 62 read "Implied vol is rich — short-premium bias", the same
+    # words as IV Rank 95, and a reader has no way to see the difference in the prose.
+    elif band == "lean_hot":
+        means = f"{LEAN_HEDGE}{spec.hot_means}"
+    elif band == "lean_cold":
+        means = f"{LEAN_HEDGE}{spec.cold_means}"
     elif spec.kind in ("severity", "distance"):
         # Neutral on a severity / distance lens is the calm or far-from-magnet reading.
         means = spec.cold_means or _NO_EDGE

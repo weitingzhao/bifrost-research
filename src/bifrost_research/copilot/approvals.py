@@ -32,6 +32,17 @@ class ApprovalError(Exception):
         self.status = status
 
 
+def approval_secret_source() -> str:
+    """``"env"`` when the signing key is configured, ``"dev_fallback"`` when it is not.
+
+    The fallback is a constant in this repo, and the repo is public: with it in force,
+    anyone can mint a valid approval token for any write tool. Nothing surfaced which
+    of the two was in use, so a deployment that never set the env looked identical to
+    one that did. /health now says which.
+    """
+    return "env" if os.environ.get("COPILOT_APPROVAL_HMAC_SECRET", "").strip() else "dev_fallback"
+
+
 def _secret_bytes() -> bytes:
     raw = os.environ.get("COPILOT_APPROVAL_HMAC_SECRET", "").strip()
     if not raw:
@@ -187,3 +198,36 @@ __all__ = [
     "strip_meta_args",
     "validate_token",
 ]
+
+
+def fill_tool_defaults(mcp: Any, tool: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
+    """The arguments the tool will actually run with, so the token is minted over those.
+
+    A token is signed over what the caller sent; the write tool re-hashes what it is
+    about to use, with its declared defaults filled in by FastMCP. Any argument the
+    caller left out therefore changed the hash, and every such approval died as
+    "tool input hash mismatch (tampering)" — omitting an optional argument is what a
+    model does by default, so `research.loop.run_objective` (curate_after=True) could
+    not be executed from chat at all. Dropping empty values covered None / {} / [],
+    never a non-empty default. Resolving the defaults here fixes every tool at once,
+    including tools added later.
+    """
+    import inspect
+
+    args = dict(strip_meta_args(arguments))
+    try:
+        registered = mcp._tool_manager.get_tool(tool)  # noqa: SLF001
+        fn = getattr(registered, "fn", None)
+        if fn is None:
+            return args
+        params = inspect.signature(fn).parameters
+    except Exception:  # noqa: BLE001 — an unknown tool hashes what it was given
+        return args
+    for name, param in params.items():
+        if name in args or name in ("dry_run", "approval_token"):
+            continue
+        if param.default is inspect.Parameter.empty or param.default is None:
+            continue
+        args[name] = param.default
+    return args
+

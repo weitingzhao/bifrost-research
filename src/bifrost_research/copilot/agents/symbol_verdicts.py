@@ -46,11 +46,18 @@ def _symbols_of(payload: dict[str, Any]) -> set[str]:
 
 
 def latest_digest(conn: Any) -> dict[str, Any] | None:
+    """The most recent digest, whatever its status.
+
+    Reading pending first meant that approving today's digest in the Inbox sent every
+    hub's verdict strip back to an older day's lens bands — the act of reading the
+    digest silently staled the pages it describes.
+    """
+    newest: dict[str, Any] | None = None
     for status in ("pending", "approved"):
-        rows = draft_repo.list_drafts(conn, status=status, kind="daily_digest", limit=1)
-        if rows:
-            return rows[0]
-    return None
+        for row in draft_repo.list_drafts(conn, status=status, kind="daily_digest", limit=1):
+            if newest is None or str(row.get("created_at") or "") > str(newest.get("created_at") or ""):
+                newest = row
+    return newest
 
 
 def digest_view(digest: dict[str, Any] | None, symbol: str) -> dict[str, Any] | None:

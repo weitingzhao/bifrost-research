@@ -41,14 +41,26 @@ class GuardrailResult:
     matched_pattern: str | None = None
 
 
-def _is_whitelisted(text: str) -> bool:
+def _without_quoted_literals(text: str) -> str:
+    """Blank out the phrases that are asking *about* D10 rather than asking for it.
+
+    This used to return a boolean, and one whitelisted phrase anywhere in a message
+    waved the whole message past every D10 pattern — so "what is place_order" followed
+    by a real request to arm one was checked as clean. Removing only the quoted
+    occurrence keeps the question answerable and leaves the rest of the text guarded.
+    """
     lower = text.lower()
-    return any(q in lower for q in _SAFE_LITERAL_QUOTES)
+    for quote in _SAFE_LITERAL_QUOTES:
+        idx = 0
+        while (idx := lower.find(quote, idx)) != -1:
+            text = text[:idx] + " " * len(quote) + text[idx + len(quote):]
+            lower = text.lower()
+            idx += len(quote)
+    return text
 
 
 def check_input(text: str) -> GuardrailResult:
-    if _is_whitelisted(text):
-        return GuardrailResult(tripwire=False)
+    text = _without_quoted_literals(text)
     for pat in D10_FORBIDDEN_PATTERNS:
         if pat.search(text):
             return GuardrailResult(

@@ -131,6 +131,15 @@ def _build_lens_snapshot(
     return snap
 
 
+def _auto_approve_eligible(persona_eval_summary: dict[str, Any] | None) -> bool:
+    """Eligible only when the judges were skipped, or ran and said so."""
+    if not persona_eval_summary:
+        return True
+    if persona_eval_summary.get("status") == "error":
+        return False
+    return bool(persona_eval_summary.get("auto_approve_eligible", True))
+
+
 def run_objective(
     conn: _Connection,
     *,
@@ -739,9 +748,11 @@ def run_objective(
             "policy_suggestion_draft_id": policy_suggestion_draft_id,
             "hit_rate_gate": gate,
             "persona_eval": persona_eval_summary,
-            "auto_approve_eligible": bool(
-                (persona_eval_summary or {}).get("auto_approve_eligible", True)
-            ),
+            # The default is True for "the judges were never asked" (persona_evaluate
+            # off). It must not also cover "the judges were asked and the stage blew
+            # up": that summary is {"status": "error", ...}, a truthy dict with no
+            # eligibility key, which read as eligible.
+            "auto_approve_eligible": _auto_approve_eligible(persona_eval_summary),
         }
         finished = obj_repo.finish_run(
             conn,

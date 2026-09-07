@@ -39,9 +39,20 @@ def run_startup_schema_guard() -> None:
 
 @router.get("/health")
 def health() -> dict[str, Any]:
+    from bifrost_research.copilot.approvals import approval_secret_source
+
+    secret_source = approval_secret_source()
+    if secret_source == "dev_fallback":
+        logger.warning(
+            "COPILOT_APPROVAL_HMAC_SECRET is unset — approval tokens are signed with the "
+            "constant published in this public repo; set it in bifrost-research-secrets"
+        )
     return {
         "status": "ok" if _startup_ok else "degraded",
         "startup_ok": _startup_ok,
+        # Which key signs approval tokens. "dev_fallback" means the constant in the
+        # public repo, i.e. anyone can mint one.
+        "approval_secret": secret_source,
         "startup_error": _startup_error,
         "version": __version__,
         "domain": "research",

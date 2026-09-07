@@ -314,14 +314,23 @@ def curate_run(run_id: str) -> dict[str, Any]:
 
 
 @router.post("/objective-runs/{run_id}/approve-all")
-def approve_all_for_run_endpoint(run_id: str) -> dict[str, Any]:
+def approve_all_for_run_endpoint(
+    run_id: str,
+    owner_id: str = Depends(require_owner),
+) -> dict[str, Any]:
     """Approve pending drafts for this run using Inbox ``apply_draft_approval``.
 
-    Same side effects as Decision Inbox Approve (policy merge, candidate
-    promote + hypotheses, action status). Per-draft HTTP errors are collected
-    so one bad draft does not 500 the batch.
+    Same side effects as Decision Inbox Approve (policy merge, candidate promote +
+    hypotheses, action status). Per-draft HTTP errors are collected so one bad draft
+    does not 500 the batch.
+
+    Since D3 this shares the leash with the unattended path, so it must also read the
+    objective's own ``min_source_hit_rate`` — falling back to the 0.45 default silently
+    applied a floor the Owner had already tuned away from. The run's outputs get the
+    same accepted / held record the Cron writes, so the console shows one story.
     """
     from bifrost_research.copilot.harness.batch import approve_all_for_run as batch_approve
+    from bifrost_research.copilot.harness.leash import DEFAULT_MIN_SOURCE_HIT_RATE
 
     conn = _connect_or_503()
     try:
@@ -331,14 +340,37 @@ def approve_all_for_run_endpoint(run_id: str) -> dict[str, Any]:
         obj = obj_repo.get_objective(conn, str(run.get("objective_id")))
         policy = (obj or {}).get("policy_json") or {}
         auto_validate = bool(policy.get("auto_validate", False))
+        try:
+            knob = float(policy.get("min_source_hit_rate", DEFAULT_MIN_SOURCE_HIT_RATE))
+        except (TypeError, ValueError):
+            knob = DEFAULT_MIN_SOURCE_HIT_RATE
         result = batch_approve(
             conn,
             run_id,
-            approved_by="owner",
-            owner_id="owner",
+            approved_by=owner_id,
+            owner_id=owner_id,
             kinds_whitelist=None,
             auto_validate=auto_validate,
+            min_source_hit_rate=knob,
         )
+        try:
+            obj_repo.patch_run_outputs(
+                conn,
+                run_id,
+                {
+                    "approve_all": {
+                        "count": result.get("count"),
+                        "held_count": result.get("held_count"),
+                        "accepted": result.get("accepted_symbols") or [],
+                        "held_symbols": result.get("held_symbols") or [],
+                        "partial": result.get("partial") or [],
+                        "leash": result.get("leash"),
+                        "skipped_batch": False,
+                    }
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — the approve stands even if the record does not
+            logger.warning("patch approve outputs failed for %s: %s", run_id, exc)
     finally:
         conn.close()
     return _ok(result)
