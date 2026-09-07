@@ -292,6 +292,21 @@ def rate_objective_run(run_id: str) -> dict[str, Any]:
     return _ok(out)
 
 
+@router.get("/loop/autopilot")
+def get_autopilot_standing() -> dict[str, Any]:
+    """The autopilot as standing: trust on the cluster matrix, next unattended
+    run, today's purse, memos waiting, and one brief per objective — what it
+    hunts, what it said last, whether its picks have been right, what it costs.
+    All reads; no model is called."""
+    from bifrost_research.copilot.harness.standing import autopilot_standing
+
+    conn = _connect_or_503()
+    try:
+        return _ok(autopilot_standing(conn))
+    finally:
+        conn.close()
+
+
 @router.get("/loop/trust")
 def get_loop_trust() -> dict[str, Any]:
     """Trust gate observability for Harness Console (batch auto-approve)."""

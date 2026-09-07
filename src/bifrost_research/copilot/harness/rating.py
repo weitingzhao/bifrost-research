@@ -524,6 +524,65 @@ def rate_run(conn: Any, run_id: str) -> dict[str, Any]:
     return {"run_id": run_id, "draft_id": batch["id"], "decision": detail, "ratings": ratings}
 
 
+def stars_text(n: int) -> str:
+    k = max(0, min(5, int(n or 0)))
+    return "★" * k
+
+
+def rating_summary(ratings: list[dict[str, Any]], *, considered: int | None = None) -> dict[str, Any]:
+    """The sentence at the top of a memo, from its ratings.
+
+    Mirrors the frontend's `memoHeadline` so the console row and the drawer
+    say the same thing about the same run. Written from the ratings, so it
+    cannot disagree with the deck beneath it.
+    """
+    total = len(ratings)
+    by_action: dict[str, int] = {}
+    best = 0
+    split = 0
+    blocked = 0
+    for r in ratings:
+        a = str(r.get("action") or "watch")
+        by_action[a] = by_action.get(a, 0) + 1
+        best = max(best, int(r.get("conviction") or 0))
+        ip = _mapping(r.get("inputs"))
+        if ip.get("agreement") == "dissent":
+            split += 1
+        if ip.get("blocked") or ip.get("validate") == "oppose":
+            blocked += 1
+    actionable = by_action.get("buy_zone", 0) + by_action.get("accumulate", 0)
+    if total == 0:
+        headline = "No candidates were rated."
+    else:
+        frm = f" from {considered:,}" if considered else ""
+        noun = "candidate" if total == 1 else "candidates"
+        if actionable:
+            head = f"{total} {noun}{frm}. {actionable} actionable, best {stars_text(best)}."
+        else:
+            head = f"{total} {noun}{frm}. None above {stars_text(best) or '☆'} — nothing actionable yet."
+        reasons = []
+        if split:
+            reasons.append(f"judges split on {split}")
+        if blocked:
+            reasons.append(f"validate blocked {blocked}")
+        headline = f"{head} {', '.join(reasons)}." if reasons else head
+    picks = [
+        {"symbol": r.get("symbol"), "action": r.get("action"), "conviction": r.get("conviction"), "grade": r.get("grade")}
+        for r in ratings
+    ]
+    return {
+        "headline": headline,
+        "total": total,
+        "best": best,
+        "actionable": actionable,
+        "split": split,
+        "blocked": blocked,
+        "by_action": by_action,
+        "picks": picks,
+        "considered": considered,
+    }
+
+
 __all__ = [
     "ACTION_LABELS",
     "BUY_ZONE_PCT",
@@ -542,6 +601,8 @@ __all__ = [
     "rate_run",
     "rating_decision",
     "rating_rank_key",
+    "rating_summary",
     "settled_record",
+    "stars_text",
     "timing_for",
 ]
