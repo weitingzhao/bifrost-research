@@ -408,6 +408,7 @@ def prior_scores(
     *,
     objective_id: str | None = None,
     days: int = 30,
+    as_of: str | None = None,
 ) -> dict[str, float]:
     """The most recent earlier candidate score per symbol, for the outlook.
 
@@ -423,8 +424,10 @@ def prior_scores(
 
     out: dict[str, float] = {}
     # Candidate trade_date is a New York session date; "today" must be too, or
-    # a run after 20:00 ET would read its own row as a prior.
-    today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    # a run after 20:00 ET would read its own row as a prior. A run rated after
+    # the fact passes its own session date as `as_of`, otherwise it would read
+    # its own candidate row as the prior and every outlook would be "stable".
+    today = as_of or datetime.now(ZoneInfo("America/New_York")).date().isoformat()
     for sym in symbols:
         try:
             rows = pool_repo.list_candidates(conn, status=None, symbol=sym, days=days, limit=20)
@@ -500,7 +503,13 @@ def rate_run(conn: Any, run_id: str) -> dict[str, Any]:
         raise LookupError("candidate_batch draft carries no items")
 
     objective_id = str(run.get("objective_id") or payload.get("objective_id") or "")
-    priors = prior_scores(conn, [str(i.get("symbol") or "") for i in items], objective_id=objective_id or None)
+    started = str(run.get("started_at") or "")[:10] or None
+    priors = prior_scores(
+        conn,
+        [str(i.get("symbol") or "") for i in items],
+        objective_id=objective_id or None,
+        as_of=started,
+    )
     ratings = rate_items(items, priors=priors)
     detail = rating_decision(ratings)
     obj_repo.append_run_trace_event(

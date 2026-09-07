@@ -187,7 +187,7 @@ def test_rate_run_reads_the_stored_batch_and_writes_back_everywhere(monkeypatch)
 
     batch_items = [item(), item(symbol="LPG", agreement="agree", net_stance="abstain")]
     draft = {"id": "drf_1", "kind": "candidate_batch", "payload": {"objective_id": "obj-x", "items": batch_items}}
-    run = {"id": "run_1", "objective_id": "obj-x", "outputs": {"draft_ids": ["drf_other", "drf_1"]}}
+    run = {"id": "run_1", "objective_id": "obj-x", "started_at": "2026-09-06T23:57:00+00:00", "outputs": {"draft_ids": ["drf_other", "drf_1"]}}
     written: dict = {}
 
     class FakeObj:
@@ -218,7 +218,13 @@ def test_rate_run_reads_the_stored_batch_and_writes_back_everywhere(monkeypatch)
 
     monkeypatch.setattr(repos, "objective", FakeObj)
     monkeypatch.setattr(repos, "ai_draft", FakeDraft)
-    monkeypatch.setattr(mod, "prior_scores", lambda conn, syms, objective_id=None: {"NVDA": 82.0})
+    seen: dict = {}
+
+    def fake_priors(conn, syms, objective_id=None, as_of=None):
+        seen["as_of"] = as_of
+        return {"NVDA": 82.0}
+
+    monkeypatch.setattr(mod, "prior_scores", fake_priors)
 
     out = mod.rate_run(None, "run_1")
     assert out["draft_id"] == "drf_1"
@@ -229,9 +235,12 @@ def test_rate_run_reads_the_stored_batch_and_writes_back_everywhere(monkeypatch)
     assert written["outputs"]["ratings"] == out["ratings"]
     assert written["draft"][0] == "drf_1"
     assert all("rating" in i for i in written["draft"][1]["items"])
-    # The prior was scoped to the objective and drove the outlook.
+    # The prior was scoped to the objective and drove the outlook — and it was
+    # looked up as of the run's own session date, not today's, or a backfilled
+    # run would read its own candidate row as the prior.
     nvda = next(r for r in out["ratings"] if r["symbol"] == "NVDA")
     assert nvda["score_drift"]["from"] == 82.0
+    assert seen["as_of"] == "2026-09-06"
 
 
 def test_rate_run_refuses_a_run_with_nothing_to_rate(monkeypatch):
