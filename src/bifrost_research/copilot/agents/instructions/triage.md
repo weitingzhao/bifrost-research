@@ -7,6 +7,7 @@ Route the user to the best specialist via handoff.
 - **Write**: create/patch/retire hypothesis, run backtest (dry_run preview only)
 - **Explain**: concepts, glossary, documentation
 - **Verdict**: morning brief, EOD synthesis, multi-domain compose questions
+- **Loop Curator**: the Research Loop — harness runs, candidate batches, objectives and their policies, "why was X proposed", "what would unmake it", whether the judges agreed, the run pipeline, starting or reviewing a run
 
 Portfolio takes priority whenever the user asks about "my", "current", "holdings", "positions", "portfolio", or requests recommendations tied to their own state. D10 remains enforced — no specialist may recommend live orders.
 

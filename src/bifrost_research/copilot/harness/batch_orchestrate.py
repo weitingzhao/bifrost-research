@@ -79,6 +79,125 @@ def _append_batch_event(
             pass
 
 
+def start_preview(obj: dict[str, Any]) -> dict[str, Any]:
+    """What a run of this objective would do — the dry-run of ``research.loop.run_objective``."""
+    from bifrost_research.copilot.harness.runtime import _heuristic_plan
+
+    policy = obj.get("policy_json") or {}
+    plan = _heuristic_plan(obj)
+    return {
+        "objective": {
+            "id": obj.get("id"),
+            "title": obj.get("title"),
+            "status": obj.get("status"),
+            "universe_mode": policy.get("universe_mode"),
+            "max_candidates": policy.get("max_candidates"),
+            "persona_evaluate": policy.get("persona_evaluate"),
+            "require_validate_pass": policy.get("require_validate_pass"),
+            "use_llm_plan": policy.get("use_llm_plan"),
+        },
+        "plan": {
+            "generated_by": plan.get("generated_by") or "heuristic",
+            "steps": [s.get("op") for s in (plan.get("steps") or []) if isinstance(s, dict)],
+            "note": "the run itself may replace this with an LLM plan when the policy asks for one",
+        },
+        "trust": trust_status(),
+        "then": "harness → curator → Trust-gated approve of research drafts, in the background",
+    }
+
+
+def start_async_batch(
+    conn: Any,
+    obj: dict[str, Any],
+    *,
+    curate_after: bool,
+) -> dict[str, Any]:
+    """Create the run row now and finish it in a background thread.
+
+    Shared by ``POST /objectives/{id}/batch-run`` and the MCP write tool
+    ``research.loop.run_objective``: the row exists before the caller returns,
+    so Pipeline can poll live progress; harness → curate → Trust-L0 approve
+    then run on their own connection. D10 BLOCKED — research drafts only.
+    """
+    import threading
+
+    from bifrost_research.copilot.harness.runtime import _heuristic_plan
+    from bifrost_research.db.conn import connect as db_connect
+
+    objective_id = str(obj["id"])
+    plan = _heuristic_plan(obj)
+    plan["generated_by"] = plan.get("generated_by") or "heuristic"
+    plan["async_batch_start"] = True
+    run = obj_repo.create_run(conn, objective_id=objective_id, plan_json=plan)
+    run_id = str(run["id"])
+    try:
+        obj_repo.patch_run_trace(
+            conn,
+            run_id,
+            {
+                "events": [{"step": "queued", "label": "Queued", "decision": "async_batch_started"}],
+                "progress": {"step": "queued", "label": "Queued", "detail": "Harness starting…"},
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("initial progress flush failed: %s", exc)
+    trust = trust_status()
+    obj_snapshot = dict(obj)
+
+    def _bg() -> None:
+        bg_conn = None
+        try:
+            bg_conn = db_connect()
+            existing = obj_repo.get_run(bg_conn, run_id)
+            if existing is None:
+                logger.error("batch-run bg: run %s missing", run_id)
+                return
+            process_objective(
+                bg_conn,
+                obj_snapshot,
+                curate_after=curate_after,
+                batch_mode=True,
+                existing_run=existing,
+            )
+        except Exception:
+            logger.exception("batch-run background failed for %s", run_id)
+            if bg_conn is not None:
+                try:
+                    obj_repo.finish_run(
+                        bg_conn,
+                        run_id,
+                        status="failed",
+                        trace_json={
+                            "events": [{"step": "failed", "decision": "background_error"}],
+                            "progress": {
+                                "step": "failed",
+                                "label": "Failed",
+                                "detail": "background batch-run error",
+                            },
+                        },
+                        outputs={},
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("batch-run bg finish_run failed")
+        finally:
+            if bg_conn is not None:
+                try:
+                    bg_conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    threading.Thread(target=_bg, name=f"batch-run-{run_id}", daemon=True).start()
+    return {
+        "run": run,
+        "started": True,
+        "trust": trust,
+        "advisory": (
+            "D10 BLOCKED — batch started; Pipeline can poll live progress. "
+            "Auto-approve is research drafts only."
+        ),
+    }
+
+
 def process_objective(
     conn: Any,
     obj: dict[str, Any],

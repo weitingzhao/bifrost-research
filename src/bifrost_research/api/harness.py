@@ -181,16 +181,10 @@ def batch_run_objective(
 
     Creates a ``running`` row, returns ``{ run, started, trust }``, then finishes
     harness → curate → Trust-L0 approve in a background thread so Pipeline can
-    poll mid-run progress. D10 BLOCKED — research drafts only.
+    poll mid-run progress. The same starter serves the MCP write tool
+    ``research.loop.run_objective`` (D1). D10 BLOCKED — research drafts only.
     """
-    import threading
-
-    from bifrost_research.copilot.harness.batch_orchestrate import (
-        process_objective,
-        trust_status,
-    )
-    from bifrost_research.copilot.harness.runtime import _heuristic_plan
-    from bifrost_research.db.conn import connect as db_connect
+    from bifrost_research.copilot.harness.batch_orchestrate import start_async_batch
 
     payload = body or BatchRunBody()
     conn = _connect_or_503()
@@ -203,93 +197,10 @@ def batch_run_objective(
                 status_code=409,
                 detail=f"objective status {obj.get('status')!r} is not active",
             )
-        # Fast create so FE can open Pipeline before the heavy work starts.
-        plan = _heuristic_plan(obj)
-        plan["generated_by"] = plan.get("generated_by") or "heuristic"
-        plan["async_batch_start"] = True
-        run = obj_repo.create_run(conn, objective_id=objective_id, plan_json=plan)
-        run_id = str(run["id"])
-        try:
-            obj_repo.patch_run_trace(
-                conn,
-                run_id,
-                {
-                    "events": [
-                        {
-                            "step": "queued",
-                            "label": "Queued",
-                            "decision": "async_batch_started",
-                        }
-                    ],
-                    "progress": {
-                        "step": "queued",
-                        "label": "Queued",
-                        "detail": "Harness starting…",
-                    },
-                },
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("initial progress flush failed: %s", exc)
-        trust = trust_status()
-        obj_snapshot = dict(obj)
-        curate_after = payload.curate_after
+        started = start_async_batch(conn, obj, curate_after=payload.curate_after)
     finally:
         conn.close()
-
-    def _bg() -> None:
-        bg_conn = None
-        try:
-            bg_conn = db_connect()
-            existing = obj_repo.get_run(bg_conn, run_id)
-            if existing is None:
-                logger.error("batch-run bg: run %s missing", run_id)
-                return
-            process_objective(
-                bg_conn,
-                obj_snapshot,
-                curate_after=curate_after,
-                batch_mode=True,
-                existing_run=existing,
-            )
-        except Exception:
-            logger.exception("batch-run background failed for %s", run_id)
-            if bg_conn is not None:
-                try:
-                    obj_repo.finish_run(
-                        bg_conn,
-                        run_id,
-                        status="failed",
-                        trace_json={
-                            "events": [{"step": "failed", "decision": "background_error"}],
-                            "progress": {
-                                "step": "failed",
-                                "label": "Failed",
-                                "detail": "background batch-run error",
-                            },
-                        },
-                        outputs={},
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception("batch-run bg finish_run failed")
-        finally:
-            if bg_conn is not None:
-                try:
-                    bg_conn.close()
-                except Exception:  # noqa: BLE001
-                    pass
-
-    threading.Thread(target=_bg, name=f"batch-run-{run_id}", daemon=True).start()
-    return _ok(
-        {
-            "run": run,
-            "started": True,
-            "trust": trust,
-            "advisory": (
-                "D10 BLOCKED — batch started; Pipeline can poll live progress. "
-                "Auto-approve is research drafts only."
-            ),
-        }
-    )
+    return _ok(started)
 
 
 @router.get("/loop/trust")

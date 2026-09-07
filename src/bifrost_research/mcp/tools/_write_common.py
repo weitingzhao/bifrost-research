@@ -30,6 +30,8 @@ WRITE_TOOL_NAMES: tuple[str, ...] = (
     "research.loop.attach_backtest_evidence",
     "research.loop.draft_decision",
     "research.loop.propose_order_intent",
+    # research-loop-automation D1
+    "research.loop.run_objective",
 )
 
 

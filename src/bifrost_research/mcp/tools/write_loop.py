@@ -14,12 +14,15 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from bifrost_research.mcp.tools._common import with_conn
+from bifrost_research.mcp.tools._common import err
 from bifrost_research.mcp.tools._write_common import (
     WRITE_SUFFIX,
     diff_preview,
     executed_ok,
+    looks_like_batch_pass,
     require_approval_or_error,
 )
+from bifrost_research.repositories import objective as obj_repo
 from bifrost_research.repositories import candidate_pool as cand_repo
 from bifrost_research.repositories import hypothesis as hyp_repo
 from bifrost_research.repositories import ai_draft as draft_repo
@@ -348,3 +351,67 @@ def register(mcp: FastMCP) -> None:
             return executed_ok("order_intent", {"draft": draft, "action": action})
 
         return with_conn(_run)
+
+    @mcp.tool(
+        name="research.loop.run_objective",
+        description=(
+            "Start a harness run for an objective — the same unattended batch the Cron runs "
+            "(harness → curator → Trust-gated approve of research drafts), in the background; "
+            "the Pipeline shows live progress. dry_run=true previews the objective, its policy, "
+            "the heuristic plan and the trust gate without creating a run. Execution needs the "
+            "Owner's approval token; a curator batch pass cannot start runs (no nested runs). "
+            f"{WRITE_SUFFIX}"
+        ),
+    )
+    def run_objective(
+        objective_id: str,
+        curate_after: bool = True,
+        dry_run: bool = True,
+        approval_token: str | None = None,
+    ) -> dict[str, Any]:
+        from bifrost_research.copilot.harness.batch_orchestrate import start_async_batch, start_preview
+
+        oid = (objective_id or "").strip()
+        if not oid:
+            return err("objective_id required")
+        args = {"objective_id": oid, "curate_after": bool(curate_after)}
+        if not dry_run and approval_token and looks_like_batch_pass(approval_token):
+            return {
+                "ok": False,
+                "error": "403: research.loop.run_objective needs the Owner's approval token — a batch pass cannot start a run",
+                "status": 403,
+            }
+        gate = require_approval_or_error(
+            dry_run=dry_run,
+            approval_token=approval_token,
+            tool="research.loop.run_objective",
+            arguments=args,
+        )
+        if gate is not None:
+            return gate
+
+        def _run(conn: Any) -> dict[str, Any]:
+            obj = obj_repo.get_objective(conn, oid)
+            if obj is None:
+                return err(f"objective not found: {oid}")
+            if obj.get("status") != "active":
+                return err(f"objective status {obj.get('status')!r} is not active")
+            impact = {
+                "creates_row": True,
+                "table": "research.objective_run",
+                "mutates": ["INSERT"],
+                "background": True,
+                "then": "harness → curator → Trust-gated approve (research drafts only)",
+            }
+            if dry_run:
+                return diff_preview(
+                    diff_kind="loop_run",
+                    preview={**start_preview(obj), "curate_after": bool(curate_after)},
+                    impact=impact,
+                    dry_run=True,
+                )
+            started = start_async_batch(conn, obj, curate_after=bool(curate_after))
+            return executed_ok("loop_run", started)
+
+        return with_conn(_run)
+

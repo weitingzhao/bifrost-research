@@ -17,6 +17,7 @@ def register_all(mcp: FastMCP) -> None:
         exhibit,
         hypothesis,
         lenses,
+        loop,
         opex_cycle,
         persona,
         playbook,
@@ -44,3 +45,4 @@ def register_all(mcp: FastMCP) -> None:
     write_backtest.register(mcp)
     write_playbook.register(mcp)
     write_loop.register(mcp)
+    loop.register(mcp)

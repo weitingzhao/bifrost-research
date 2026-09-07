@@ -63,7 +63,11 @@ TOOL_NAMES: tuple[str, ...] = (
     "research.playbook.cases_matching",
     "research.playbook.recent_bridge_cases",
     "research.copilot.recent_sessions",
-  # persona — RS-PS2
+    # loop — research-loop-automation D1 (a run, read back)
+    "research.loop.list_runs",
+    "research.loop.get_run",
+    "research.loop.explain_candidate",
+    # persona — RS-PS2
     "research.persona.get_effective_preferences",
 )
 

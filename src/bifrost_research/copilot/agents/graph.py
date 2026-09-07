@@ -283,6 +283,7 @@ def build_verdict_agent(
     analyze = build_analyze_agent(model_id, mcp=mcp, owner_id=owner_id)
     validate = build_validate_agent(model_id, mcp=mcp, owner_id=owner_id)
     portfolio = build_portfolio_agent(model_id, mcp=mcp, owner_id=owner_id)
+    loop_curator = build_loop_curator_agent(model_id, mcp=mcp, owner_id=owner_id)
     tools = [
         discovery.as_tool(tool_name="discovery_specialist", tool_description="SEPA/discovery data"),
         analyze.as_tool(tool_name="analyze_specialist", tool_description="VRP/vol/OpEx analytics"),
@@ -290,6 +291,11 @@ def build_verdict_agent(
         portfolio.as_tool(
             tool_name="portfolio_specialist",
             tool_description="Holdings / concentration / conflict check",
+        ),
+        # D1: the Loop's runs, candidates and their evidence, quoted with citations.
+        loop_curator.as_tool(
+            tool_name="loop_specialist",
+            tool_description="Research Loop runs, candidate batches and their evidence (why proposed, what would unmake it)",
         ),
     ]
     return _agent(
