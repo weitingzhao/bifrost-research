@@ -238,3 +238,26 @@ def test_decision_line_omits_the_model_clause_for_a_heuristic_run():
     line = persona_decision_line({"mode": "heuristic", "blocked_by_validate": 0})
     assert "models=" not in line
     assert line.startswith("mode=heuristic")
+
+
+def test_verdict_row_carries_the_chinese_only_when_a_judge_wrote_one():
+    from bifrost_research.copilot.harness.persona_heuristic import _verdict_row
+
+    both = _verdict_row("analyze", "support", "English", summary_zh="中文", source="agent")
+    assert both["summary_zh"] == "中文"
+    # Heuristic rows and every run made before the judges were asked for Chinese
+    # leave the key off entirely, so the reader falls back rather than seeing a
+    # blank field dressed as a translation.
+    assert "summary_zh" not in _verdict_row("analyze", "support", "English")
+    assert "summary_zh" not in _verdict_row("analyze", "support", "English", summary_zh="   ")
+
+
+def test_judge_prompt_asks_for_both_languages_in_the_same_reply():
+    from bifrost_research.copilot.harness.persona_judge import _eval_prompt
+
+    prompt = _eval_prompt({"symbol": "AAA", "evidence": {}})
+    assert '"summary_zh"' in prompt
+    assert "Simplified Chinese" in prompt
+    # The bill is input tokens, so asking once for both is far cheaper than a
+    # second call; the sentence must be the same claim, not a looser paraphrase.
+    assert "not a looser paraphrase" in prompt

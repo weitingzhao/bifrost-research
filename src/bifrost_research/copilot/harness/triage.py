@@ -140,12 +140,15 @@ def triage_messages(items: list[dict[str, Any]]) -> list[dict[str, str]]:
         "A deep review by two judge models costs about $0.077 per candidate, so "
         "your job is to say which candidates are worth that and which are not.\n"
         "Reply with ONLY one JSON object:\n"
-        '{"ranked":[{"symbol":"AAA","worth":0.0,"why":"one short sentence"}]}\n'
+        '{"ranked":[{"symbol":"AAA","worth":0.0,"why":"one short sentence",'
+        '"why_zh":"同一句话的简体中文"}]}\n'
         "Include every symbol you were given, exactly once, ordered most worth "
         "reviewing first. `worth` is 0.0 to 1.0. In `why`, name the specific "
         "evidence that decided it — a grade, a level, a settled hit rate — not a "
         "general statement about the market. Say plainly when a candidate is thin "
-        "on evidence; that is a reason to rank it low, not a reason to hedge."
+        "on evidence; that is a reason to rank it low, not a reason to hedge. "
+        "`why_zh` is the same sentence in Simplified Chinese, keeping tickers, "
+        "numbers and terms of art as they are."
     )
     user = "Candidates:\n" + json.dumps(compact, default=str)
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -183,13 +186,15 @@ def _parse_ranked(raw: str, symbols: set[str]) -> list[dict[str, Any]] | None:
             worth = float(r.get("worth"))
         except (TypeError, ValueError):
             worth = 0.0
-        out.append(
-            {
-                "symbol": sym,
-                "worth": max(0.0, min(1.0, worth)),
-                "why": str(r.get("why") or "").strip()[:300],
-            }
-        )
+        row = {
+            "symbol": sym,
+            "worth": max(0.0, min(1.0, worth)),
+            "why": str(r.get("why") or "").strip()[:300],
+        }
+        why_zh = str(r.get("why_zh") or "").strip()
+        if why_zh:
+            row["why_zh"] = why_zh[:300]
+        out.append(row)
     if not out:
         return None
     # Anything the model dropped keeps its place at the back rather than

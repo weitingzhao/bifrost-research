@@ -26,7 +26,18 @@ from bifrost_research.repositories import objective as obj_repo
 
 ADVISORY = "D10 BLOCKED — a research proposal and its evidence; nothing here is an order."
 
-VERDICT_KEYS = ("agent", "stance", "summary", "confidence", "source", "model", "fallback", "risks", "falsify")
+VERDICT_KEYS = (
+    "agent",
+    "stance",
+    "summary",
+    "summary_zh",
+    "confidence",
+    "source",
+    "model",
+    "fallback",
+    "risks",
+    "falsify",
+)
 EVIDENCE_KEYS = (
     "selection",
     "price_context",

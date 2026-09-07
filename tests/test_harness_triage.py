@@ -134,3 +134,21 @@ def test_decision_line_says_advisory_until_a_cap_actually_holds_something():
     assert "deep=1 held=2" in triage_decision(narrowed, [1], ["B", "C"])
     assert triage_decision({"status": "skipped"}, [], []) == "no candidates to triage"
     assert "error=boom" in triage_decision({"status": "ok", "source": "heuristic", "ranked": [], "error": "boom"}, [], [])
+
+
+def test_triage_asks_for_both_languages_and_keeps_the_terms_of_art():
+    system = triage_messages([ITEM])[0]["content"]
+    assert '"why_zh"' in system
+    assert "Simplified Chinese" in system
+    # A reader checks the Chinese against the English figures beside it, so the
+    # numbers and the terms of art must survive the translation unchanged.
+    assert "keeping tickers" in system
+
+
+def test_parse_carries_the_chinese_when_the_model_wrote_one():
+    raw = '{"ranked":[{"symbol":"A","worth":0.5,"why":"thin","why_zh":"证据薄弱"},{"symbol":"B","worth":0.1,"why":"no zh"}]}'
+    ranked = _parse_ranked(raw, {"A", "B"})
+    assert ranked[0]["why_zh"] == "证据薄弱"
+    # Absent rather than empty: the reader falls back to English, and a blank
+    # string would render as Chinese that says nothing.
+    assert "why_zh" not in ranked[1]

@@ -130,13 +130,17 @@ def _eval_prompt(item: dict[str, Any]) -> str:
         "You are evaluating one research candidate for an Owner (D10: advisory only).\n"
         "Call analyze_specialist, portfolio_specialist, and validate_specialist as tools "
         "if helpful, then reply with ONLY one JSON object:\n"
-        '{"analyze":{"stance":"support|caution|oppose|abstain","summary":"..."},'
-        '"portfolio":{...},"validate":{...},"verdict":{...}}\n'
+        '{"analyze":{"stance":"support|caution|oppose|abstain","summary":"...",'
+        '"summary_zh":"..."},"portfolio":{...},"validate":{...},"verdict":{...}}\n'
         "All four keys are required in your final message — analyze, portfolio, validate "
         "and verdict — each with a stance and a one-sentence summary. Do not return a "
         "specialist's output as your own answer; a reply missing any key is discarded as a "
         "failed judgement. If a specialist tool errors, say so in that block's summary and "
         "give the stance you can defend from the evidence (abstain is acceptable).\n"
+        "`summary_zh` is the same sentence in Simplified Chinese: the same claim about the "
+        "same evidence, not a looser paraphrase. Keep tickers, numbers and the terms of art "
+        "(SEPA, IV rank, VRP, gamma, pivot) in their original form — a reader checks them "
+        "against the English figures beside them.\n"
         f"Symbol: {sym}\nScore: {item.get('score')}\n"
         f"Evidence JSON: {json.dumps(evidence)[:4000]}\n"
     )
@@ -233,6 +237,9 @@ async def _agent_verdicts_for_model_async(
                     str(block.get("summary") or text[:200]),
                     source="agent",
                     model=model_id,
+                    summary_zh=(
+                        str(block.get("summary_zh")) if block.get("summary_zh") else None
+                    ),
                 )
             )
         call["ok"] = True

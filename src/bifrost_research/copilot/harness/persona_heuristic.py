@@ -35,6 +35,7 @@ def _verdict_row(
     confidence: float | None = None,
     source: str = "heuristic",
     model: str | None = None,
+    summary_zh: str | None = None,
 ) -> dict[str, Any]:
     row: dict[str, Any] = {
         "agent": agent,
@@ -42,6 +43,12 @@ def _verdict_row(
         "summary": (summary or "")[:500],
         "source": source,
     }
+    # Written by the same call that wrote the English, so the two say the same
+    # thing about the same evidence. Absent on heuristic rows and on every run
+    # made before the judges were asked for it, which is why the reader falls
+    # back to English rather than seeing a gap.
+    if summary_zh and summary_zh.strip():
+        row["summary_zh"] = summary_zh.strip()[:500]
     if model:
         row["model"] = model
     if confidence is not None and _is_finite(confidence):
