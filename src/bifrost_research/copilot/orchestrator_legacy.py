@@ -79,10 +79,38 @@ async def _dispatch_tool(
         result = await mcp.call_tool(name, arguments)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
+    return tool_result_envelope(result)
+
+
+def tool_result_envelope(result: Any) -> dict[str, Any]:
+    """The tool's own ``{ok, data | error}`` dict, whatever shape the SDK handed back.
+
+    ``FastMCP.call_tool`` has returned a plain dict, a list of content blocks,
+    and — since the SDK added structured output — a ``(content, structured)``
+    tuple. The old reader knew only the first two: on a tuple it found no
+    ``.text`` on either element, parsed the literal ``"[]"`` and answered
+    ``{"ok": True, "data": []}`` — every chat-approved write reported success
+    and wrote nothing, and its audit row said ``executed``. The structured
+    half is the tool's return value; the text half carries the same JSON.
+    """
     if isinstance(result, dict):
         return result
+    structured: Any = getattr(result, "structured_content", None)
+    content: Any = getattr(result, "content", None)
+    if isinstance(result, tuple) and len(result) == 2:
+        content, structured = result
+    elif content is None:
+        content = result
+    if isinstance(structured, dict) and structured:
+        # FastMCP wraps a non-object return as {"result": value}: an object inside
+        # is the tool's own envelope; anything else reads better from the text half.
+        if set(structured) == {"result"}:
+            if isinstance(structured["result"], dict):
+                return structured["result"]
+        else:
+            return structured
     texts: list[str] = []
-    for block in result or []:
+    for block in content or []:
         text = getattr(block, "text", None)
         if text:
             texts.append(text)
