@@ -486,15 +486,18 @@ def apply_draft_approval(
         existing = objective_repo.get_objective(conn, objective_id)
         if existing is None:
             _err(f"objective {objective_id!r} not found", 404)
+        # An Owner's draft may move knobs a model's may not — which judges sit,
+        # whether the planner is on. The whitelist follows the author.
+        whitelist = (
+            objective_repo.OWNER_POLICY_WHITELIST
+            if payload.get("manual") is True or payload.get("source") == "owner"
+            else objective_repo.POLICY_SUGGESTION_WHITELIST
+        )
         updated_obj = objective_repo.patch_policy_json(
-            conn, objective_id, suggestion
+            conn, objective_id, suggestion, whitelist=whitelist
         )
         executed["objective"] = updated_obj
-        executed["applied_suggestion"] = {
-            k: v
-            for k, v in suggestion.items()
-            if k in objective_repo.POLICY_SUGGESTION_WHITELIST
-        }
+        executed["applied_suggestion"] = {k: v for k, v in suggestion.items() if k in whitelist}
 
     elif draft["kind"] == "candidate_batch":
         executed.update(_promote_candidate_batch(conn, draft_id=draft_id, payload=payload))

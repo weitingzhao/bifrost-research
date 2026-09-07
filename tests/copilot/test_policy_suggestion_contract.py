@@ -42,3 +42,24 @@ def test_policy_suggestion_whitelist_is_non_empty() -> None:
     """Empty whitelist would silently pass every LLM key — guard against typos."""
     assert plan_llm.POLICY_SUGGESTION_KEYS, "whitelist is empty"
     assert obj_repo.POLICY_SUGGESTION_WHITELIST, "whitelist is empty"
+
+
+def test_owner_whitelist_is_a_superset_that_adds_only_the_judging_and_planning_knobs():
+    # A model may not propose switching its own planner or judges off; the Owner
+    # may. Everything the model may propose, the Owner may too.
+    from bifrost_research.repositories import objective as obj_repo
+
+    extra = obj_repo.OWNER_POLICY_WHITELIST - obj_repo.POLICY_SUGGESTION_WHITELIST
+    assert obj_repo.POLICY_SUGGESTION_WHITELIST <= obj_repo.OWNER_POLICY_WHITELIST
+    assert extra == {"triage", "persona_evaluate", "use_llm_plan", "llm_model", "seed_symbols"}
+
+
+def test_nested_policy_groups_merge_key_by_key():
+    # Editing triage.deep_judge_top_n from the page must not wipe triage.model,
+    # and editing resolution.horizon_days must not reset its thresholds.
+    from bifrost_research.repositories.objective import _deep_merge_policy_patch
+
+    cur = {"triage": {"enabled": True, "model": "gpt-4o-mini", "deep_judge_top_n": 0}, "resolution": {"horizon_days": 20, "validate_excess": 0.03}}
+    out = _deep_merge_policy_patch(cur, {"triage": {"deep_judge_top_n": 3}, "resolution": {"horizon_days": 10}})
+    assert out["triage"] == {"enabled": True, "model": "gpt-4o-mini", "deep_judge_top_n": 3}
+    assert out["resolution"] == {"horizon_days": 10, "validate_excess": 0.03}

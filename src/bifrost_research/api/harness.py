@@ -44,11 +44,21 @@ def _connect_or_503() -> Any:
 
 
 class ObjectiveStatusPatch(BaseModel):
-    """`archived` retires an objective; `active` brings it back."""
+    """What the objective page may change in place.
+
+    `status` archives or restores. Title, description, schedule and persona
+    carry no strategy, so they are edited directly; the policy goes through a
+    draft (`POST /objectives/{id}/policy-suggestion`) so the change carries a
+    rationale and lands in the ledger.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    status: str = Field(..., min_length=1, max_length=32)
+    status: str | None = Field(default=None, min_length=1, max_length=32)
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    schedule: str | None = Field(default=None, min_length=1, max_length=32)
+    persona: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class ObjectiveCreate(BaseModel):
@@ -123,16 +133,34 @@ def create_objective(body: ObjectiveCreate) -> dict[str, Any]:
 
 
 @router.patch("/objectives/{objective_id}")
-def set_objective_status(objective_id: str, body: ObjectiveStatusPatch) -> dict[str, Any]:
-    """Archive an objective, or bring an archived one back.
+def patch_objective(objective_id: str, body: ObjectiveStatusPatch) -> dict[str, Any]:
+    """Edit an objective in place: status, title, description, schedule, persona.
 
     Archiving is the retirement path: the console lists active objectives, so
-    this removes it from view while its runs, funnels and candidate lineage stay
-    exactly where they are.
+    setting the status removes it from view while its runs, funnels and
+    candidate lineage stay exactly where they are.
     """
     conn = _connect_or_503()
     try:
-        row = obj_repo.set_objective_status(conn, objective_id, status=body.status)
+        row = None
+        if any(v is not None for v in (body.title, body.description, body.schedule, body.persona)):
+            try:
+                row = obj_repo.update_objective(
+                    conn,
+                    objective_id,
+                    title=body.title,
+                    description=body.description,
+                    schedule=body.schedule,
+                    persona=body.persona,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if row is None:
+                raise HTTPException(status_code=404, detail="objective not found")
+        if body.status is not None:
+            row = obj_repo.set_objective_status(conn, objective_id, status=body.status)
+        if row is None:
+            row = obj_repo.get_objective(conn, objective_id)
     finally:
         conn.close()
     if row is None:
@@ -519,7 +547,7 @@ def create_policy_suggestion(
     if not body.suggestion:
         raise HTTPException(status_code=400, detail="suggestion must not be empty")
 
-    unknown = sorted(set(body.suggestion) - obj_repo.POLICY_SUGGESTION_WHITELIST)
+    unknown = sorted(set(body.suggestion) - obj_repo.OWNER_POLICY_WHITELIST)
     if unknown:
         raise HTTPException(
             status_code=400,

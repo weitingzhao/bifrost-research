@@ -194,7 +194,19 @@ POLICY_SUGGESTION_WHITELIST: frozenset[str] = frozenset(
     }
 )
 
-_NESTED_POLICY_KEYS = frozenset({"layers", "option_overlay", "discovery_assist"})
+#: What the Owner may change from the objective page, over and above what a
+#: model may propose. The base set is the model's — a suggestion that could
+#: switch its own planner or judges off is not one a model should be able to
+#: make — and the Owner's set adds the knobs that decide how a run is judged,
+#: planned and seeded. Both routes still go through a draft, so the audit
+#: trail reads the same whoever moved the knob.
+OWNER_POLICY_WHITELIST: frozenset[str] = POLICY_SUGGESTION_WHITELIST | frozenset(
+    {"triage", "persona_evaluate", "use_llm_plan", "llm_model", "seed_symbols"}
+)
+
+_NESTED_POLICY_KEYS = frozenset(
+    {"layers", "option_overlay", "discovery_assist", "resolution", "triage"}
+)
 
 
 def _deep_merge_policy_patch(
@@ -301,6 +313,56 @@ def count_runs(conn: _Connection, objective_id: str) -> int:
         )
         row = cur.fetchone()
     return int(row[0]) if row and row[0] is not None else 0
+
+
+def update_objective(
+    conn: _Connection,
+    objective_id: str,
+    *,
+    title: str | None = None,
+    description: str | None = None,
+    schedule: str | None = None,
+    persona: str | None = None,
+) -> dict[str, Any] | None:
+    """Change what an objective is called, says, and when it runs.
+
+    The policy is deliberately not here: it moves through a draft so the
+    change carries a rationale and lands in the same ledger a model's would.
+    These four fields carry no strategy, so they are edited in place.
+    """
+    sets: list[str] = []
+    params: list[Any] = []
+    if title is not None and title.strip():
+        sets.append("title = %s")
+        params.append(title.strip())
+    if description is not None:
+        sets.append("description = %s")
+        params.append(description.strip())
+    if schedule is not None:
+        sched = schedule.strip().lower()
+        if sched not in _ALLOWED_SCHEDULES:
+            raise ValueError(f"invalid schedule: {schedule!r}")
+        sets.append("schedule = %s")
+        params.append(sched)
+    if persona is not None and persona.strip():
+        sets.append("persona = %s")
+        params.append(persona.strip())
+    if not sets:
+        return get_objective(conn, objective_id)
+    params.append(objective_id)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE {TABLE_RESEARCH_OBJECTIVE}
+            SET {", ".join(sets)}
+            WHERE id = %s
+            RETURNING {", ".join(_OBJ_COLS)}
+            """,
+            tuple(params),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    return _obj_row(row) if row else None
 
 
 def set_objective_status(
