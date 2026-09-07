@@ -27,6 +27,7 @@ from bifrost_research.copilot.harness.planning import (
     _playbook_rules_for,
 )
 from bifrost_research.copilot.harness.policy_schema import parse_policy
+from bifrost_research.copilot.harness.rating import prior_scores, rate_items, rating_decision
 from bifrost_research.copilot.harness.suggestion import (
     policy_suggestion_from_outcomes,
     policy_suggestion_from_plan,
@@ -477,6 +478,35 @@ def run_objective(
                 on_error=lambda _exc: rollback_quietly(conn),
             )
 
+        # 4c. Rate — the grade a reader gets in a second, from what the run
+        # already measured. Pure function, no model call; it reads the judges'
+        # stances and never sets a price they wrote.
+        ratings: list[dict[str, Any]] = []
+        if proposed_items:
+            try:
+                priors = prior_scores(
+                    conn,
+                    [str(i.get("symbol") or "") for i in proposed_items],
+                    objective_id=str(objective["id"]),
+                )
+                ratings = rate_items(proposed_items, priors=priors)
+                rate_detail = rating_decision(ratings)
+                trace.append(
+                    {
+                        "step": "rate",
+                        "label": "Rate",
+                        "decision": rate_detail,
+                        "ratings": ratings,
+                    }
+                )
+                _flush_live_trace(conn, run_id, trace, step="rate", label="Rate", detail=rate_detail)
+            except Exception as exc:  # noqa: BLE001
+                # A rating that cannot be computed is absent, not invented. The
+                # batch still goes out; the memo shows the stances unrated.
+                logger.warning("rating failed for run %s: %s", run_id, exc)
+                rollback_quietly(conn)
+                trace.append({"step": "rate", "label": "Rate", "decision": "error", "error": str(exc)[:200]})
+
         # 5. Draft candidate_batch --------------------------------------------
         action = action_repo.insert_action(
             conn,
@@ -704,6 +734,7 @@ def run_objective(
             "hit_rate_gate": gate,
             "triage": triage_summary,
             "persona_eval": persona_eval_summary,
+            "ratings": ratings,
             # The default is True for "the judges were never asked" (persona_evaluate
             # off). It must not also cover "the judges were asked and the stage blew
             # up": that summary is {"status": "error", ...}, a truthy dict with no

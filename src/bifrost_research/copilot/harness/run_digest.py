@@ -114,6 +114,9 @@ def candidate_view(item: dict[str, Any], sections: dict[str, dict[str, Any]]) ->
         "blocked_by_validate": bool(item.get("blocked_by_validate")),
         "verdicts": verdicts_of(item),
         "evidence": {k: evidence.get(k) for k in EVIDENCE_KEYS if k in evidence},
+        # The rating is the run's own summary of everything above; the Copilot
+        # should quote it before it reasons over the parts.
+        "rating": item.get("rating") if isinstance(item.get("rating"), dict) else None,
         "report": sections.get(symbol),
     }
 
