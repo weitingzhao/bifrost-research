@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bifrost_research.api.app import create_app
-from bifrost_research.api.exhibit import LENS_ALIASES, build_exhibit, exhibit_lens_names
+from bifrost_research.lenses.exhibits import LENS_ALIASES, build_exhibit, exhibit_lens_names
 from bifrost_research.lenses.registry import LENSES
 
 # (predicate on the SQL, rows, column names) — column names feed cursor.description
@@ -129,7 +129,7 @@ def test_skew_percentile_is_the_verdict_not_the_raw_slope() -> None:
 
 
 def test_opex_pin_uses_close_on_the_max_pain_date(monkeypatch) -> None:
-    from bifrost_research.api import exhibit_lenses
+    from bifrost_research.lenses import exhibit_lenses
 
     monkeypatch.setattr(
         exhibit_lenses.opex_repo,

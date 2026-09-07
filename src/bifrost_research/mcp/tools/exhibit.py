@@ -6,7 +6,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from bifrost_research.api.exhibit import build_exhibit, exhibit_lens_names
+from bifrost_research.lenses.exhibits import build_exhibit, exhibit_lens_names
 from bifrost_research.mcp.tools._common import READ_ONLY_SUFFIX, err, ok, with_conn
 
 

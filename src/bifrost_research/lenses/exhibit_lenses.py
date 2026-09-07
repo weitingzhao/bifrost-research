@@ -1,5 +1,6 @@
 """Exhibit readers for the lenses Wave 15 did not cover, and the enrichment every
-exhibit gets: verdict from the registry, settled track record, similar-regime summary.
+exhibit gets (moved from api/ in research-loop-automation C3 so the Daily Brief
+engine can read the same exhibits without importing the HTTP layer): verdict from the registry, settled track record, similar-regime summary.
 
 Each reader answers "what is the latest reading and how fresh is it" from the
 lens' own table; ``enrich_exhibit`` then attaches the three things that turn a
@@ -12,7 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from bifrost_research.api.exhibit_model import ExhibitResponse, freshness_from, iso_date, rollback_quietly
+from bifrost_research.lenses.exhibit_model import ExhibitResponse, freshness_from, iso_date, rollback_quietly
 from bifrost_research.api.similar_regime import similar_rows
 from bifrost_research.lenses.registry import LENSES
 from bifrost_research.lenses.similar import summarize_forward_returns
@@ -412,7 +413,7 @@ def exhibit_forecast_path(conn: Any, symbol: str) -> ExhibitResponse:
             f"""
             SELECT COUNT(*)::bigint,
                    AVG(CASE WHEN path_hit THEN 1.0 ELSE 0.0 END),
-                   AVG(close_miss_pct),
+                   AVG(ABS(close_miss_pct)),
                    MAX(trade_date),
                    MAX(computed_at)
             FROM {TABLE_STOCK_BACKTEST_SETTLEMENT}
@@ -426,6 +427,8 @@ def exhibit_forecast_path(conn: Any, symbol: str) -> ExhibitResponse:
             return exh
         exh.as_of = iso_date(row[3])
         exh.freshness = freshness_from(row[4], True)
+        # avg |miss| — the same unsigned mean the Sessions hub and regime-stats
+        # report; a signed mean let over- and under-shoots cancel (C3).
         exh.readings = {
             "session_count": count,
             "path_hit_rate": float(row[1]) if row[1] is not None else None,

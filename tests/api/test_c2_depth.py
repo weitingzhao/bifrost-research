@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from bifrost_research.api.exhibit import fwd20_by_band
-from bifrost_research.api.exhibit_lenses import pin_history, term_structure_label
+from bifrost_research.lenses.exhibit_lenses import pin_history, term_structure_label
+from bifrost_research.lenses.exhibits import fwd20_by_band
 from bifrost_research.api.signal_decay import by_symbol_records
 from bifrost_research.api.wave4 import calibration_rows
 from bifrost_research.lenses.registry import classify

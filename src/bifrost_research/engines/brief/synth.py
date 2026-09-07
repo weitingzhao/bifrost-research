@@ -1,4 +1,10 @@
-"""Daily Brief synthesis — server-side verdict + card snapshots (Wave R8)."""
+"""Daily Brief synthesis — server-side verdict + card snapshots (Wave R8).
+
+Since research-loop-automation C3 the per-lens cards and the verdict's numbers
+come from the exhibit readers (``engines/brief/cards.py``): the same object a
+hub view's verdict strip and Copilot read, so the brief cannot disagree with
+the page it opens.
+"""
 
 from __future__ import annotations
 
@@ -6,12 +12,35 @@ from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
 from bifrost_research.engines.backtest.regime_stats import compute_regime_stats
+from bifrost_research.engines.brief.cards import (
+    BRIEF_LENSES,
+    CARD_LENS,
+    exhibit_card,
+    forecast_text,
+    gex_text,
+    has_reading,
+    hub_route,
+    iv_text,
+    lamp_for,
+    load_exhibits,
+    momentum_text,
+    opex_text,
+    sepa_text,
+    skew_text,
+    spot_vs_close,
+    term_text,
+    terrain_text,
+    vrp_text,
+)
 from bifrost_research.engines.brief.opportunity import (
     TAPE_SOURCE,
     load_sepa_symbol,
     pick_opportunity,
     sentiment_card_verdict,
 )
+from bifrost_research.lenses.exhibit_model import ExhibitResponse
+
+EVENT_RADAR_ROUTE = "/research/event-radar"
 
 LampColor = str  # green | yellow | red | gray
 
@@ -53,24 +82,6 @@ def freshness_lamp(
     if td == target:
         return "green"
     return "yellow"
-
-
-def iv_bucket(rank: float | None) -> str:
-    if rank is None or not isinstance(rank, (int, float)):
-        return "no row"
-    if rank > 60:
-        return "High"
-    if rank >= 30:
-        return "Neutral"
-    return "Low"
-
-
-def _spot_vs_close(spot: float, close: float) -> str:
-    """Spot relative to the expected close — the word and the sign describe the same gap."""
-    pct = ((spot - close) / max(close, 1.0)) * 100
-    dir_word = "above" if pct >= 0 else "below"
-    sign = "+" if pct >= 0 else ""
-    return f"spot {spot:.2f} {dir_word} E[close] {close:.2f} ({sign}{pct:.2f}%)"
 
 
 def _row_to_dict(row: Any, columns: Sequence[str]) -> dict[str, Any]:
@@ -215,107 +226,6 @@ def _load_momentum(conn: Any, trade_date: date, limit: int = 200) -> tuple[list[
     return rows, trade_date
 
 
-def _load_iv(conn: Any, symbol: str) -> dict[str, Any] | None:
-    cols = (
-        "symbol",
-        "trade_date",
-        "iv_current",
-        "iv_percentile_1y",
-        "iv_rank_1y",
-        "computed_at",
-    )
-    sym = symbol.strip().upper()
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT {', '.join(cols)}
-            FROM features.option_metric_iv_percentile_daily
-            WHERE symbol = %s
-            ORDER BY trade_date DESC
-            LIMIT 1
-            """,
-            (sym,),
-        )
-        raw = cur.fetchone()
-    if raw is None:
-        return None
-    row = _row_to_dict(raw, cols)
-    if isinstance(row.get("trade_date"), date):
-        row["trade_date"] = row["trade_date"].isoformat()
-    return row
-
-
-def _load_terrain(conn: Any, symbol: str, trade_date: date) -> dict[str, Any] | None:
-    cols = (
-        "symbol",
-        "trade_date",
-        "pin_score",
-        "trend_release",
-        "vol_squeeze",
-        "tail_risk",
-        "expected_close",
-        "gamma_zone_low",
-        "gamma_zone_high",
-        "regime",
-        "spot",
-        "inputs_json",
-        "computed_at",
-    )
-    sym = symbol.strip().upper()
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT {', '.join(cols)}
-            FROM features.stock_forecast_terrain_daily
-            WHERE symbol = %s AND trade_date = %s
-            LIMIT 1
-            """,
-            (sym, trade_date),
-        )
-        raw = cur.fetchone()
-    if raw is None:
-        return None
-    row = _row_to_dict(raw, cols)
-    if isinstance(row.get("trade_date"), date):
-        row["trade_date"] = row["trade_date"].isoformat()
-    return row
-
-
-def _load_gex_latest(conn: Any, symbol: str, trade_date: date) -> dict[str, Any] | None:
-    cols = (
-        "symbol",
-        "trade_date",
-        "asof_ts",
-        "spot",
-        "total_net_gex",
-        "zero_gamma",
-        "major_call_wall",
-        "major_put_wall",
-        "levels_json",
-        "computed_at",
-    )
-    sym = symbol.strip().upper()
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT {', '.join(cols)}
-            FROM features.option_metric_gex_intraday
-            WHERE symbol = %s AND trade_date = %s
-            ORDER BY asof_ts ASC
-            """,
-            (sym, trade_date),
-        )
-        raw = cur.fetchall() or []
-    if not raw:
-        return None
-    row = _row_to_dict(raw[-1], cols)
-    if isinstance(row.get("trade_date"), date):
-        row["trade_date"] = row["trade_date"].isoformat()
-    if isinstance(row.get("asof_ts"), datetime):
-        row["asof_ts"] = row["asof_ts"].isoformat()
-    return row
-
-
 def _load_forecast_latest(conn: Any, symbol: str, trade_date: date) -> dict[str, Any] | None:
     cols = (
         "session_id",
@@ -393,33 +303,61 @@ def _load_settlement_latest(conn: Any, symbol: str) -> dict[str, Any] | None:
     return row
 
 
-def _load_sentiment(conn: Any, symbol: str, trade_date: date) -> dict[str, Any] | None:
-    cols = (
-        "symbol",
-        "trade_date",
-        "sentiment_score",
-        "data_source",
-        "computed_at",
-    )
-    sym = symbol.strip().upper()
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT {', '.join(cols)}
-            FROM features.option_flow_sentiment_daily
-            WHERE symbol = %s AND trade_date = %s
-            ORDER BY computed_at DESC
-            LIMIT 1
-            """,
-            (sym, trade_date),
-        )
-        raw = cur.fetchone()
-    if raw is None:
+def _float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
         return None
-    row = _row_to_dict(raw, cols)
-    if isinstance(row.get("trade_date"), date):
-        row["trade_date"] = row["trade_date"].isoformat()
-    return row
+
+
+def _risk_from_exhibits(
+    symbol: str,
+    selected_date: str,
+    exhibits: Mapping[str, ExhibitResponse],
+) -> tuple[str, LampColor, str] | None:
+    """The first exhibit that flags a risk, in the order a desk would check them."""
+    gex = exhibits.get("gex_regime")
+    if has_reading(gex):
+        spot, put_wall = _float(gex.readings.get("spot")), _float(gex.readings.get("major_put_wall"))  # type: ignore[union-attr]
+        if spot and spot > 0 and put_wall is not None:
+            dist_put = ((spot - put_wall) / spot) * 100
+            if dist_put < 0.5:
+                return (
+                    f"Near put wall {put_wall:.0f} ({dist_put:.2f}% from spot)",
+                    lamp_for(gex, selected_date),
+                    hub_route("gex_regime"),
+                )
+    skew = exhibits.get("skew")
+    if has_reading(skew) and (skew.verdict or {}).get("band") == "hot":  # type: ignore[union-attr]
+        pctl = _float(skew.readings.get("slope_pctile_252d"))  # type: ignore[union-attr]
+        days = _float(skew.readings.get("history_days"))  # type: ignore[union-attr]
+        where = f" ({pctl:.0f}th pctl{f', {days:.0f}d' if days is not None else ''})" if pctl is not None else ""
+        return (
+            f"Skew at its own-year extreme{where} — wings expensive, size carefully",
+            lamp_for(skew, selected_date),
+            hub_route("skew"),
+        )
+    term = exhibits.get("term_slope")
+    if has_reading(term) and (term.verdict or {}).get("band") == "hot":  # type: ignore[union-attr]
+        back = _float(term.readings.get("backwardation"))  # type: ignore[union-attr]
+        pts = f" {back * 100:+.1f} pts" if back is not None else ""
+        return (
+            f"Backwardation{pts} — event or stress priced up front",
+            lamp_for(term, selected_date),
+            hub_route("term_slope"),
+        )
+    iv = exhibits.get("iv_rank")
+    if has_reading(iv):
+        band = (iv.verdict or {}).get("band")  # type: ignore[union-attr]
+        rank = _float(iv.readings.get("iv_rank_1y"))  # type: ignore[union-attr]
+        if band in ("hot", "cold") and rank is not None:
+            word = "High" if band == "hot" else "Low"
+            return (
+                f"IV rank {rank:.0f} — {word} vol regime",
+                lamp_for(iv, selected_date),
+                hub_route("iv_rank"),
+            )
+    return None
 
 
 def build_verdict(
@@ -429,12 +367,11 @@ def build_verdict(
     events: list[dict[str, Any]],
     sepa_candidates: list[dict[str, Any]],
     mom_rows: list[dict[str, Any]],
-    iv_row: dict[str, Any] | None,
-    terrain: dict[str, Any] | None,
-    gex_latest: dict[str, Any] | None,
-    forecast_latest: dict[str, Any] | None,
+    exhibits: Mapping[str, ExhibitResponse],
+    forecast_latest: dict[str, Any] | None = None,
     regime_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Narrative / risk / opportunity, each with the hub view that shows the same numbers."""
     events_lamp = freshness_lamp(
         events[0].get("collected_at") or events[0].get("computed_at") if events else None,
         selected_date,
@@ -453,42 +390,27 @@ def build_verdict(
         False,
         len(mom_rows) > 0,
     )
-    iv_lamp = freshness_lamp(iv_row.get("trade_date") if iv_row else None, selected_date, False, iv_row is not None)
-    terrain_lamp = freshness_lamp(
-        terrain.get("trade_date") if terrain else None,
-        selected_date,
-        False,
-        terrain is not None,
-    )
-    gex_lamp = freshness_lamp(
-        gex_latest.get("trade_date") or gex_latest.get("asof_ts") if gex_latest else None,
-        selected_date,
-        False,
-        gex_latest is not None,
-    )
-    forecast_lamp = freshness_lamp(
-        forecast_latest.get("trade_date") if forecast_latest else None,
-        selected_date,
-        False,
-        forecast_latest is not None,
-    )
 
-    narrative_to = "/research/scenario?view=model"
-    if terrain:
-        narrative_text = f"{symbol} {terrain.get('regime')} — {_spot_vs_close(float(terrain['spot']), float(terrain['expected_close']))}"
-        narrative_lamp = terrain_lamp
+    terrain = exhibits.get("terrain_regime")
+    narrative_to = hub_route("terrain_regime")
+    if has_reading(terrain):
+        r = terrain.readings  # type: ignore[union-attr]
+        spot, close = _float(r.get("spot")), _float(r.get("expected_close"))
+        gap = f" — {spot_vs_close(spot, close)}" if spot is not None and close is not None else ""
+        narrative_text = f"{symbol} {r.get('regime')}{gap}"
+        narrative_lamp = lamp_for(terrain, selected_date)
     elif forecast_latest:
         narrative_text = (
             f"{symbol} {forecast_latest.get('regime')} — "
             f"E[close] {float(forecast_latest['expected_close']):.2f}"
         )
-        narrative_lamp = forecast_lamp
-        narrative_to = "/research/scenario?view=sessions"
+        narrative_lamp = freshness_lamp(forecast_latest.get("trade_date"), selected_date, False, True)
+        narrative_to = hub_route("forecast_path")
     else:
         narrative_text = f"No terrain narrative for {symbol}"
         narrative_lamp = "gray"
 
-    risk_to = "/research/event-radar"
+    risk_to = EVENT_RADAR_ROUTE
     high_event = next((e for e in events if (e.get("importance") or 0) >= 3), None)
     if high_event:
         risk_text = (
@@ -498,35 +420,16 @@ def build_verdict(
             or "High-importance event"
         )
         risk_lamp = events_lamp
-    elif gex_latest and float(gex_latest.get("spot") or 0) > 0:
-        spot = float(gex_latest["spot"])
-        dist_put = ((spot - float(gex_latest["major_put_wall"])) / spot) * 100
-        if dist_put < 0.5:
-            risk_text = f"Near put wall {float(gex_latest['major_put_wall']):.0f} ({dist_put:.2f}% from spot)"
-            risk_lamp = gex_lamp
-            risk_to = "/research/dealer-levels?view=gex"
-        elif iv_row and iv_row.get("iv_rank_1y") is not None:
-            rank = float(iv_row["iv_rank_1y"])
-            bucket = iv_bucket(rank)
-            if bucket in ("High", "Low"):
-                risk_text = f"IV rank {rank:.0f} — {bucket} vol regime"
-                risk_lamp = iv_lamp
-                risk_to = "/research/vol-regime?view=iv-rank"
-            else:
-                risk_text = "No elevated event or GEX tail risk flagged"
-                risk_lamp = "green"
-        else:
-            risk_text = "No elevated event or GEX tail risk flagged"
-            risk_lamp = "green"
-    elif iv_row and iv_row.get("iv_rank_1y") is not None:
-        rank = float(iv_row["iv_rank_1y"])
-        bucket = iv_bucket(rank)
-        risk_text = f"IV rank {rank:.0f} — {bucket}"
-        risk_lamp = iv_lamp
-        risk_to = "/research/vol-regime?view=iv-rank"
     else:
-        risk_text = "No risk signals loaded"
-        risk_lamp = "gray"
+        flagged = _risk_from_exhibits(symbol, selected_date, exhibits)
+        if flagged:
+            risk_text, risk_lamp, risk_to = flagged
+        elif any(has_reading(x) for x in exhibits.values()):
+            risk_text = "No elevated event, dealer, skew or vol-regime risk flagged"
+            risk_lamp = "green"
+        else:
+            risk_text = "No risk signals loaded"
+            risk_lamp = "gray"
 
     opportunity_text, opportunity_lamp, opportunity_to, sepa_pick = pick_opportunity(
         symbol=symbol,
@@ -585,13 +488,7 @@ def synthesize_daily_brief(conn: Any, symbol: str, trade_date: date | None = Non
     events = _load_events(conn)
     sepa_candidates: list[dict[str, Any]] = []
     mom_rows: list[dict[str, Any]] = []
-    iv_row: dict[str, Any] | None = None
-    terrain: dict[str, Any] | None = None
-    gex_latest: dict[str, Any] | None = None
     forecast_latest: dict[str, Any] | None = None
-    settlement: dict[str, Any] | None = None
-    sentiment: dict[str, Any] | None = None
-
     own_sepa: dict[str, Any] | None = None
     if resolved:
         sepa_candidates, _ = _load_sepa_candidates(conn, resolved)
@@ -599,16 +496,17 @@ def synthesize_daily_brief(conn: Any, symbol: str, trade_date: date | None = Non
         if own_sepa and not any(str(r.get("symbol") or "").upper() == sym for r in sepa_candidates):
             sepa_candidates = [own_sepa, *sepa_candidates]
         mom_rows, _ = _load_momentum(conn, resolved)
-        iv_row = _load_iv(conn, sym)
-        terrain = _load_terrain(conn, sym, resolved)
-        gex_latest = _load_gex_latest(conn, sym, resolved)
         forecast_latest = _load_forecast_latest(conn, sym, resolved)
-        sentiment = _load_sentiment(conn, sym, resolved)
-
     settlement = _load_settlement_latest(conn, sym)
 
-    current_regime = terrain.get("regime") if terrain else (
-        forecast_latest.get("regime") if forecast_latest else None
+    # C3: every lens through the same reader the hub views and Copilot use.
+    exhibits = load_exhibits(conn, sym)
+    terrain = exhibits.get("terrain_regime")
+
+    current_regime = (
+        terrain.readings.get("regime")  # type: ignore[union-attr]
+        if has_reading(terrain)
+        else (forecast_latest.get("regime") if forecast_latest else None)
     )
     regime_context = compute_regime_stats(
         conn,
@@ -623,20 +521,21 @@ def synthesize_daily_brief(conn: Any, symbol: str, trade_date: date | None = Non
         events=events,
         sepa_candidates=sepa_candidates,
         mom_rows=mom_rows,
-        iv_row=iv_row,
-        terrain=terrain,
-        gex_latest=gex_latest,
+        exhibits=exhibits,
         forecast_latest=forecast_latest,
         regime_context=regime_context,
     )
 
-    freshness = {
-        "events": freshness_lamp(
-            events[0].get("collected_at") if events else None,
-            selected_date,
-            False,
-            len(events) > 0,
-        ),
+    events_lamp = freshness_lamp(
+        events[0].get("collected_at") if events else None,
+        selected_date,
+        False,
+        len(events) > 0,
+    )
+    freshness: dict[str, LampColor] = {
+        "events": events_lamp,
+        # The SEPA / Momentum lamps describe the market screeners the brief lists,
+        # not the symbol's own row — that one sits on the card.
         "sepa": freshness_lamp(
             sepa_candidates[0].get("trade_date") if sepa_candidates else None,
             selected_date,
@@ -649,32 +548,10 @@ def synthesize_daily_brief(conn: Any, symbol: str, trade_date: date | None = Non
             False,
             len(mom_rows) > 0,
         ),
-        "iv": freshness_lamp(iv_row.get("trade_date") if iv_row else None, selected_date, False, iv_row is not None),
-        "terrain": freshness_lamp(
-            terrain.get("trade_date") if terrain else None,
-            selected_date,
-            False,
-            terrain is not None,
-        ),
-        "gex": freshness_lamp(
-            gex_latest.get("trade_date") if gex_latest else None,
-            selected_date,
-            False,
-            gex_latest is not None,
-        ),
-        "forecast": freshness_lamp(
-            forecast_latest.get("trade_date") if forecast_latest else None,
-            selected_date,
-            False,
-            forecast_latest is not None,
-        ),
-        "sentiment": freshness_lamp(
-            sentiment.get("trade_date") if sentiment else None,
-            selected_date,
-            False,
-            sentiment is not None,
-        ),
     }
+    for key, lens_id in CARD_LENS.items():
+        if key not in freshness:
+            freshness[key] = lamp_for(exhibits.get(lens_id), selected_date)
 
     setup_count = sum(1 for r in sepa_candidates if r.get("path") == "SETUP")
     pivot_count = sum(1 for r in sepa_candidates if r.get("path") == "PIVOT")
@@ -684,75 +561,43 @@ def synthesize_daily_brief(conn: Any, symbol: str, trade_date: date | None = Non
         if g in grade_counts:
             grade_counts[g] += 1
 
-    cards = {
-        "terrain": {
-            "present": terrain is not None,
-            "verdict": (
-                f"No terrain for {sym}"
-                if terrain is None
-                else (
-                    f"{terrain.get('regime')} · pin {float(terrain.get('pin_score') or 0):.0f} · "
-                    f"tail {float(terrain.get('tail_risk') or 0):.0f}"
-                )
-            ),
-            "detail": terrain,
-        },
-        "gex": {
-            "present": gex_latest is not None,
-            "verdict": (
-                f"No GEX snapshots for {sym}"
-                if gex_latest is None
-                else (
-                    f"Spot {float(gex_latest['spot']):.0f} vs call "
-                    f"{float(gex_latest['major_call_wall']):.0f} / 0γ "
-                    f"{float(gex_latest['zero_gamma']):.0f} / put "
-                    f"{float(gex_latest['major_put_wall']):.0f}"
-                )
-            ),
-            "detail": gex_latest,
-        },
-        "forecast": {
-            "present": forecast_latest is not None,
-            "verdict": (
-                f"No forecast session for {sym}"
-                if forecast_latest is None
-                else (
-                    f"{forecast_latest.get('regime')} · "
-                    f"E[close] {float(forecast_latest['expected_close']):.2f}"
-                )
-            ),
-            "detail": forecast_latest,
-            "settlement": settlement,
-        },
-        "sepa": {
-            "present": len(sepa_candidates) > 0,
-            "verdict": (
-                "No Setup/Pivot candidates"
-                if not sepa_candidates
-                else f"Setup {setup_count} · Pivot {pivot_count}"
-            ),
-            "candidates": sepa_candidates[:3],
-            "own": own_sepa,
-        },
-        "momentum": {
-            "present": len(mom_rows) > 0,
-            "verdict": (
-                "No momentum rows"
-                if not mom_rows
-                else f"A+ {grade_counts['A+']} · A {grade_counts['A']} · B {grade_counts['B']}"
-            ),
-            "sample_symbols": [r.get("symbol") for r in mom_rows[:3]],
-            "count": len(mom_rows),
-        },
-        "iv": {
-            "present": iv_row is not None,
-            "verdict": (
-                f"No IV row for {sym}"
-                if iv_row is None
-                else f"Rank {float(iv_row.get('iv_rank_1y') or 0):.0f} · {iv_bucket(float(iv_row.get('iv_rank_1y') or 0))}"
-            ),
-            "detail": iv_row,
-        },
+    def _card(key: str, text: str, **extra: Any) -> dict[str, Any]:
+        lens_id = CARD_LENS[key]
+        return exhibit_card(exhibits.get(lens_id), lens_id=lens_id, selected_date=selected_date, text=text, **extra)
+
+    sentiment = exhibits.get("order_sentiment")
+    sentiment_row = (
+        {**sentiment.readings, "trade_date": sentiment.as_of}  # type: ignore[union-attr]
+        if has_reading(sentiment)
+        else None
+    )
+
+    cards: dict[str, Any] = {
+        "terrain": _card("terrain", terrain_text(sym, terrain)),
+        "gex": _card("gex", gex_text(sym, exhibits.get("gex_regime"))),
+        "opex": _card("opex", opex_text(sym, exhibits.get("opex_pin"))),
+        "forecast": _card(
+            "forecast",
+            forecast_text(sym, exhibits.get("forecast_path"), forecast_latest),
+            detail=forecast_latest,
+            settlement=settlement,
+        ),
+        "sepa": _card(
+            "sepa",
+            sepa_text(sym, exhibits.get("sepa"), setup_count, pivot_count),
+            candidates=sepa_candidates[:3],
+            own=own_sepa,
+        ),
+        "momentum": _card(
+            "momentum",
+            momentum_text(sym, exhibits.get("momentum"), grade_counts),
+            sample_symbols=[r.get("symbol") for r in mom_rows[:3]],
+            count=len(mom_rows),
+        ),
+        "iv": _card("iv", iv_text(sym, exhibits.get("iv_rank"))),
+        "vrp": _card("vrp", vrp_text(sym, exhibits.get("vrp"))),
+        "skew": _card("skew", skew_text(sym, exhibits.get("skew"))),
+        "term_slope": _card("term_slope", term_text(sym, exhibits.get("term_slope"))),
         "events": {
             "present": len(events) > 0,
             "verdict": (
@@ -760,14 +605,16 @@ def synthesize_daily_brief(conn: Any, symbol: str, trade_date: date | None = Non
                 if not events
                 else f"{len(events)} recent · top importance {max(int(e.get('importance') or 0) for e in events)}"
             ),
+            "lamp": events_lamp,
+            "to": EVENT_RADAR_ROUTE,
             "rows": events[:4],
         },
-        "sentiment": {
-            "present": sentiment is not None,
-            "verdict": sentiment_card_verdict(sentiment, sym),
-            "tape": bool(sentiment and sentiment.get("data_source") == TAPE_SOURCE),
-            "detail": sentiment,
-        },
+        "sentiment": _card(
+            "sentiment",
+            sentiment_card_verdict(sentiment_row, sym),
+            tape=bool(sentiment_row and sentiment_row.get("data_source") == TAPE_SOURCE),
+            detail=sentiment_row,
+        ),
     }
 
     return {
@@ -777,4 +624,5 @@ def synthesize_daily_brief(conn: Any, symbol: str, trade_date: date | None = Non
         "freshness": freshness,
         "cards": cards,
         "regime_context": regime_context,
+        "lenses": list(BRIEF_LENSES),
     }
