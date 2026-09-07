@@ -86,6 +86,7 @@ def test_track_record_falls_back_to_the_harness_wide_record_and_says_so(monkeypa
     tr = mod.track_record(None, "obj-x")
     assert tr["status"] == "ok" and tr["scope"] == "source" and tr["hit_rate"] == 0.5 and tr["judged"] == 8
     assert calls == [("obj-x", None), (None, "harness")]
+    assert tr["days"] == 730
 
     monkeypatch.setattr(co, "build_summary", lambda conn, *, days, **kw: {"horizons": [], "pending": 0})
     assert mod.track_record(None, "obj-x")["status"] == "none_settled"

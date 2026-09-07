@@ -36,6 +36,9 @@ CRON_MINUTE_UTC = 30
 DEFAULT_CAPS_USD = {"deepseek": 1.50, "openai": 2.00}
 
 TRACK_RECORD_DAYS = 90
+#: The harness-wide fallback reads two years — effectively the whole ledger —
+#: to match the memo's own source-record line, which has no window at all.
+SOURCE_RECORD_DAYS = 730
 
 
 def _as_map(v: Any) -> dict[str, Any]:
@@ -108,9 +111,15 @@ def track_record(conn: Any, objective_id: str) -> dict[str, Any]:
     """
     from bifrost_research.api.candidate_outcome import build_summary
 
-    for scope, kwargs in (("objective", {"objective_id": objective_id}), ("source", {"source": "harness"})):
+    # The memo's own "source record" line reads the harness-wide ledger with no
+    # window; if this row used a 90-day window for the fallback the two would
+    # disagree about the same eight outcomes. Same scope, same window.
+    for scope, days, kwargs in (
+        ("objective", TRACK_RECORD_DAYS, {"objective_id": objective_id}),
+        ("source", SOURCE_RECORD_DAYS, {"source": "harness"}),
+    ):
         try:
-            summary = build_summary(conn, days=TRACK_RECORD_DAYS, **kwargs)
+            summary = build_summary(conn, days=days, **kwargs)
         except Exception as exc:  # noqa: BLE001
             logger.warning("track record (%s) for %s failed: %s", scope, objective_id, exc)
             continue
@@ -125,7 +134,7 @@ def track_record(conn: Any, objective_id: str) -> dict[str, Any]:
             "judged": int(best.get("judged") or 0),
             "avg_excess": best.get("avg_excess"),
             "pending": int(summary.get("pending") or 0),
-            "days": TRACK_RECORD_DAYS,
+            "days": days,
         }
     return {"status": "none_settled", "scope": None, "horizon_days": None, "hit_rate": None, "judged": 0, "avg_excess": None}
 
