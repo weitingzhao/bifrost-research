@@ -337,9 +337,26 @@ def rate_candidate(item: dict[str, Any], *, prior_score: float | None = None) ->
     outlook, drift = outlook_for(score, prior_score)
     inst = instrument_for(stage, _num(opts.get("iv_rank_1y")))
 
+    invalidation = ev.get("invalidation") if isinstance(ev.get("invalidation"), list) else []
+    components = _mapping(sel.get("components"))
+    checks = _mapping(sel.get("checks_passed"))
     return {
         "version": RATING_VERSION,
         "symbol": str(item.get("symbol") or "").upper(),
+        # What the rating was read from, carried with it so the memo can show
+        # the case without fetching the draft: the component scores, the checks,
+        # the price map and the run's own exit lines.
+        "basis": {
+            "path": sel.get("path"),
+            "components": {k: _num(v) for k, v in components.items()},
+            "checks_passed": {k: _num(v) for k, v in checks.items()},
+            "close": close,
+            "sma_50": sma50,
+            "sma_200": _num(price.get("sma_200")),
+            "low_52w": _num(price.get("low_52w")),
+            "high_52w": pivot,
+            "invalidation": [str(x) for x in invalidation][:6],
+        },
         "grade": grade,
         "grade_score": round(score, 2) if score is not None else None,
         "stage": stage,

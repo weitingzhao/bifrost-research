@@ -66,6 +66,9 @@ def test_nvda_reads_as_the_proposal_said_it_would():
     assert r["timing"]["pct_vs_pivot"] == -3.42
     assert r["instrument"]["suggestion"] == "Buy stock · long calls"
     assert "judges dissent" in r["why"] and "IV rank 19" in r["why"]
+    # The case travels with the grade: the memo shows it without the draft.
+    assert r["basis"]["path"] == "PIVOT" and r["basis"]["sma_200"] == 196.46
+    assert r["basis"]["invalidation"] == []
 
 
 def test_the_harsher_judge_sets_the_persona_stance():
