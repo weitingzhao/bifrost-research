@@ -156,7 +156,17 @@ def evaluate_candidates(
         require_validate_pass = require_validate_pass.strip().lower() in ("1", "true", "yes")
 
     use_agents = agents_enabled()
-    models = eval_models(model_id) if use_agents else []
+    # A run may name its judges: the Owner picks them in the console before
+    # pressing Run, and the choice reaches here through the run's own policy
+    # snapshot. An explicit model_id (legacy single-model callers) still wins.
+    chosen = model_id
+    if not chosen:
+        from_policy = policy.get("judge_models")
+        if isinstance(from_policy, list) and from_policy:
+            chosen = ",".join(str(m).strip() for m in from_policy if str(m).strip())
+        elif isinstance(from_policy, str) and from_policy.strip():
+            chosen = from_policy.strip()
+    models = eval_models(chosen) if use_agents else []
     mcp_url = os.environ.get("RESEARCH_MCP_SSE_URL", "")
     held_symbols, holdings_status = load_held_symbols()
 

@@ -48,6 +48,7 @@ TRACE_KEYS = (
     "ranked",
     "deep",
     "held",
+    "picked_by_owner",
     "cost_usd",
     "input_tokens",
     "output_tokens",
@@ -377,11 +378,28 @@ def triage_stage(
     """
     if not items or not triage_enabled(policy):
         return list(items), None, []
+    # The Owner may name the candidates outright, which skips the ranking's
+    # authority over the split without skipping the ranking itself: the batch
+    # still records what the model thought of every name.
+    picked = {
+        str(s).strip().upper()
+        for s in (triage_policy(policy).get("symbols") or [])
+        if str(s).strip()
+    }
     try:
         summary = run_triage(items, policy=policy)
-        judge_items, held = split_for_deep(
-            items, summary.get("ranked") or [], deep_judge_top_n(policy)
-        )
+        if picked:
+            judge_items = [i for i in items if str(i.get("symbol") or "").upper() in picked]
+            held = [
+                str(i.get("symbol") or "").upper()
+                for i in items
+                if str(i.get("symbol") or "").upper() not in picked
+            ]
+            summary["picked_by_owner"] = sorted(picked)
+        else:
+            judge_items, held = split_for_deep(
+                items, summary.get("ranked") or [], deep_judge_top_n(policy)
+            )
         summary["deep"] = [str(i.get("symbol") or "") for i in judge_items]
         summary["held"] = held
         detail = triage_decision(summary, judge_items, held)

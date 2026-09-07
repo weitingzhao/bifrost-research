@@ -63,11 +63,29 @@ class ObjectiveCreate(BaseModel):
 
 
 class BatchRunBody(BaseModel):
-    """UI / HTTP equivalent of CLI ``--batch-mode`` (+ optional curate)."""
+    """UI / HTTP equivalent of CLI ``--batch-mode`` (+ optional curate).
+
+    The three overrides apply to this run only. They are folded into a copy of
+    the objective's policy, never written back, so a run the Owner shaped by
+    hand does not silently become tomorrow's scheduled behaviour.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     curate_after: bool = True
+    #: Which judges read the candidates. Empty means the objective's own choice.
+    judge_models: list[str] | None = None
+    #: How many of the triage ranking go on to the judges. 0 means all of them.
+    deep_judge_top_n: int | None = Field(default=None, ge=0, le=50)
+    #: Judge exactly these names, whatever the ranking said.
+    symbols: list[str] | None = None
+
+    def overrides(self) -> dict[str, Any]:
+        return {
+            "judge_models": self.judge_models,
+            "deep_judge_top_n": self.deep_judge_top_n,
+            "symbols": self.symbols,
+        }
 
 
 @router.get("/objectives")
@@ -197,10 +215,59 @@ def batch_run_objective(
                 status_code=409,
                 detail=f"objective status {obj.get('status')!r} is not active",
             )
-        started = start_async_batch(conn, obj, curate_after=payload.curate_after)
+        started = start_async_batch(
+            conn, obj, curate_after=payload.curate_after, overrides=payload.overrides()
+        )
     finally:
         conn.close()
     return _ok(started)
+
+
+@router.get("/objectives/{objective_id}/run-estimate")
+def objective_run_estimate(
+    objective_id: str,
+    candidates: int = Query(default=0, ge=0, le=50),
+    models: str | None = Query(default=None, description="Comma list; default is the objective's"),
+) -> dict[str, Any]:
+    """What the next run would cost, from this objective's own run history.
+
+    Read-only. The rate is dollars per candidate averaged over recent runs of
+    this objective, because it depends on how much evidence its candidates carry
+    and how many tool rounds its judges take on them — a constant in the code
+    would be a guess dressed as a figure. The response says how many runs are
+    behind the number so the reader can disbelieve it.
+    """
+    from bifrost_research.copilot.harness.persona_judge import eval_models
+    from bifrost_research.copilot.harness.run_estimate import (
+        DEFAULT_LOOKBACK,
+        estimate_run,
+        estimate_summary,
+    )
+    from bifrost_research.copilot.harness.triage import triage_enabled
+
+    conn = _connect_or_503()
+    try:
+        obj = obj_repo.get_objective(conn, objective_id)
+        if obj is None:
+            raise HTTPException(status_code=404, detail="objective not found")
+        policy = obj.get("policy_json") or {}
+        chosen = models.strip() if models and models.strip() else policy.get("judge_models")
+        if isinstance(chosen, list):
+            chosen = ",".join(str(m) for m in chosen)
+        judge_models = eval_models(chosen) if policy.get("persona_evaluate", True) else []
+        n = candidates or int(policy.get("max_candidates") or 0)
+        history = obj_repo.list_runs(conn, objective_id=objective_id, limit=DEFAULT_LOOKBACK)
+        est = estimate_run(
+            runs=[r.get("outputs") for r in history],
+            models=judge_models,
+            candidates=n,
+            triage=triage_enabled(policy),
+        )
+    finally:
+        conn.close()
+    est["objective_id"] = objective_id
+    est["summary"] = estimate_summary(est)
+    return _ok(est)
 
 
 @router.get("/loop/trust")

@@ -107,11 +107,38 @@ def start_preview(obj: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def run_overrides(policy: dict[str, Any], overrides: dict[str, Any] | None) -> dict[str, Any]:
+    """Fold this run's choices into a copy of the objective's policy.
+
+    The Owner's picks in the console apply to the run they pressed, not to the
+    objective for ever. Nothing here is written back: the caller passes the
+    result as the run's own policy snapshot, and tomorrow's scheduled run reads
+    the stored policy unchanged.
+    """
+    merged = dict(policy or {})
+    if not overrides:
+        return merged
+    models = overrides.get("judge_models")
+    if isinstance(models, list) and models:
+        merged["judge_models"] = [str(m).strip() for m in models if str(m).strip()]
+    triage = dict(merged.get("triage") or {})
+    top_n = overrides.get("deep_judge_top_n")
+    if isinstance(top_n, int) and top_n >= 0:
+        triage["deep_judge_top_n"] = top_n
+    symbols = overrides.get("symbols")
+    if isinstance(symbols, list) and symbols:
+        triage["symbols"] = [str(x).strip().upper() for x in symbols if str(x).strip()]
+    if triage:
+        merged["triage"] = triage
+    return merged
+
+
 def start_async_batch(
     conn: Any,
     obj: dict[str, Any],
     *,
     curate_after: bool,
+    overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create the run row now and finish it in a background thread.
 
@@ -144,6 +171,7 @@ def start_async_batch(
         logger.warning("initial progress flush failed: %s", exc)
     trust = trust_status()
     obj_snapshot = dict(obj)
+    obj_snapshot["policy_json"] = run_overrides(obj.get("policy_json") or {}, overrides)
 
     def _bg() -> None:
         bg_conn = None
