@@ -263,7 +263,21 @@ def gather_facts(conn: _Connection, *, day: date, now: datetime | None = None) -
         kind: int(_safe(draft_repo.count_pending, conn, kind=kind, default=0) or 0)
         for kind in ("candidate_batch", "policy_suggestion", "hypothesis_suggestion", "eod_verdict")
     }
-    trust = _safe(trust_status, default={"l0": False, "reason": "unavailable"})
+    # The gate that matters is the harness's, not the digest process's. Both read
+    # the same function, but from different pods: the digest runs in Dagster or the
+    # API, neither of which carries BIFROST_LOOP_BATCH_MODE, so trust_status() here
+    # reported "auto-approve disabled" while the harness pod was perfectly able to
+    # accept — a digest telling the Owner the opposite of the system's real state.
+    # The harness writes its own reading onto every run; take that, and say so.
+    trust = None
+    for run in runs:
+        outputs = run.get("outputs")
+        recorded = outputs.get("trust") if isinstance(outputs, dict) else None
+        if isinstance(recorded, dict) and recorded:
+            trust = {**recorded, "observed_by": "harness"}
+            break
+    if trust is None:
+        trust = {**_safe(trust_status, default={"l0": False, "reason": "unavailable"}), "observed_by": "digest"}
 
     candidates_all = _safe(cand_repo.list_candidates, conn, status=None, days=3, limit=200, default=[])
     candidates = [c for c in candidates_all if _after(c.get("created_at"), since)]
@@ -337,7 +351,15 @@ def compose_markdown(facts: dict[str, Any]) -> str:
     trust = loop.get("trust") or {}
     runs = loop["runs"]
     awaiting = sum(1 for r in runs if r.get("status") == "awaiting_approval")
-    trust_word = "L0 — auto-accept armed" if trust.get("l0") else f"not L0 ({trust.get('reason') or 'no override'})"
+    if trust.get("l0"):
+        trust_word = "L0 — auto-accept armed"
+    else:
+        reason = trust.get("reason") or "no override"
+        # An "auto-approve disabled" read from the digest's own pod says nothing about
+        # the harness, so it must not be printed as though it did.
+        if trust.get("observed_by") == "digest":
+            reason = f"{reason}; read from the digest process, not the harness"
+        trust_word = f"not L0 ({reason})"
     out: list[str] = [f"## Daily digest · {facts['day']}", ""]
     out.append(
         f"**Loop**: {len(loop['objectives'])} active objective(s) · {len(runs)} run(s) since yesterday"

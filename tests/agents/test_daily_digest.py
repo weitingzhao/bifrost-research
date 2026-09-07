@@ -127,6 +127,44 @@ def test_one_digest_per_day_unless_forced(monkeypatch) -> None:
     assert first["replaced"] is False and first["draft_id"] == "draft_2"
 
 
+def test_the_trust_line_reports_the_harness_gate_not_the_digest_process(monkeypatch) -> None:
+    """The digest runs where BIFROST_LOOP_BATCH_MODE is unset; the harness does not."""
+    facts = _facts()
+    facts["loop"]["trust"] = {"l0": True, "reason": "ok", "observed_by": "harness"}
+    assert "trust L0 — auto-accept armed" in DD.compose_markdown(facts)
+
+    facts["loop"]["trust"] = {"l0": False, "reason": "not at Trust L0", "observed_by": "harness"}
+    assert "trust not L0 (not at Trust L0)." in DD.compose_markdown(facts)
+
+    # No run to read the harness's own reading from: say whose reading this is.
+    facts["loop"]["trust"] = {"l0": False, "reason": "BIFROST_LOOP_BATCH_MODE not set", "observed_by": "digest"}
+    md = DD.compose_markdown(facts)
+    assert "read from the digest process, not the harness" in md
+
+
+def test_gather_prefers_the_trust_the_harness_recorded(monkeypatch) -> None:
+    monkeypatch.setattr(DD.obj_repo, "list_objectives", lambda conn, **kw: [])
+    monkeypatch.setattr(
+        DD.obj_repo,
+        "list_runs",
+        lambda conn, **kw: [
+            {"id": "run_new", "objective_id": "o", "status": "awaiting_approval", "started_at": FRESH, "outputs": {"trust": {"l0": True, "reason": "ok"}}},
+            {"id": "run_old", "objective_id": "o", "status": "completed", "started_at": FRESH, "outputs": {"trust": {"l0": False, "reason": "stale"}}},
+        ],
+    )
+    monkeypatch.setattr(DD.draft_repo, "count_pending", lambda conn, kind=None: 0)
+    monkeypatch.setattr("bifrost_research.copilot.harness.batch_orchestrate.trust_status", lambda: {"l0": False, "reason": "BIFROST_LOOP_BATCH_MODE not set"})
+    monkeypatch.setattr(DD.cand_repo, "list_candidates", lambda conn, **kw: [])
+    monkeypatch.setattr(DD.run_digest, "digest_run", lambda conn, rid: None)
+    monkeypatch.setattr(DD.hyp_repo, "list_hypotheses", lambda conn, **kw: [])
+    monkeypatch.setattr(DD, "_holdings", lambda: ([], "unavailable"))
+    monkeypatch.setattr(DD, "_symbol_exhibits", lambda conn, symbols: {})
+    monkeypatch.setattr(DD, "gather_discoveries", lambda conn, limit=5: [])
+
+    facts = DD.gather_facts(object(), day=DAY, now=NOW)
+    assert facts["loop"]["trust"] == {"l0": True, "reason": "ok", "observed_by": "harness"}
+
+
 def test_gather_reads_runs_candidates_and_resolutions_since_yesterday(monkeypatch) -> None:
     monkeypatch.setattr(DD.obj_repo, "list_objectives", lambda conn, **kw: [{"id": "obj_stock", "title": "Daily Loop Stock Explorer"}])
     monkeypatch.setattr(
