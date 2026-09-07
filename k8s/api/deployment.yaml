@@ -48,6 +48,47 @@ spec:
               value: "/report/elementary_report.html"
             - name: RESEARCH_MCP_SSE_URL
               value: "http://research-mcp.research.svc.cluster.local:8796/sse"
+            # The Run dialog starts a batch in this pod's background thread, and
+            # prices it from the judges' history. Until now this pod had none of
+            # the CronJob's judge settings, so a UI-started run fell back to the
+            # heuristic and the heuristic planner — the dialog quoted $0.25 for
+            # two model judges and the run spent nothing and rated on nothing.
+            # Same judges, models, turn leash, purses and timeouts as
+            # k8s/engines/cronjob-harness.yaml; the purses are seeded from the
+            # ledger, so the CronJob and a UI run share one daily cap.
+            # BIFROST_LOOP_BATCH_MODE is deliberately absent: a UI run is the
+            # Owner pressing a button, not the unattended loop, so nothing is
+            # auto-approved here.
+            - name: BIFROST_HARNESS_LLM_PLAN
+              value: "1"
+            - name: BIFROST_PERSONA_EVAL_AGENTS
+              value: "1"
+            - name: PERSONA_EVAL_MODELS
+              value: "deepseek-chat,gpt-4o-mini"
+            - name: PERSONA_EVAL_DAILY_CAP_USD_DEEPSEEK
+              value: "1.50"
+            - name: PERSONA_EVAL_DAILY_CAP_USD_OPENAI
+              value: "2.0"
+            - name: BIFROST_PERSONA_EVAL_MAX_TURNS
+              value: "4"
+            - name: BIFROST_PERSONA_EVAL_SYMBOL_TIMEOUT_S
+              value: "120"
+            - name: BIFROST_PERSONA_EVAL_TIMEOUT_S
+              value: "900"
+            # The portfolio specialist reads holdings from the Trade read-only
+            # backends; without these it reports "tool configuration issue".
+            - name: TRADE_API_MONITOR_URL
+              value: "http://api-monitor.bifrost-prod.svc.cluster.local:8765"
+            - name: TRADE_API_TRADING_URL
+              value: "http://api-trading.bifrost-prod.svc.cluster.local:8769"
+            - name: TRADE_API_STRATEGY_URL
+              value: "http://api-strategy.bifrost-prod.svc.cluster.local:8769"
+            - name: TRADE_API_MARKET_URL
+              value: "http://api-market.bifrost-prod.svc.cluster.local:8772"
+            - name: TRADE_API_TIMEOUT
+              value: "8.0"
+            - name: PLATFORM_API_URL
+              value: "http://platform-api.bifrost-platform-prod.svc.cluster.local:8780"
           ports:
             - name: http
               containerPort: 8795
