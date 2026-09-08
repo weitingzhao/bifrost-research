@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from bifrost_research.copilot.harness import standing
 from bifrost_research.copilot.harness.rating import rating_summary
 from bifrost_research.copilot.harness.standing import (
     hunts_line,
@@ -90,3 +91,79 @@ def test_track_record_falls_back_to_the_harness_wide_record_and_says_so(monkeypa
 
     monkeypatch.setattr(co, "build_summary", lambda conn, *, days, **kw: {"horizons": [], "pending": 0})
     assert mod.track_record(None, "obj-x")["status"] == "none_settled"
+
+
+# ── the queue counted the way the Inbox counts it ──────────────────────────
+
+
+class _DraftRepo:
+    """Stands in for `repositories.ai_draft` with a fixed pending list."""
+
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = rows
+
+    def list_drafts(self, _conn, **_kw):
+        return self.rows
+
+
+def _batch(oid: str, symbols: list[str]) -> dict:
+    return {"payload": {"objective_id": oid, "items": [{"symbol": s} for s in symbols]}}
+
+
+def _install(monkeypatch, rows: list[dict]) -> None:
+    from bifrost_research.repositories import ai_draft
+
+    monkeypatch.setattr(ai_draft, "list_drafts", _DraftRepo(rows).list_drafts)
+
+
+def test_repeats_of_the_same_names_are_one_call(monkeypatch) -> None:
+    # Eleven re-runs of one objective proposing the same eight names is one
+    # decision. The Inbox folded them; this side reported eleven memos waiting.
+    rows = [_batch("obj-a", ["HALO", "LPG", "EE"]) for _ in range(11)]
+    _install(monkeypatch, rows)
+    out = standing.pending_memos_by_objective(object())
+    assert out["obj-a"] == {"calls": 1, "drafts": 11}
+
+
+def test_symbol_order_and_case_do_not_split_a_call(monkeypatch) -> None:
+    _install(monkeypatch, [_batch("obj-a", ["halo", "ee"]), _batch("obj-a", ["EE", "HALO"])])
+    assert standing.pending_memos_by_objective(object())["obj-a"] == {"calls": 1, "drafts": 2}
+
+
+def test_different_names_and_different_objectives_stay_separate(monkeypatch) -> None:
+    _install(
+        monkeypatch,
+        [
+            _batch("obj-a", ["HALO"]),
+            _batch("obj-a", ["NVDA"]),
+            _batch("obj-b", ["HALO"]),
+        ],
+    )
+    out = standing.pending_memos_by_objective(object())
+    assert out["obj-a"] == {"calls": 2, "drafts": 2}
+    assert out["obj-b"] == {"calls": 1, "drafts": 1}
+
+
+def test_a_batch_with_no_symbols_stands_alone(monkeypatch) -> None:
+    # Nothing to match on: folding two empty batches would hide a real card.
+    _install(monkeypatch, [_batch("obj-a", []), _batch("obj-a", [])])
+    assert standing.pending_memos_by_objective(object())["obj-a"] == {"calls": 2, "drafts": 2}
+
+
+def _no_outcomes(monkeypatch) -> None:
+    import bifrost_research.api.candidate_outcome as co
+
+    monkeypatch.setattr(co, "build_summary", lambda conn, *, days, **kw: {"horizons": [], "pending": 0})
+
+
+def test_objective_standing_reports_calls_and_the_rows_behind_them(monkeypatch) -> None:
+    _no_outcomes(monkeypatch)
+    row = standing.objective_standing(None, {"id": "obj-a", "title": "A"}, [], {"calls": 3, "drafts": 21})
+    assert row["pending_memos"] == 3
+    assert row["pending_drafts"] == 21
+
+
+def test_objective_standing_still_accepts_a_bare_count(monkeypatch) -> None:
+    _no_outcomes(monkeypatch)
+    row = standing.objective_standing(None, {"id": "obj-a", "title": "A"}, [], 4)
+    assert row["pending_memos"] == 4 and row["pending_drafts"] == 4

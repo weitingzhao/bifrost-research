@@ -194,8 +194,17 @@ def hunts_line(obj: dict[str, Any]) -> str:
     return " · ".join(parts)
 
 
-def objective_standing(conn: Any, obj: dict[str, Any], runs: list[dict[str, Any]], pending_memos: int) -> dict[str, Any]:
+def objective_standing(
+    conn: Any,
+    obj: dict[str, Any],
+    runs: list[dict[str, Any]],
+    pending: dict[str, int] | int,
+) -> dict[str, Any]:
     objective_id = str(obj.get("id") or "")
+    # An int still works: the count is the call count, with no folded repeats.
+    slot = pending if isinstance(pending, dict) else {"calls": int(pending or 0), "drafts": int(pending or 0)}
+    calls = int(slot.get("calls", 0))
+    drafts = int(slot.get("drafts", calls))
     latest = runs[0] if runs else None
     return {
         "id": objective_id,
@@ -214,24 +223,65 @@ def objective_standing(conn: Any, obj: dict[str, Any], runs: list[dict[str, Any]
         "last_memo": last_memo(runs),
         "track_record": track_record(conn, objective_id),
         "spend_30d_usd": spend_30d(runs),
-        "pending_memos": pending_memos,
+        "pending_memos": calls,
+        # The rows behind those calls — `drafts - pending_memos` were folded as
+        # repeats of the same names.
+        "pending_drafts": drafts,
         "runs": len(runs),
     }
 
 
-def pending_memos_by_objective(conn: Any) -> dict[str, int]:
+def batch_call_key(payload: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
+    """What makes two candidate batches the same call: objective and names.
+
+    Mirrors the Decision Inbox's own grouping key
+    (``harnessDraftHelpers._batchKey``). Re-running an objective through the
+    day proposes the same eight symbols again; those are one decision, and the
+    Inbox has folded them since the "25 to decide" fix. This side had not, so
+    the Autopilot page said twenty-one memos were waiting while the Inbox
+    offered three calls — the same queue, counted two ways.
+    """
+    oid = str(payload.get("objective_id") or "")
+    items = payload.get("items")
+    symbols = sorted(
+        str(i.get("symbol") or "").upper()
+        for i in (items if isinstance(items, list) else [])
+        if isinstance(i, dict) and i.get("symbol")
+    )
+    return oid, tuple(symbols)
+
+
+def pending_memos_by_objective(conn: Any) -> dict[str, dict[str, int]]:
+    """Per objective: ``calls`` (distinct decisions) and ``drafts`` (rows).
+
+    ``calls`` is the number the Owner is asked to act on; ``drafts`` is kept
+    beside it so a folded repeat is visible rather than silently missing.
+    """
     from bifrost_research.repositories import ai_draft as draft_repo
 
-    counts: dict[str, int] = {}
+    counts: dict[str, dict[str, int]] = {}
     try:
         rows = draft_repo.list_drafts(conn, status="pending", kind="candidate_batch", limit=200)
     except Exception as exc:  # noqa: BLE001
         logger.warning("pending memo count failed: %s", exc)
         return counts
+    seen: set[tuple[str, tuple[str, ...]]] = set()
     for r in rows:
-        oid = str(_as_map(r.get("payload")).get("objective_id") or "")
-        if oid:
-            counts[oid] = counts.get(oid, 0) + 1
+        payload = _as_map(r.get("payload"))
+        oid = str(payload.get("objective_id") or "")
+        if not oid:
+            continue
+        slot = counts.setdefault(oid, {"calls": 0, "drafts": 0})
+        slot["drafts"] += 1
+        key = batch_call_key(payload)
+        # A batch with no symbols cannot be matched to another; it stands alone.
+        if not key[1]:
+            slot["calls"] += 1
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        slot["calls"] += 1
     return counts
 
 
@@ -244,7 +294,7 @@ def all_standings(conn: Any, *, status: str = "active", runs_per_objective: int 
     for obj in objectives:
         oid = str(obj.get("id") or "")
         runs = obj_repo.list_runs(conn, objective_id=oid, limit=runs_per_objective)
-        out.append(objective_standing(conn, obj, runs, pending.get(oid, 0)))
+        out.append(objective_standing(conn, obj, runs, pending.get(oid, {"calls": 0, "drafts": 0})))
     return out
 
 
@@ -287,6 +337,7 @@ def autopilot_standing(conn: Any) -> dict[str, Any]:
         "next_run_at": next_scheduled_run(),
         "purse": purse_today(conn),
         "pending_memos": sum(s.get("pending_memos", 0) for s in standings),
+        "pending_drafts": sum(s.get("pending_drafts", 0) for s in standings),
         "best_conviction": max((s.get("last_memo") or {}).get("best_conviction", 0) or 0 for s in standings) if standings else 0,
         "objectives": standings,
     }
@@ -295,6 +346,7 @@ def autopilot_standing(conn: Any) -> dict[str, Any]:
 __all__ = [
     "all_standings",
     "autopilot_standing",
+    "batch_call_key",
     "hunts_line",
     "last_memo",
     "next_scheduled_run",
