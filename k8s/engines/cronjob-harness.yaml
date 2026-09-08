@@ -92,14 +92,20 @@ spec:
                 # then holds every candidate. The purse has to cover a bad day or the
                 # unattended loop cannot run on one.
                 #
-                # $1.50 covers the worst observed day with room for one manual re-run.
-                # Ceiling ≈ $33/month, typical ≈ $6.
+                # Rebalanced 2026-09-08 from 1.50/2.00, total unchanged at $3.50.
+                # Observed: 09-07 deepseek $1.532 against its $1.50 ceiling — it
+                # ran out, and every candidate after that lost a judge and was
+                # held as if the judges had disagreed. openai the same day: $0.24
+                # of $2.00. The purse was not too small, it was split the wrong
+                # way round: deepseek is the expensive judge and had the smaller
+                # share. Headroom now ~47% over deepseek's worst day and ~52%
+                # over openai's ($0.822 on 09-06).
                 - name: PERSONA_EVAL_DAILY_CAP_USD_DEEPSEEK
-                  value: "1.50"
+                  value: "2.25"
                 - name: BIFROST_PERSONA_EVAL_MAX_TURNS
                   value: "4"
                 - name: PERSONA_EVAL_DAILY_CAP_USD_OPENAI
-                  value: "2.0"
+                  value: "1.25"
                 # 0.69.1 acceptance: deepseek-chat needed 13s when it answered and
                 # timed out at 45s on 5 of 8 symbols; the 240s batch budget then
                 # left the last two symbols unjudged. Judges get two minutes each,

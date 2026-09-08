@@ -30,10 +30,11 @@ logger = logging.getLogger(__name__)
 CRON_HOUR_UTC = 13
 CRON_MINUTE_UTC = 30
 
-#: Daily purses per provider, as the CronJob and the API pod set them. Shown
-#: beside today's spend; a purse that is spent means fallback judges and held
-#: candidates, which the Owner should see before the run says so.
-DEFAULT_CAPS_USD = {"deepseek": 1.50, "openai": 2.00}
+#: The providers whose purses the page shows. The amounts are read from the
+#: same environment the judge reads, never copied: a hardcoded pair here said
+#: $1.50/$2.00 while the manifests were rebalanced to $2.25/$1.25, and the
+#: page would have reported a ceiling the run does not obey.
+PURSE_PROVIDERS = ("deepseek", "openai")
 
 TRACK_RECORD_DAYS = 90
 #: The harness-wide fallback reads two years — effectively the whole ledger —
@@ -335,7 +336,10 @@ def purse_today(conn: Any) -> dict[str, Any]:
         logger.warning("purse read failed: %s", exc)
         spent = {}
     providers = []
-    for name, cap in DEFAULT_CAPS_USD.items():
+    from bifrost_research.copilot import rate_limit
+
+    for name in PURSE_PROVIDERS:
+        cap = rate_limit.provider_cap_usd(name)
         used = round(float(spent.get(name, 0.0)), 4)
         providers.append({"provider": name, "spent_usd": used, "cap_usd": cap, "exhausted": used >= cap})
     return {

@@ -219,3 +219,21 @@ def test_the_description_fallback_cuts_on_a_word():
     assert "…" in line and not line.replace("…", "").endswith(" ")
     # No mid-word cut: everything before the ellipsis is whole words.
     assert all(w in long for w in line.split("…")[0].split())
+
+
+def test_the_purse_reads_the_caps_the_judge_obeys(monkeypatch) -> None:
+    # A hardcoded pair here said $1.50/$2.00 while the manifests were rebalanced
+    # to $2.25/$1.25; the page would have drawn a ceiling the run does not obey.
+    monkeypatch.setenv("PERSONA_EVAL_DAILY_CAP_USD_DEEPSEEK", "2.25")
+    monkeypatch.setenv("PERSONA_EVAL_DAILY_CAP_USD_OPENAI", "1.25")
+    from bifrost_research.repositories import ai_action_log
+
+    monkeypatch.setattr(
+        ai_action_log, "spend_today_by_provider", lambda conn, *, action_kind: {"deepseek": 2.30}
+    )
+    purse = standing.purse_today(object())
+    caps = {p["provider"]: p["cap_usd"] for p in purse["providers"]}
+    assert caps == {"deepseek": 2.25, "openai": 1.25}
+    assert purse["cap_usd"] == 3.5
+    # Spent past its own ceiling: that provider's judge will fall back today.
+    assert [p["exhausted"] for p in purse["providers"]] == [True, False]

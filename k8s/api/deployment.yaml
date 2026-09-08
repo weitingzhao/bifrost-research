@@ -65,10 +65,12 @@ spec:
               value: "1"
             - name: PERSONA_EVAL_MODELS
               value: "deepseek-chat,gpt-4o-mini"
+            # Rebalanced 2026-09-08, total unchanged at $3.50 — see
+            # k8s/engines/cronjob-harness.yaml for the observed numbers.
             - name: PERSONA_EVAL_DAILY_CAP_USD_DEEPSEEK
-              value: "1.50"
+              value: "2.25"
             - name: PERSONA_EVAL_DAILY_CAP_USD_OPENAI
-              value: "2.0"
+              value: "1.25"
             - name: BIFROST_PERSONA_EVAL_MAX_TURNS
               value: "4"
             - name: BIFROST_PERSONA_EVAL_SYMBOL_TIMEOUT_S
