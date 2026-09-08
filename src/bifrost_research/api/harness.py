@@ -158,7 +158,10 @@ def patch_objective(objective_id: str, body: ObjectiveStatusPatch) -> dict[str, 
             if row is None:
                 raise HTTPException(status_code=404, detail="objective not found")
         if body.status is not None:
-            row = obj_repo.set_objective_status(conn, objective_id, status=body.status)
+            try:
+                row = obj_repo.set_objective_status(conn, objective_id, status=body.status)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             if row is None:
                 raise HTTPException(status_code=404, detail="objective not found")
         if row is None:
@@ -555,7 +558,10 @@ def create_policy_suggestion(
             status_code=400,
             detail=(
                 f"not applicable policy fields: {unknown}. Approving would drop them "
-                f"silently. Allowed: {sorted(obj_repo.POLICY_SUGGESTION_WHITELIST)}"
+                # The Owner's own set, which is what was just checked. Naming the
+                # model's narrower one here told the Owner that fields they may
+                # in fact change were forbidden.
+                f"silently. Allowed: {sorted(obj_repo.OWNER_POLICY_WHITELIST)}"
             ),
         )
 

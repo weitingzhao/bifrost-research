@@ -18,7 +18,13 @@ from bifrost_research.schema.schemas import (
 )
 
 _ALLOWED_SCHEDULES = frozenset({"daily_open", "daily_eod", "weekly", "adhoc"})
-_ALLOWED_OBJ_STATUSES = frozenset({"active", "paused", "retired"})
+# The whole vocabulary: the console lists `active`, everything else is out of
+# sight. `paused` and `retired` were named here at the start, never written by
+# anything, and never checked — the constant had no readers, so the word the
+# system actually uses, `archived`, contradicted it in silence for months.
+# Enforced below, because an unrecognised status is invisible twice over: gone
+# from the console's active list and absent from `?status=archived`.
+OBJECTIVE_STATUSES = frozenset({"active", "archived"})
 _ALLOWED_RUN_STATUSES = frozenset(
     {"running", "awaiting_approval", "completed", "failed", "cancelled"}
 )
@@ -375,9 +381,16 @@ def set_objective_status(
     """Archive or reactivate. Archiving is how an objective leaves the console.
 
     Runs and the candidate lineage that points at them survive: the console
-    lists `status = 'active'`, so setting anything else is enough to retire an
-    objective without destroying what it produced.
+    lists `status = 'active'`, so archiving is enough to retire an objective
+    without destroying what it produced.
+
+    Raises ValueError on a status outside `OBJECTIVE_STATUSES`.
     """
+    if status not in OBJECTIVE_STATUSES:
+        raise ValueError(
+            f"invalid objective status: {status!r} "
+            f"(expected one of {sorted(OBJECTIVE_STATUSES)})"
+        )
     with conn.cursor() as cur:
         cur.execute(
             f"""
