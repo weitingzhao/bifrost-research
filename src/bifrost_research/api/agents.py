@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from bifrost_research.auth.deps import require_owner
-from bifrost_research.db.conn import connect
+from bifrost_research.db.conn import connect, rollback_quietly
 from bifrost_research.repositories import ai_action_log as action_repo
 from bifrost_research.repositories import ai_draft as draft_repo
 from bifrost_research.repositories import candidate_pool as cand_repo
@@ -261,6 +261,51 @@ class ApproveBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     approved_by: str = Field(default="owner")
+
+
+def _dismiss_candidate_batch(
+    conn: Any,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Mark this batch's open pool rows dismissed.
+
+    The approve path fans a candidate_batch out to N pool rows; the dismiss
+    path used to write only `research.ai_draft`, so the pool never learned the
+    Owner had said no. The loop reads the pool, not the Inbox: three days of
+    running proposed twelve distinct symbols, and 09-06 and 09-07 were the same
+    eleven, because every name the Owner declined came back as `status='open'`.
+
+    Missing / non-open candidates are skipped into ``skipped``, never raised —
+    a dismissal must not fail because one row moved underneath it.
+    D10 BLOCKED — writes research.candidate_pool only.
+    """
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    dismissed: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+
+    for item in items:
+        if not isinstance(item, dict):
+            skipped.append({"reason": "invalid_item"})
+            continue
+        cid = str(item.get("id") or item.get("candidate_id") or "").strip()
+        symbol = str(item.get("symbol") or "").strip().upper()
+        if not cid:
+            skipped.append({"symbol": symbol or None, "reason": "missing_id"})
+            continue
+        try:
+            row = cand_repo.dismiss_candidate(conn, cid)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("candidate_batch dismiss %s failed: %s", cid, exc)
+            rollback_quietly(conn)
+            skipped.append({"id": cid, "symbol": symbol or None, "reason": "dismiss_failed"})
+            continue
+        if row is None:
+            # Guarded on status='open', so this is "already decided" or gone.
+            skipped.append({"id": cid, "symbol": symbol or None, "reason": "not_open_or_missing"})
+            continue
+        dismissed.append({"id": cid, "symbol": row.get("symbol") or symbol or None})
+
+    return {"dismissed": dismissed, "skipped": skipped, "count": len(dismissed)}
 
 
 def _promote_candidate_batch(
@@ -582,6 +627,15 @@ def dismiss_draft(draft_id: str, body: ApproveBody | None = None) -> dict[str, A
             _err(f"draft status is {draft['status']}, expected pending", 409)
 
         updated = draft_repo.update_draft_status(conn, draft_id, status="dismissed")
+
+        # Say no in the place the loop reads. Only an explicit dismissal counts:
+        # names the leash held are withheld by the system, not declined by the
+        # Owner, and they stay open.
+        candidates: dict[str, Any] | None = None
+        if draft.get("kind") == "candidate_batch":
+            payload = draft.get("payload") if isinstance(draft.get("payload"), dict) else {}
+            candidates = _dismiss_candidate_batch(conn, payload)
+
         linked = draft.get("linked_action_id")
         action_row = None
         if linked:
@@ -602,7 +656,10 @@ def dismiss_draft(draft_id: str, body: ApproveBody | None = None) -> dict[str, A
                 status="rejected",
             )
 
-        return _ok({"draft": updated, "action": action_row})
+        out: dict[str, Any] = {"draft": updated, "action": action_row}
+        if candidates is not None:
+            out["candidates"] = candidates
+        return _ok(out)
     except HTTPException:
         raise
     except Exception as exc:

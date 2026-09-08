@@ -202,6 +202,62 @@ def create_candidate(
     return result
 
 
+def latest_by_symbol(
+    conn: _Connection,
+    symbols: Sequence[str],
+    *,
+    statuses: Sequence[str],
+    objective_id: str | None = None,
+    days: int | None = None,
+    trade_date: Any | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Newest matching row per symbol, in one round trip.
+
+    The decline gate asks this once per run for every symbol the funnel is
+    still carrying. Doing it with `list_candidates` per symbol — the shape
+    `rating.prior_scores` uses — is twenty-four queries on a run that proposes
+    eight, before any of them has been judged.
+
+    `statuses` is explicit rather than defaulted because the two callers mean
+    different things by it: a decline is `dismissed` only, while "already
+    settled today" also counts `promoted`. `expired` is deliberately not a
+    decline anywhere — `expire_stale` fires when somebody loads the Candidate
+    Pool page, so it records browsing, not a judgement.
+    """
+    syms = [str(s).strip().upper() for s in symbols if str(s).strip()]
+    if not syms or not statuses:
+        return {}
+
+    clauses = ["symbol = ANY(%s)", "status = ANY(%s)"]
+    params: list[Any] = [syms, [str(s) for s in statuses]]
+    if objective_id:
+        clauses.append("source_ref ->> 'objective_id' = %s")
+        params.append(objective_id)
+    if days is not None and days > 0:
+        clauses.append("trade_date >= (CURRENT_DATE - %s::int)")
+        params.append(int(days))
+    if trade_date is not None:
+        clauses.append("trade_date = %s")
+        params.append(trade_date)
+
+    sql = f"""
+        SELECT DISTINCT ON (symbol) {", ".join(_COLUMNS)}
+        FROM {TABLE_RESEARCH_CANDIDATE_POOL}
+        WHERE {" AND ".join(clauses)}
+        ORDER BY symbol, trade_date DESC, created_at DESC
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall() or []
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        rec = _row_to_dict(row)
+        sym = str(rec.get("symbol") or "").strip().upper()
+        if sym:
+            out[sym] = rec
+    return out
+
+
 def list_candidates(
     conn: _Connection,
     *,

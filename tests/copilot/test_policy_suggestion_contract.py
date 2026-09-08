@@ -47,11 +47,30 @@ def test_policy_suggestion_whitelist_is_non_empty() -> None:
 def test_owner_whitelist_is_a_superset_that_adds_only_the_judging_and_planning_knobs():
     # A model may not propose switching its own planner or judges off; the Owner
     # may. Everything the model may propose, the Owner may too.
+    #
+    # `decline_memory` joined this list rather than the model's: it encodes the
+    # Owner's own refusals, and a model able to propose loosening it is a model
+    # able to propose undoing them.
     from bifrost_research.repositories import objective as obj_repo
 
     extra = obj_repo.OWNER_POLICY_WHITELIST - obj_repo.POLICY_SUGGESTION_WHITELIST
     assert obj_repo.POLICY_SUGGESTION_WHITELIST <= obj_repo.OWNER_POLICY_WHITELIST
-    assert extra == {"triage", "persona_evaluate", "use_llm_plan", "llm_model", "seed_symbols"}
+    assert extra == {
+        "triage",
+        "persona_evaluate",
+        "use_llm_plan",
+        "llm_model",
+        "seed_symbols",
+        "decline_memory",
+    }
+
+
+def test_a_model_may_not_propose_a_decline_memory_change():
+    from bifrost_research.copilot.harness import plan_llm
+    from bifrost_research.repositories import objective as obj_repo
+
+    assert "decline_memory" not in obj_repo.POLICY_SUGGESTION_WHITELIST
+    assert "decline_memory" not in plan_llm.POLICY_SUGGESTION_KEYS
 
 
 def test_nested_policy_groups_merge_key_by_key():

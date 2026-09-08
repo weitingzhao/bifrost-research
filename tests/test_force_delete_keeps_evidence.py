@@ -100,3 +100,19 @@ def test_the_run_row_still_goes_and_the_work_is_committed(monkeypatch) -> None:
     assert _stmt(conn, "DELETE FROM research.objective_run")
     assert conn.committed
     assert out["id"] == "run-1"
+
+
+def test_a_declined_candidate_survives_the_delete_too(monkeypatch) -> None:
+    """Deleting the run that carried a refusal must not un-refuse the name.
+
+    The loop reads `candidate_pool` to know what it may propose again. If a
+    housekeeping delete took the dismissed rows with it, every name the Owner
+    declined on that run would come back the next morning — the exact loop
+    the decline memory exists to break.
+    """
+    _out, conn = _force(monkeypatch)
+    delete = _stmt(conn, "DELETE FROM research.candidate_pool")
+    assert "c.status <> 'dismissed'" in delete
+
+    kept = _stmt(conn, "SELECT count(*) FROM research.candidate_pool")
+    assert "c.status = 'dismissed'" in kept, "the kept count must include the refusals"

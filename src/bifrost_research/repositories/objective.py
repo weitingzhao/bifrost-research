@@ -202,11 +202,14 @@ POLICY_SUGGESTION_WHITELIST: frozenset[str] = frozenset(
 #: planned and seeded. Both routes still go through a draft, so the audit
 #: trail reads the same whoever moved the knob.
 OWNER_POLICY_WHITELIST: frozenset[str] = POLICY_SUGGESTION_WHITELIST | frozenset(
-    {"triage", "persona_evaluate", "use_llm_plan", "llm_model", "seed_symbols"}
+    # `decline_memory` is Owner-only on purpose: it encodes the Owner's own
+    # refusals, and a model that could propose loosening it could propose
+    # undoing them.
+    {"triage", "persona_evaluate", "use_llm_plan", "llm_model", "seed_symbols", "decline_memory"}
 )
 
 _NESTED_POLICY_KEYS = frozenset(
-    {"layers", "option_overlay", "discovery_assist", "resolution", "triage"}
+    {"layers", "option_overlay", "discovery_assist", "resolution", "triage", "decline_memory"}
 )
 
 
@@ -517,6 +520,10 @@ def force_delete_run(conn: _Connection, run_id: str) -> dict[str, Any]:
     three rows, the leash's source-record gate could not open on any candidate,
     and an armed Autopilot would have held everything it proposed.
 
+    A candidate the Owner declined is kept for the same reason. The loop reads
+    the pool to know what it may propose again; deleting the run that carried a
+    refusal would un-refuse the name, and it would return the next morning.
+
     The kept candidates keep a ``source_ref.run_id`` pointing at a run that no
     longer exists. That is the intended trade: the drill-down from a number to
     the run behind it is lost, the number itself survives.
@@ -546,9 +553,12 @@ def force_delete_run(conn: _Connection, run_id: str) -> dict[str, Any]:
             f"""
             SELECT count(*) FROM {TABLE_RESEARCH_CANDIDATE_POOL} c
             WHERE c.source_ref ->> 'run_id' = %s
-              AND EXISTS (
-                  SELECT 1 FROM {TABLE_RESEARCH_CANDIDATE_OUTCOME} o
-                  WHERE o.candidate_id = c.id
+              AND (
+                  c.status = 'dismissed'
+                  OR EXISTS (
+                      SELECT 1 FROM {TABLE_RESEARCH_CANDIDATE_OUTCOME} o
+                      WHERE o.candidate_id = c.id
+                  )
               )
             """,
             (run_id,),
@@ -560,6 +570,7 @@ def force_delete_run(conn: _Connection, run_id: str) -> dict[str, Any]:
             f"""
             DELETE FROM {TABLE_RESEARCH_CANDIDATE_POOL} c
             WHERE c.source_ref ->> 'run_id' = %s
+              AND c.status <> 'dismissed'
               AND NOT EXISTS (
                   SELECT 1 FROM {TABLE_RESEARCH_CANDIDATE_OUTCOME} o
                   WHERE o.candidate_id = c.id

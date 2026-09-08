@@ -36,6 +36,7 @@ from bifrost_research.copilot.harness.suggestion import (
 from bifrost_research.copilot.harness.trace import RunTrace
 from bifrost_research.copilot.harness.triage import triage_stage
 from bifrost_research.copilot.harness.universe.registry import resolve_universe
+from bifrost_research.copilot.harness.decline_memory import decline_stage
 from bifrost_research.copilot.harness.universe.types import FunnelStep
 from bifrost_research.db.conn import rollback_quietly
 from bifrost_research.repositories import ai_action_log as action_repo
@@ -270,6 +271,15 @@ def run_objective(
         # the top `max_n` — a drop of 24 -> 8 that never reached the funnel, so
         # the console headlined the 24 as if they had been proposed. Everything
         # downstream (candidates, personas, the draft) works off `max_n`.
+        assisted_symbols, decline_view = decline_stage(
+            conn, assisted_symbols, objective=objective, loop_policy=loop_policy,
+            run_id=run_id, data_source=universe.data_source,
+            row_meta_by_symbol=row_meta_by_symbol, snapshot_for=_build_lens_snapshot,
+        )
+        funnel_dicts = list(funnel_dicts) + [decline_view["funnel_step"]]
+        if decline_view.get("trace_event"):
+            trace.append(decline_view["trace_event"])
+
         universe_symbols = assisted_symbols[:max_n]
         if len(assisted_symbols) != len(universe_symbols):
             funnel_dicts = list(funnel_dicts) + [

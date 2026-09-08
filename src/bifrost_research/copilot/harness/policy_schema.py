@@ -115,6 +115,27 @@ class TriagePolicy(BaseModel):
     deep_judge_top_n: int = Field(default=0, ge=0, le=50)
 
 
+class DeclineMemoryPolicy(BaseModel):
+    """A name the Owner declined comes back only when something got better.
+
+    Not a cooldown. Nothing here re-proposes a name because time passed:
+    ``lookback_days`` bounds how far back a refusal is *remembered*, not how
+    long it is honoured. Past it the run simply has no record of the decline.
+
+    ``min_score_delta`` is the one threshold worth arguing about, so it is the
+    one that is configurable. The other triggers — the path advancing, the
+    grade gaining a notch, a new qualifying event, a regime flip — are
+    definitions over closed vocabularies; making "is SETUP → PIVOT material?"
+    a form field is how a gate quietly stops gating.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = True
+    lookback_days: int = Field(default=90, ge=1, le=365)
+    min_score_delta: float = Field(default=5.0, ge=0.0, le=100.0)
+
+
 class LoopPolicy(BaseModel):
     """Parsed harness policy — superset of legacy scan keys."""
 
@@ -142,6 +163,8 @@ class LoopPolicy(BaseModel):
     # settled hit rate (longest judged horizon, ≥ 5 outcomes) clears this floor.
     min_source_hit_rate: float = Field(default=0.45, ge=0.0, le=1.0)
     triage: TriagePolicy = Field(default_factory=lambda: TriagePolicy())
+    # The loop's memory of what the Owner already refused.
+    decline_memory: DeclineMemoryPolicy = Field(default_factory=DeclineMemoryPolicy)
 
     model_config = {"extra": "allow"}
 
