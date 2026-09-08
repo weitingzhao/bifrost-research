@@ -1,7 +1,7 @@
 ---
-version: 2026-09-08.8
+version: 2026-09-08.9
 updated: 2026-09-08
-status: 快照已切到宇宙（近价窗口）· worker 8 · 回填进行中
+status: 批量筛选原语已落地 · 覆盖率改为实时读数 · 首次宇宙快照今晚
 ---
 
 # Research 校准
@@ -57,7 +57,18 @@ status: 快照已切到宇宙（近价窗口）· worker 8 · 回填进行中
 | terrain_regime | `stock_forecast_terrain_daily.regime` | 28 标的 | 只有 `crash-risk` 算 hot | 近 30 天 range 537 / trending 19 / crash-risk 4；4 行正好对上 | **设计上稀有**，尾部风险标；命中率永远不会有统计意义 |
 | order_sentiment | `option_flow_sentiment_daily.sentiment_score` | 28 标的、418 行 | 只认 `data_source == option_trades_tape`，带 hot=+30 / cold=−30 | **418 行全是 `option_snapshot_aggregates`**，tape 源不存在；分数本身很极端（均值 16，大多数在 ±30 外） | **数据源门**：exhibit 层同样拒信 aggregates（`exhibit_lenses.py:486`），口径一致；是否放开是订阅层面的决定 |
 
-### 1.6 覆盖矩阵（近 30 天有数据的标的数）
+### 1.6 覆盖矩阵
+
+> **这张表不再手测。** `GET /research/screen/coverage` 每次调用都重新读一遍，UI 在
+> `/research/lens-coverage`（Workbench → Data → Lens Coverage）。下面保留 2026-09-08 的一次读数作为基线；
+> 要看今天的，开那一页。
+>
+> 2026-09-08 21:55 UTC，宇宙 575：**六面俱全 0 个，只有股票面 549 个**。
+> SEPA 515/575（90%）· momentum 25 · iv_rank / iv_percentile / opex_pin / gex_regime / forecast_path 各 25 ·
+> vrp 26 · terrain_regime 28 · order_sentiment **0**（tape 源不存在）· skew 与 term_slope 不可筛。
+> 一次真实筛选（SEPA 强 ∧ IV rank 高）**0 个幸存者** —— 接缝塌陷现在是一次调用就能量出来的数。
+
+#### 旧手测矩阵（近 30 天有数据的标的数，保留作对照）
 
 | 面 | 表 | 标的 | 截止 |
 |---|---|---|---|
@@ -81,7 +92,7 @@ status: 快照已切到宇宙（近价窗口）· worker 8 · 回填进行中
 
 | 编号 | 状态 | 证据 |
 |---|---|---|
-| C-F1 | ❌ | 基础层**没有批量筛选原语**：`lenses/exhibits.build_exhibit(conn, lens, symbol)` 逐标的，registry 只有 `scan_flag(band)` 一个 helper。harness 要在 3,475 个标的上筛，只能自己写 SQL（`copilot/harness/universe/{sepa,momentum,events}.py` 各自 SELECT `features.*` 并重做 score / grade / importance 过滤）。这不是 harness 不守纪律，是基础层缺一个它需要的能力 |
+| C-F1 | ⚠️ | **原语已落地**：`lenses/screen.py`——一个 lens 一条集合语句打整个宇宙，band 走 registry 的 `classify`，实测 575 标的 × 10 lens **6.8 秒**（循环 `build_exhibit` 要 11 分钟）。每行还列出该标的**没有读数的 lens**（C-A2 的前提）。registry 里 4 个 lens 的 `value_column` 是 exhibit 算出来的而非存储列（gamma 正负号、tape 门、pin 距离、path 命中率），各有自己的语句；skew 与 term_slope **明说不可筛**并给理由，不编数。仍是 ⚠️ 而非 ✅：`sepa.py` / `momentum.py` 两个开口解析器（按 path/grade/min_score 过滤取前 N）尚未改走原语——那会改变 Autopilot 每天的候选来源，需要 Owner 先定 |
 | C-F2 | ✅ | `engines/`、`lenses/` 无 objective / policy 依赖；`iv_solver.py`、`vol_surface/fit.py` 里的 `objective` 是最小二乘的目标函数 |
 | C-F3 | ⚠️ | 12 个 spec 都有 route、bands、hot/cold 说明。**0.95.1 起 sepa 与 momentum 加入衰减追踪**（`decay_lens` + `hit_rule=follow`，只追踪 hot 侧：sepa ≥ 80 且 SETUP/PIVOT ≈ 2 个/天，momentum 看 A 级；cold 侧 400 个/天无人消费且会 OOM 回补），最宽的两个面开始自我度量；仍无 decay 的 3 个：iv_percentile、term_slope、forecast_path |
 | C-F4 | ❌ | 三个 lens 不触发，上游表都有 27–28 个标的、数据齐全，根因各不相同（见 §1.5） |
@@ -306,6 +317,7 @@ CREATE TABLE research.option_universe (
 | 2026-09-08.2 | 2026-09-08 | 基础层深校准：覆盖矩阵、三个死 lens 的根因、两个宇宙、缺批量原语；§3b 列出拉近差距的三类选项供讨论。 |
 | 2026-09-08.3 | 2026-09-08 | 丙的折中方案：成本单位实测、三层宇宙规则、两档总量与代价、归属、未量风险。 |
 | 2026-09-08.4 | 2026-09-08 | Owner 拍板 $200M 与三层方案；核修正为 547（限普通股）；队列实测 15 小时可跑完、全在常驻层，结论保留；分步计划与 DDL 草案待确认。 |
+| 2026-09-08.9 | 2026-09-08 | **甲落地**：`lenses/screen.py` 批量筛选原语（一 lens 一语句、registry 同一份 band、每行列出缺面）；harness 的 option overlay 改从 lens 层取读数并记缺面（C-A1 / C-A2 的一半）；`GET /research/screen/coverage` 与 UI `/research/lens-coverage` 把覆盖率从手测变成读数。开口解析器与 overlay 的门未动——两者都会改变 Owner 可见的语义。 |
 | 2026-09-08.8 | 2026-09-08 | `eod-pipeline` 切到宇宙并加近价窗口（Plugin 0.17.0 → 0.17.3）；option worker 4 → 8。 |
 | 2026-09-08.7 | 2026-09-08 | 回填 13,548 个计划任务排入（Plugin 0.16.2 分块插入）。 |
 | 2026-09-08.6 | 2026-09-08 | 核枚举完成 575/575；Plugin 0.16.1 修爬坡查询超时导致的重复枚举（fail closed）；option-backfill 已启动。 |
