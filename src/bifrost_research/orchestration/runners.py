@@ -54,7 +54,12 @@ def run_signal_hit_fwd_fill(*, lookback_days: int = 30) -> dict[str, Any]:
     """
     from bifrost_research.engines.signal_hit import entry as signal_hit_entry
 
-    out = dict(signal_hit_entry.run(lookback_days=lookback_days))
+    # repair=True adds the pass that re-walking cannot do. A rebuild only emits
+    # rows for triggers that still fire on today's view of a past date, so a row
+    # whose lens has since stopped firing is never reached and its NULL stands
+    # however many times the window is re-walked — nineteen rows sat unjudged
+    # that way on 2026-09-08 while the same run rewrote 198 of their neighbours.
+    out = dict(signal_hit_entry.run(lookback_days=lookback_days, repair=True))
     out["engine"] = "signal_hit_fwd_fill"
     return out
 

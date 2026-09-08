@@ -357,11 +357,84 @@ def build_rows_for_day(
     return rows
 
 
+def backfill_missing_forward(
+    conn: Any,
+    *,
+    horizons: Sequence[int] = (5, 20),
+    max_rows: int = 20000,
+) -> dict[str, Any]:
+    """Fill forward columns on rows whose window has since elapsed.
+
+    Re-walking a day and rebuilding its rows cannot repair these. A row is
+    keyed by the lens trigger that fired on that date, and a rebuild only
+    emits rows for triggers that fire on *today's* view of that date — a lens
+    whose inputs have since moved no longer produces the row, so the upsert
+    never reaches it and the NULL stands forever. On 2026-09-08 nineteen rows
+    from 2026-08-03..08-07 sat unjudged for exactly that reason while the same
+    run rewrote 198 of their neighbours.
+
+    So repair is driven by what is missing, not by re-deriving what should
+    exist: find the incomplete rows, recompute only their forward columns, and
+    leave the trigger that identifies them untouched. A window that still has
+    not elapsed stays NULL — an unknown outcome must never be recorded as a
+    miss.
+    """
+    filled = {h: 0 for h in horizons}
+    examined = 0
+    # Horizons are ints from the caller, never user input.
+    missing_any = " OR ".join(f"fwd_return_{int(h)}d IS NULL" for h in horizons)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT trade_date, symbol, lens, trigger_side
+            FROM {TABLE_STOCK_SIGNAL_LENS_HIT_DAILY}
+            WHERE {missing_any}
+            ORDER BY trade_date DESC
+            LIMIT %s
+            """,
+            (max_rows,),
+        )
+        pending = cur.fetchall() or []
+
+    for trade_date, symbol, lens, side in pending:
+        examined += 1
+        updates: list[tuple[str, Any]] = []
+        for h in horizons:
+            fwd = _fwd_return(conn, str(symbol), trade_date, int(h))
+            if fwd is None:
+                continue  # window still open; leave it unknown
+            hit = hit_for(str(lens), side=str(side), fwd_return=fwd, horizon=int(h))
+            updates.append((f"fwd_return_{h}d", fwd))
+            updates.append((f"hit_{h}d", hit))
+            filled[h] += 1
+        if not updates:
+            continue
+        sets = ", ".join(f"{c} = %s" for c, _ in updates)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {TABLE_STOCK_SIGNAL_LENS_HIT_DAILY}
+                SET {sets}, computed_at = %s
+                WHERE trade_date = %s AND symbol = %s AND lens = %s AND trigger_side = %s
+                """,
+                [v for _, v in updates]
+                + [datetime.now(timezone.utc), trade_date, symbol, lens, side],
+            )
+        conn.commit()
+
+    return {
+        "mode": "backfill_missing_forward",
+        "examined": examined,
+        "filled": {f"{h}d": n for h, n in filled.items()},
+    }
+
+
 def run(
     *,
     lookback_days: int = 3,
     lenses: Sequence[str] | None = None,
     as_of: date | None = None,
+    repair: bool = False,
 ) -> dict[str, Any]:
     lens_list = list(lenses) if lenses else list(ALL_LENSES)
     end = as_of or _today_ny()
@@ -399,7 +472,9 @@ def run(
                 )
             written += len(rows)
             per_day.append({"trade_date": day.isoformat(), "rows_written": len(rows)})
+        repair_stats = backfill_missing_forward(conn) if repair else None
         return {
+            "repair": repair_stats,
             "mode": "batch",
             "lookback_days": lookback_days,
             "lenses": lens_list,

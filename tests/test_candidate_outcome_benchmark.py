@@ -93,3 +93,43 @@ def test_a_trading_day_candidate_is_unchanged() -> None:
     got = _row_to_fields(_rows(FRI)[0])
     assert got["exit_date"] == MON
     assert got["benchmark_return"] is not None and got["hit"] is True
+
+
+def test_pending_returns_a_horizon_whose_row_has_no_verdict():
+    """A settled row without a verdict must come back, not count as done.
+
+    ``excess_hit`` writes ``(None, None)`` when a leg is missing — correct, an
+    unknown outcome is not a miss. But ``_pending`` used to treat any existing
+    row as settled, so that blank was permanent even though the write is an
+    upsert that would have overwritten it. The leash reads this table for the
+    source track record; a blank there is evidence that can never be judged.
+    """
+    from bifrost_research.engines.candidate_outcome.entry import _pending
+
+    captured: dict[str, object] = {}
+
+    class _Cur:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params=None):
+            captured["sql"] = sql
+
+        def fetchall(self):
+            # One candidate: horizon 1 has a verdict, horizon 5 is blank.
+            return [("cand-1", "AAPL", None, [1])]
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+    out = _pending(_Conn(), lookback_days=90, horizons=(1, 5))
+
+    sql = str(captured["sql"])
+    assert "o.hit IS NOT NULL" in sql, "a row without a hit must not count as settled"
+    assert "o.benchmark_return IS NOT NULL" in sql, "nor one without a benchmark"
+    assert len(out) == 1
+    assert out[0]["horizons"] == [5], "only the unjudged horizon should come back"

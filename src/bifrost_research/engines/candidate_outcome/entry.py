@@ -118,13 +118,27 @@ def _close_on(conn: Any, symbol: str, day: date) -> float | None:
 
 
 def _pending(conn: Any, *, lookback_days: int, horizons: Sequence[int]) -> list[dict[str, Any]]:
-    """Candidates with at least one horizon not yet settled."""
+    """Candidates with a horizon that is unsettled — or settled without a verdict.
+
+    A row is only counted as settled once it carries a benchmark and a hit. It
+    used to be enough for the row to exist: when the benchmark leg could not be
+    priced, ``excess_hit`` correctly wrote ``(None, None)`` rather than a false
+    miss, and this query then treated that horizon as done forever. The write is
+    an upsert keyed on (candidate_id, horizon_days), so the recompute always
+    could have overwritten it — nothing ever asked for one.
+
+    Filtering the aggregate rather than the join is deliberate: a candidate with
+    one good horizon and one blank must come back for the blank alone.
+    """
     with conn.cursor() as cur:
         cur.execute(
             f"""
             SELECT c.id, c.symbol, c.trade_date,
-                   COALESCE(array_agg(o.horizon_days) FILTER (WHERE o.horizon_days IS NOT NULL),
-                            '{{}}') AS settled
+                   COALESCE(array_agg(o.horizon_days) FILTER (
+                       WHERE o.horizon_days IS NOT NULL
+                         AND o.hit IS NOT NULL
+                         AND o.benchmark_return IS NOT NULL
+                   ), '{{}}') AS settled
             FROM {TABLE_RESEARCH_CANDIDATE_POOL} c
             LEFT JOIN {TABLE_RESEARCH_CANDIDATE_OUTCOME} o ON o.candidate_id = c.id
             WHERE c.trade_date >= CURRENT_DATE - %s::int

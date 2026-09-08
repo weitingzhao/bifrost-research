@@ -31,7 +31,10 @@ def test_the_fill_is_the_signal_hit_engine_on_a_wider_window() -> None:
     with patch("bifrost_research.engines.signal_hit.entry.run", return_value={"rows": 7}) as run:
         out = runners.run_signal_hit_fwd_fill(lookback_days=45)
 
-    assert run.call_args.kwargs == {"lookback_days": 45}
+    # repair=True is the half a wider window cannot cover: a lens that no longer
+    # fires on a past date produces no row to upsert, so re-walking never reaches
+    # it and the NULL is permanent.
+    assert run.call_args.kwargs == {"lookback_days": 45, "repair": True}
     assert out["rows"] == 7
     assert out["engine"] == "signal_hit_fwd_fill"
 
