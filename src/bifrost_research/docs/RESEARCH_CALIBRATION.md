@@ -1,7 +1,7 @@
 ---
-version: 2026-09-08.4
+version: 2026-09-08.5
 updated: 2026-09-08
-status: 宽度已拍板 $200M · 三件待确认
+status: 宇宙规则已落地 · 核枚举爬坡中
 ---
 
 # Research 校准
@@ -83,9 +83,9 @@ status: 宽度已拍板 $200M · 三件待确认
 |---|---|---|
 | C-F1 | ❌ | 基础层**没有批量筛选原语**：`lenses/exhibits.build_exhibit(conn, lens, symbol)` 逐标的，registry 只有 `scan_flag(band)` 一个 helper。harness 要在 3,475 个标的上筛，只能自己写 SQL（`copilot/harness/universe/{sepa,momentum,events}.py` 各自 SELECT `features.*` 并重做 score / grade / importance 过滤）。这不是 harness 不守纪律，是基础层缺一个它需要的能力 |
 | C-F2 | ✅ | `engines/`、`lenses/` 无 objective / policy 依赖；`iv_solver.py`、`vol_surface/fit.py` 里的 `objective` 是最小二乘的目标函数 |
-| C-F3 | ⚠️ | 12 个 spec 都有 route、bands、hot/cold 说明；但 **5 个没有 `decay_lens`**（iv_percentile、term_slope、momentum、sepa、forecast_path），其中 sepa 与 momentum 正是覆盖 3,475 个标的的两个面——**最宽的面没有自我度量** |
+| C-F3 | ⚠️ | 12 个 spec 都有 route、bands、hot/cold 说明。**0.95.0 起 sepa 与 momentum 加入衰减追踪**（`decay_lens` + `hit_rule=follow`，hot 分别要求 SETUP/PIVOT 与 A 级），最宽的两个面开始自我度量；仍无 decay 的 3 个：iv_percentile、term_slope、forecast_path |
 | C-F4 | ❌ | 三个 lens 不触发，上游表都有 27–28 个标的、数据齐全，根因各不相同（见 §1.5） |
-| C-F5 | ❌ | 股票宇宙有规则：`dw_stock.dim_universe` = CS · stocks · active · USD → 5,376，SEPA 覆盖其中 3,475。期权宇宙**没有规则**：`db/calendar.load_symbols_from_env_or_query` = 显式列表 → `RESEARCH_WATCHLIST` env → 否则「近 5 天有 OI 的 underlying」∪ {SPY,QQQ,IWM} ≈ 27，即"Plugin 采到了什么"；Plugin 的采集范围来自 `ops_jobs.watchlist_cache`（18 个，source=platform-api）。两个宇宙，一个有规则一个没有，相差 200 倍 |
+| C-F5 | ⏳ | **规则已落地（0.95.0）**：`research.option_universe` 三层，首次填充 575（常驻 27 / 核 527 / 边 21），`load_symbols_from_env_or_query` 优先读它，Dagster asset `engines/option_universe` 每日刷新。**供给爬坡中（Plugin 0.16.0）**：option-refresh 以 `universe: research` 枚举，2026-09-08 18:05 UTC 首跑排入 173 个任务（常驻 11 个优先级 7、核 162 个优先级 6），每次最多 150 个新名字，六小时一次。核全部枚举完约 1–2 天，之后 `option-backfill` 一次性按行回填（边 12 个月、其余 24 个月） |
 
 ### 实绩层
 
@@ -256,9 +256,9 @@ Owner 看到 744,811 个任务，担心永远跑不完。实测（2026-09-08 17:
 
 新核的枚举不必排在它后面：`worker/claim.py:122` 按 `priority DESC, created_at ASC` 取任务，核的 `option_contract` / `option_expiration` 以更高 priority 入队即可插队。
 
-### 4.4 分步计划（待三处确认）
+### 4.4 分步计划（三处已确认，① ② 已落地）
 
-**① Research：规则与清单（新表，待 Owner 确认 DDL）**
+**① Research：规则与清单 —— 已落地（0.95.0，2026-09-08）**
 
 `research.option_universe`，一行一个标的：
 
@@ -278,13 +278,13 @@ CREATE TABLE research.option_universe (
 
 每日 Dagster asset `research/option_universe_refresh`：常驻 = 自选 ∪ 持仓 ∪ 基准；核 = 规则，进入 ≥ $200M、退出 < $120M（滞回 60%），每月首个交易日重估；边 = 当日幸存者，`last_seen` 超过 90 个交易日则移除。`db/calendar.load_symbols_from_env_or_query` 改为优先读此表。
 
-**② Plugin：读 Research 清单（Plugin 改动，归 `market-data-subscription-focus`，待 Owner 确认）**
+**② Plugin：读 Research 清单 —— 已落地（0.16.0，2026-09-08，四个部署已滚完）**
 
 - `scheduler/daily.py` 的 `resolve_watchlist_with_source` 来源链最前面加 `research`：`SELECT symbol, tier, history_months FROM research.option_universe`；读不到时回落到现有链（platform → cache → DB → fallback）。
 - 期权 slot（约 944 行）按 tier 设 priority：常驻 > 核 > 边 > 回填；`option_backfill_plan` 的月数取 `history_months`。
 - 首次加载 547 个核标的时按 priority 入队，不等当前回填。
 
-**③ 引擎耗时（待量）**
+**③ 引擎耗时（待量，核枚举完成后）**
 
 575 个标的下游引擎（vol surface fit、GEX、VRP、terrain）的运行时长未测。核的枚举完成后，先跑一次 trading-day job 量时间窗，再决定要不要把 worker 加到 8 个。
 
@@ -297,3 +297,4 @@ CREATE TABLE research.option_universe (
 | 2026-09-08.2 | 2026-09-08 | 基础层深校准：覆盖矩阵、三个死 lens 的根因、两个宇宙、缺批量原语；§3b 列出拉近差距的三类选项供讨论。 |
 | 2026-09-08.3 | 2026-09-08 | 丙的折中方案：成本单位实测、三层宇宙规则、两档总量与代价、归属、未量风险。 |
 | 2026-09-08.4 | 2026-09-08 | Owner 拍板 $200M 与三层方案；核修正为 547（限普通股）；队列实测 15 小时可跑完、全在常驻层，结论保留；分步计划与 DDL 草案待确认。 |
+| 2026-09-08.5 | 2026-09-08 | ① ② 落地：Research 0.95.0（表、引擎、asset、resolver、乙）与 Plugin 0.16.0（`universe: research`、tier 优先级、按行回填月数、每次 150 个新名字）；首次枚举已排入 173 个任务。 |
