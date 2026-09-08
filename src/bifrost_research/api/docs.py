@@ -23,7 +23,10 @@ _DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
 #: slug → (file, title). A short allowlist, not a directory listing: only
 #: documents meant to be read from the product are reachable by URL.
 DOCS: dict[str, tuple[str, str]] = {
+    # The target: changes only when the understanding changes.
     "blueprint": ("RESEARCH_BLUEPRINT.md", "Research 蓝图"),
+    # The state: contract status, evidence, gaps. Changes every calibration.
+    "calibration": ("RESEARCH_CALIBRATION.md", "Research 校准"),
 }
 
 _FRONT_MATTER = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)

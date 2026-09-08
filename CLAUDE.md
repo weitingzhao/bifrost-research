@@ -14,7 +14,11 @@
 | 硬边界 | D10 交易执行冻结（BLOCKED）· D13 三域边界 · 平台/业务解耦（Flywheel A/B） |
 | 事实基线 | `../AGENT_FACTS.md`（§8c 运行时与安全事实）· 规则 `../CLAUDE.md`（§8 Claude Code 运行配置） |
 
-**蓝图（校准基准）**：`src/bifrost_research/docs/RESEARCH_BLUEPRINT.md`（API `GET /research/docs/blueprint`，UI `/docs/research-blueprint`）。四层模型、深与宽的决定、编号契约 `C-F1…C-U4`。任何「Research 应该是什么 / 差距在哪」的讨论以它为准，校准结果回写它的 §4 状态列与 §7 修订记录。
+**蓝图与校准（两份，分工不同）**：
+- 蓝图 `src/bifrost_research/docs/RESEARCH_BLUEPRINT.md`：Research **应该是什么**。四层模型、编号契约 `C-F1…C-U4`、理想的宽与深与接缝契约。只在理解变了时改。
+- 校准 `src/bifrost_research/docs/RESEARCH_CALIBRATION.md`：Research **现在是什么**。每条契约的状态与证据、差距与最小改动、排序讨论。每次校准都改。
+- API `GET /research/docs/{blueprint|calibration}`；UI `/docs/research-blueprint`、`/docs/research-calibration`。
+- 规则：状态符号只出现在校准里，测试守着；契约按编号引用；智囊是**判断层**，必须做分析与评级（C-A7），纪律只是不重新发明原语（C-A1）。
 
 会话请在工作区根 `/stocks` 启动（加载治理层 hooks / auto mode / 共享记忆）；运行时与安全事实以 `../AGENT_FACTS.md` §8c 为准。
 
