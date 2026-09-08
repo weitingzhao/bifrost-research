@@ -11,6 +11,7 @@ from typing import Any, Protocol
 
 from bifrost_research.schema.schemas import (
     TABLE_RESEARCH_AI_DRAFT,
+    TABLE_RESEARCH_CANDIDATE_OUTCOME,
     TABLE_RESEARCH_CANDIDATE_POOL,
     TABLE_RESEARCH_OBJECTIVE,
     TABLE_RESEARCH_OBJECTIVE_RUN,
@@ -499,12 +500,26 @@ def delete_run(conn: _Connection, run_id: str) -> bool:
 
 
 def force_delete_run(conn: _Connection, run_id: str) -> dict[str, Any]:
-    """Cascade-clear lineage then delete the run (hypotheses kept).
+    """Cascade-clear lineage then delete the run (hypotheses and evidence kept).
 
-    Removes candidates whose ``source_ref.run_id`` matches (``candidate_outcome``
-    rows cascade), dismisses drafts that reference the run
-    (``outputs.draft_ids`` / ``decision_draft_ids`` / ``payload.run_id``),
-    then deletes the run row. Promoted hypotheses are not touched.
+    Removes candidates whose ``source_ref.run_id`` matches, dismisses drafts
+    that reference the run (``outputs.draft_ids`` / ``decision_draft_ids`` /
+    ``payload.run_id``), then deletes the run row. Promoted hypotheses are not
+    touched.
+
+    A candidate that already has a settled ``candidate_outcome`` row is kept.
+    Deleting a run is housekeeping about the record of a process; a settled
+    outcome is a measurement of what the market did after a pick, and it is the
+    only evidence the leash, the weekly policy review and the Autopilot's track
+    record have. The outcome table cascades on ``candidate_id``, so removing
+    those candidates destroyed the measurements with them — silently, and
+    permanently. The observed cost: after a round of run cleanup the ledger held
+    three rows, the leash's source-record gate could not open on any candidate,
+    and an armed Autopilot would have held everything it proposed.
+
+    The kept candidates keep a ``source_ref.run_id`` pointing at a run that no
+    longer exists. That is the intended trade: the drill-down from a number to
+    the run behind it is lost, the number itself survives.
     """
     run = get_run(conn, run_id)
     if run is None:
@@ -529,8 +544,26 @@ def force_delete_run(conn: _Connection, run_id: str) -> dict[str, Any]:
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            DELETE FROM {TABLE_RESEARCH_CANDIDATE_POOL}
-            WHERE source_ref ->> 'run_id' = %s
+            SELECT count(*) FROM {TABLE_RESEARCH_CANDIDATE_POOL} c
+            WHERE c.source_ref ->> 'run_id' = %s
+              AND EXISTS (
+                  SELECT 1 FROM {TABLE_RESEARCH_CANDIDATE_OUTCOME} o
+                  WHERE o.candidate_id = c.id
+              )
+            """,
+            (run_id,),
+        )
+        row = cur.fetchone()
+        candidates_kept = int(row[0]) if row else 0
+
+        cur.execute(
+            f"""
+            DELETE FROM {TABLE_RESEARCH_CANDIDATE_POOL} c
+            WHERE c.source_ref ->> 'run_id' = %s
+              AND NOT EXISTS (
+                  SELECT 1 FROM {TABLE_RESEARCH_CANDIDATE_OUTCOME} o
+                  WHERE o.candidate_id = c.id
+              )
             """,
             (run_id,),
         )
@@ -570,6 +603,7 @@ def force_delete_run(conn: _Connection, run_id: str) -> dict[str, Any]:
         "deleted": deleted,
         "force": True,
         "candidates_removed": candidates_removed,
+        "candidates_kept": candidates_kept,
         "drafts_dismissed": drafts_dismissed,
     }
 
