@@ -53,7 +53,7 @@ models:
         description: "Free cash flow (OCF - CapEx)"
 
   - name: stg_ratios
-    description: "Financial ratios extracted from stock_financials jsonb"
+    description: "Financial ratios, full market by date, from raw_market.ratios (Financials & Ratios plan)"
     columns:
       - name: symbol
         tests:
@@ -62,9 +62,13 @@ models:
         tests:
           - not_null
       - name: roe
-        description: "Return on equity"
+        description: "Return on equity (vendor return_on_equity)"
       - name: profit_margin
-        description: "Net profit margin"
+        description: "Null here — not in the ratios payload; derived downstream from the income statement"
+      - name: price_to_earnings
+        description: "Vendor price_to_earnings"
+      - name: market_cap
+        description: "Vendor market_cap"
 
   - name: stg_short_interest
     description: "Short interest data (shares short, days to cover, % float)"
@@ -78,7 +82,11 @@ models:
       - name: shares_short
         description: "Total shares sold short"
       - name: short_pct_float
-        description: "Short interest as percentage of float"
+        description: "Always null — float is not covered by the current subscriptions (the float endpoint answers 404)"
+      - name: days_to_cover
+        description: "Vendor days_to_cover"
+      - name: avg_daily_volume
+        description: "Vendor avg_daily_volume, the denominator behind days_to_cover"
 
   - name: stg_short_volume
     description: "Daily short volume data"
@@ -90,4 +98,6 @@ models:
         tests:
           - not_null
       - name: short_volume_ratio
-        description: "Short volume / total volume ratio"
+        description: "Fraction: short_volume / total_volume (the vendor reports a percent; see short_volume_pct)"
+      - name: short_volume_pct
+        description: "The vendor's short_volume_ratio, in percent"

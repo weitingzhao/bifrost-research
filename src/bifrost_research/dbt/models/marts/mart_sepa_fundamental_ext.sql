@@ -22,7 +22,9 @@ with latest_ratios as (
         debt_to_equity,
         current_ratio
     from {{ ref('stg_ratios') }}
-    where period_type = 'quarterly'
+    -- Ratios arrive daily for the whole market, not per filing quarter, so the
+    -- latest row per symbol is the answer; the old quarterly filter matched
+    -- nothing and left every ratio condition null.
     order by symbol, period_date desc
 ),
 
