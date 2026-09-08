@@ -165,9 +165,15 @@ def start_async_batch(
     from bifrost_research.db.conn import connect as db_connect
 
     objective_id = str(obj["id"])
+    # A placeholder so the row exists before this call returns and the Pipeline
+    # drawer can poll. Marked provisional: the background thread plans properly
+    # — including the LLM chain when the policy asks for it — and replaces this.
+    # Without the mark the runtime kept the placeholder, so every run started
+    # from the UI planned heuristically while the unattended CronJob did not.
     plan = _heuristic_plan(obj)
     plan["generated_by"] = plan.get("generated_by") or "heuristic"
     plan["async_batch_start"] = True
+    plan["provisional"] = True
     run = obj_repo.create_run(conn, objective_id=objective_id, plan_json=plan)
     run_id = str(run["id"])
     try:

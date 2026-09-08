@@ -128,6 +128,22 @@ def _playbook_rules_for(conn: Any, objective: dict[str, Any]) -> list[dict[str, 
         return []
 
 
+def plan_needs_replanning(plan: Any) -> bool:
+    """True when a run row's stored plan is a placeholder, not a decision.
+
+    ``start_async_batch`` writes a heuristic plan so the run row exists before
+    the HTTP call returns and the Pipeline drawer can poll. That row is not the
+    plan the run should follow: the real one may call a model, which is too slow
+    to hold a response open. Until this rule existed the runtime kept whatever
+    was in the row, so every run started from the UI planned heuristically while
+    the unattended CronJob used the LLM chain — the same objective, two
+    behaviours, and no way to see it from the page.
+    """
+    if not isinstance(plan, dict) or not plan:
+        return True
+    return plan.get("provisional") is True
+
+
 def _plan_for_objective(
     objective: dict[str, Any],
     conn: Any | None = None,

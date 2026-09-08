@@ -700,6 +700,31 @@ def update_run_status(conn: _Connection, run_id: str, *, status: str) -> dict[st
     return finish_run(conn, run_id, status=status)
 
 
+def replace_run_plan(
+    conn: _Connection,
+    run_id: str,
+    plan: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Overwrite ``objective_run.plan_json``.
+
+    A replace, not a jsonb merge: the row was created with a provisional plan
+    so the caller could return immediately, and the real plan supersedes it.
+    Merging would leave the placeholder's keys — including ``provisional`` —
+    on a plan that is no longer provisional.
+    """
+    sql = f"""
+        UPDATE {TABLE_RESEARCH_OBJECTIVE_RUN}
+        SET plan_json = %s::jsonb
+        WHERE id = %s
+        RETURNING {", ".join(_RUN_COLS)}
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (_serialize_json(dict(plan)), run_id))
+        row = cur.fetchone()
+    conn.commit()
+    return _run_row(row)
+
+
 def patch_run_outputs(
     conn: _Connection,
     run_id: str,

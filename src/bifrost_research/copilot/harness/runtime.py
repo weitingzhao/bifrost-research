@@ -25,6 +25,7 @@ from bifrost_research.copilot.harness.planning import (
 from bifrost_research.copilot.harness.planning import (
     _plan_for_objective,
     _playbook_rules_for,
+    plan_needs_replanning,
 )
 from bifrost_research.copilot.harness.policy_schema import parse_policy
 from bifrost_research.copilot.harness.rating import prior_scores, rate_items, rating_decision
@@ -156,10 +157,19 @@ def run_objective(
     """
     if existing_run is not None:
         run = existing_run
-        plan = existing_run.get("plan_json") if isinstance(existing_run.get("plan_json"), dict) else {}
-        if not plan:
-            plan = _plan_for_objective(objective, conn)
         run_id = str(run["id"])
+        plan = existing_run.get("plan_json") if isinstance(existing_run.get("plan_json"), dict) else {}
+        # An empty plan, or the placeholder `start_async_batch` wrote so the
+        # HTTP call could return: either way the real plan is made here, on the
+        # background connection, where taking seconds costs nobody a response.
+        if plan_needs_replanning(plan):
+            plan = _plan_for_objective(objective, conn)
+            try:
+                obj_repo.replace_run_plan(conn, run_id, plan)
+            except Exception as exc:  # noqa: BLE001
+                # The run can still proceed on the plan in memory; the row just
+                # shows the placeholder. Say so rather than failing the run.
+                logger.warning("could not store the real plan for %s: %s", run_id, exc)
     else:
         plan = _plan_for_objective(objective, conn)
         run = obj_repo.create_run(conn, objective_id=objective["id"], plan_json=plan)
