@@ -142,6 +142,20 @@ market_trim = _make_slot_asset(
     ("trim",),
     "UTC 02:15 — trim / maintenance",
 )
+# P4 — several observations a session. The plugin keys each row to the instant
+# it was taken, so these sit beside the 16:00 EOD row. New York time, not UTC:
+# 10:30 ET is a market clock, and DST would drift a fixed UTC cron by an hour.
+market_intraday_chain = _make_slot_asset(
+    "market_intraday_chain",
+    ("intraday-chain",),
+    "10:30 / 13:00 / 15:30 America/New_York — intraday option chain snapshots",
+)
+market_treasury = _make_slot_asset(
+    "market_treasury",
+    ("treasury",),
+    "UTC 12:00 — Treasury constant-maturity yields (risk-free leg for option models)",
+)
+
 MARKET_SCHEDULE_ASSETS = [
     market_snapshot,
     market_movers,
@@ -155,6 +169,8 @@ MARKET_SCHEDULE_ASSETS = [
     market_fundamentals_market,
     market_option_refresh,
     market_trim,
+    market_intraday_chain,
+    market_treasury,
 ]
 
 _MARKET_SPECS: list[tuple[str, str, Any, str, str]] = [
@@ -200,7 +216,15 @@ _MARKET_SPECS: list[tuple[str, str, Any, str, str]] = [
         "option-refresh",
     ),
     ("market_trim_schedule", "market_trim_job", market_trim, "15 2 * * *", "trim"),
+    ("market_treasury_schedule", "market_treasury_job", market_treasury, "0 12 * * 1-5", "treasury yields"),
 ]
+
+# The three intraday fires share one job; only the clock differs.
+_INTRADAY_FIRES: tuple[tuple[str, str], ...] = (
+    ("market_intraday_chain_1030_schedule", "30 10 * * 1-5"),
+    ("market_intraday_chain_1300_schedule", "0 13 * * 1-5"),
+    ("market_intraday_chain_1530_schedule", "30 15 * * 1-5"),
+)
 
 MARKET_SCHEDULE_JOBS: list[Any] = []
 MARKET_SCHEDULES: list[ScheduleDefinition] = []
@@ -214,3 +238,21 @@ for sched_name, job_name, asset_def, cron, label in _MARKET_SPECS:
     )
     MARKET_SCHEDULE_JOBS.append(job)
     MARKET_SCHEDULES.append(sched)
+
+market_intraday_chain_job = define_asset_job(
+    name="market_intraday_chain_job",
+    selection=AssetSelection.assets(market_intraday_chain),
+    description="Massive intraday chain snapshot (America/New_York)",
+)
+MARKET_SCHEDULE_JOBS.append(market_intraday_chain_job)
+for _sched_name, _cron in _INTRADAY_FIRES:
+    MARKET_SCHEDULES.append(
+        ScheduleDefinition(
+            name=_sched_name,
+            job=market_intraday_chain_job,
+            cron_schedule=_cron,
+            execution_timezone="America/New_York",
+            default_status=DefaultScheduleStatus.RUNNING,
+            description="Massive intraday chain snapshot (America/New_York)",
+        )
+    )

@@ -28,6 +28,8 @@ make dagster-ensure-schedule
 | `market_fundamentals_market_schedule` | `30 4 * * 2-6` UTC | fundamentals-market — ratios + short data, whole market by date |
 | `market_option_refresh_schedule` | `20 */6 * * *` UTC | option-refresh |
 | `market_trim_schedule` | `15 2 * * *` UTC | trim (maintenance Cron) |
+| `market_treasury_schedule` | `0 12 * * 1-5` UTC | treasury yields |
+| `market_intraday_chain_{1030,1300,1530}_schedule` | `10:30 / 13:00 / 15:30` **America/New_York** | intraday option chain snapshots (market clock, not UTC) |
 | `market_self_heal_schedule` | `45 0 * * 2-6` UTC | Plugin doctor → heal → drain → recheck for the day's session; fails (→ Alertmanager) only when still critical |
 | `research_opex_schedule` … | see `research_aux_schedules.py` | OpEx / SVI / alert / signal-hit / settlement (VRP moved into `research_trading_day` after volatility — A4) |
 | `research_intraday_schedule` | `30 14-20 * * 1-5` UTC | terrain + gex intraday |
