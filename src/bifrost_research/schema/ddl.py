@@ -544,6 +544,35 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
     else:
         cur.execute("RELEASE SAVEPOINT rs_kb5_vector")
 
+    # --- Blueprint C-F5: research.option_universe ---
+    # The option universe as a rule, not as "whatever the Plugin ingested".
+    # One row per symbol; the Plugin reads this to decide what to enumerate,
+    # Research's engines read it to decide what to compute. Three tiers:
+    # resident (holdings, watchlist, benchmarks), core (dollar-volume rule with
+    # hysteresis), edge (the stock screen's survivors, retained long enough for
+    # their hits to settle). Keyed by symbol on purpose — one row per symbol and
+    # every join is by symbol — a deliberate departure from the Trade-side
+    # `<table>_id` convention.
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.option_universe (
+            symbol          text        PRIMARY KEY,
+            tier            text        NOT NULL
+                            CHECK (tier IN ('resident','core','edge')),
+            entered_on      date        NOT NULL,
+            last_seen       date        NOT NULL,
+            history_months  smallint    NOT NULL CHECK (history_months > 0),
+            reason          text        NOT NULL,
+            updated_at      timestamptz NOT NULL DEFAULT now()
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS option_universe_tier
+        ON {SCHEMA_RESEARCH}.option_universe (tier, last_seen DESC)
+        """
+    )
     # --- Wave Loop v1: research.candidate_pool ---
     cur.execute(
         f"""

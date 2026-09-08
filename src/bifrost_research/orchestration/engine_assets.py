@@ -239,6 +239,22 @@ def candidate_outcome(context: AssetExecutionContext) -> MaterializeResult:
 
 
 @asset(
+    key=AssetKey(["engines", "option_universe"]),
+    deps=[_SEPA, *_MARKET],
+    group_name="python_analytics",
+    description=(
+        "research.option_universe — the option universe as a rule: resident (watchlist, "
+        "benchmarks), core (dollar-volume with hysteresis), edge (the stock screen's "
+        "survivors). The Plugin reads it to decide what to enumerate."
+    ),
+)
+def option_universe(context: AssetExecutionContext) -> MaterializeResult:
+    result = runners.run_option_universe()
+    context.log.info("option_universe result=%s", result)
+    return MaterializeResult(metadata=_metadata(result))
+
+
+@asset(
     key=AssetKey(["engines", "signal_hit_fwd_fill"]),
     deps=[AssetKey(["engines", "signal_hit"])],
     group_name="python_analytics",
@@ -269,4 +285,5 @@ ENGINE_ASSETS = [
     scan,
     candidate_outcome,
     signal_hit_fwd_fill,
+    option_universe,
 ]

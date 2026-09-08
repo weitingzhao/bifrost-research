@@ -19,6 +19,8 @@ from bifrost_research.lenses.registry import LENSES, decay_lens_ids
 def test_decay_lenses_are_the_registry_and_the_builder_knows_each() -> None:
     assert set(decay_lens_ids()) == {
         "iv_rank", "vrp", "opex_pin", "skew", "gex_regime", "terrain_regime", "order_sentiment",
+        # Blueprint C-F3 / C-R4: the two widest lenses measure themselves now.
+        "sepa", "momentum",
     }
     assert tuple(entry.ALL_LENSES) == decay_lens_ids()
     assert entry._parse_lenses("skew,gex_regime") == ["skew", "gex_regime"]
@@ -76,4 +78,7 @@ def test_wave_i_lenses_keep_the_mean_revert_rule() -> None:
     assert hit_for("iv_rank", side="hot", fwd_return=-0.01, horizon=5) is True
     assert hit_for("vrp", side="cold", fwd_return=0.01, horizon=20) is True
     assert hit_for("opex_pin", side="hot", fwd_return=0.01, horizon=5) is False
-    assert hit_for("momentum", side="hot", fwd_return=0.01, horizon=5) is None
+    # momentum is a trend lens: hot follows the move, it does not fade it.
+    assert hit_for("momentum", side="hot", fwd_return=0.01, horizon=5) is True
+    assert hit_for("momentum", side="hot", fwd_return=-0.01, horizon=5) is False
+    assert hit_for("sepa", side="cold", fwd_return=-0.01, horizon=20) is True

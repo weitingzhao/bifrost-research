@@ -37,6 +37,13 @@ def run_vrp_fwd_ret_20d(*, lookback_days: int = 90) -> dict[str, Any]:
     return dict(vrp_entry.backfill_fwd_ret_20d(lookback_days=lookback_days))
 
 
+def run_option_universe() -> dict[str, Any]:
+    """Refresh `research.option_universe`: three tiers, two rules, no hand list (C-F5)."""
+    from bifrost_research.engines.option_universe import entry as universe_entry
+
+    return universe_entry.run()
+
+
 def run_signal_hit_fwd_fill(*, lookback_days: int = 30) -> dict[str, Any]:
     """Fill hit_5d / hit_20d on lens rows whose forward window has elapsed.
 

@@ -82,12 +82,20 @@ def load_symbols_from_env_or_query(
     *,
     symbols: Sequence[str] | None = None,
 ) -> list[str]:
-    """Resolve underlyings: explicit list, RESEARCH_WATCHLIST env, or distinct OI underlyings."""
+    """Resolve underlyings: explicit list, RESEARCH_WATCHLIST env, the universe rule, or distinct OI underlyings.
+
+    `research.option_universe` is the rule (blueprint C-F5); the open-interest
+    query behind it is "whatever the Plugin ingested" and stays only as the
+    fallback for a database where the table is empty or absent.
+    """
     if symbols:
         return sorted({str(s).strip().upper() for s in symbols if str(s).strip()})
     env = (os_environ_watchlist())
     if env:
         return env
+    ruled = load_symbols_from_universe_rule(conn)
+    if ruled:
+        return ruled
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -112,6 +120,26 @@ def load_symbols_from_env_or_query(
             sym = row.get("underlying") or next(iter(row.values()), None)
         else:
             sym = row[0] if row else None
+        if sym:
+            out.append(str(sym).strip().upper())
+    return sorted(set(out))
+
+
+def load_symbols_from_universe_rule(conn: Any) -> list[str]:
+    """Every symbol in `research.option_universe`, or [] when it is empty or missing."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT symbol FROM research.option_universe ORDER BY 1")
+            rows = cur.fetchall() if hasattr(cur, "fetchall") else []
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return []
+    out: list[str] = []
+    for row in rows or []:
+        sym = row.get("symbol") if isinstance(row, Mapping) else (row[0] if row else None)
         if sym:
             out.append(str(sym).strip().upper())
     return sorted(set(out))

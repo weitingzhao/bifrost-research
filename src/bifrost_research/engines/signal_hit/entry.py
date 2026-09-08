@@ -28,7 +28,9 @@ from bifrost_research.engines.signal_hit.build import (
     classify_gex_regime,
     classify_iv_rank,
     classify_opex_pin,
+    classify_momentum,
     classify_order_sentiment,
+    classify_sepa,
     classify_skew,
     classify_terrain_regime,
     classify_vrp,
@@ -47,6 +49,8 @@ LENS_SKEW = "skew"
 LENS_GEX = "gex_regime"
 LENS_TERRAIN = "terrain_regime"
 LENS_SENTIMENT = "order_sentiment"
+LENS_SEPA = "sepa"
+LENS_MOMENTUM = "momentum"
 ALL_LENSES = decay_lens_ids()
 
 UPSERT_COLS = (
@@ -200,6 +204,44 @@ def _load_opex_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, flo
     return out
 
 
+def _load_sepa_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, float]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT symbol, sepa_score::float, path
+            FROM features.stock_signal_sepa_daily
+            WHERE trade_date = %s AND sepa_score IS NOT NULL
+            """,
+            (trade_date,),
+        )
+        rows = cur.fetchall() or []
+    out: list[tuple[str, str, float]] = []
+    for sym, score, path in rows:
+        side = classify_sepa(score, path)
+        if side:
+            out.append((str(sym).upper(), side, float(score)))
+    return out
+
+
+def _load_momentum_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, float]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT symbol, score::float, grade
+            FROM features.stock_signal_momentum_daily
+            WHERE trade_date = %s AND score IS NOT NULL
+            """,
+            (trade_date,),
+        )
+        rows = cur.fetchall() or []
+    out: list[tuple[str, str, float]] = []
+    for sym, score, grade in rows:
+        side = classify_momentum(score, grade)
+        if side:
+            out.append((str(sym).upper(), side, float(score)))
+    return out
+
+
 def _load_skew_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, float]]:
     # C2: today's near-30-DTE slope against the symbol's own prior 252 days —
     # the percentile is the share of those days whose |slope| sat below today's.
@@ -331,6 +373,8 @@ def build_rows_for_day(
         LENS_GEX: _load_gex_triggers,
         LENS_TERRAIN: _load_terrain_triggers,
         LENS_SENTIMENT: _load_sentiment_triggers,
+        LENS_SEPA: _load_sepa_triggers,
+        LENS_MOMENTUM: _load_momentum_triggers,
     }
     rows: list[tuple[Any, ...]] = []
     for lens in lenses:

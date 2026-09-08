@@ -47,6 +47,27 @@ def classify_skew(atm_slope: float | None, slope_pctile: float | None, history_d
     return "hot" if float(atm_slope) < 0 else "cold"
 
 
+def classify_sepa(score: float | None, path: str | None) -> str | None:
+    """SEPA's trigger: the registry's score band, and hot only on a buyable path.
+
+    A high score on an EXTENDED or AVOID path is not a setup, it is a name
+    that already moved; hot is reserved for SETUP / PIVOT, which is what the
+    Loop's own universe means by the word. Cold is the score band alone.
+    """
+    side = trigger_side("sepa", score)
+    if side == "hot" and (path or "").upper() not in ("SETUP", "PIVOT"):
+        return None
+    return side
+
+
+def classify_momentum(score: float | None, grade: str | None) -> str | None:
+    """Momentum's trigger: the registry's score band, hot only with an A grade."""
+    side = trigger_side("momentum", score)
+    if side == "hot" and (grade or "").upper() not in ("A", "A+"):
+        return None
+    return side
+
+
 def classify_gex_regime(total_net_gex: float | None) -> str | None:
     """Negative net gamma is the hot side (dealers chase), positive the cold side."""
     if total_net_gex is None:
