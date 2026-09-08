@@ -37,6 +37,28 @@ def run_vrp_fwd_ret_20d(*, lookback_days: int = 90) -> dict[str, Any]:
     return dict(vrp_entry.backfill_fwd_ret_20d(lookback_days=lookback_days))
 
 
+def run_signal_hit_fwd_fill(*, lookback_days: int = 30) -> dict[str, Any]:
+    """Fill hit_5d / hit_20d on lens rows whose forward window has elapsed.
+
+    The scheduled `signal_hit` run walks the last 3 trading days, and
+    `_fwd_return` needs `horizon + 1` bars at or after the trade date — so a
+    row three sessions old can never have its 20-session window, `hit_20d` is
+    written NULL, and nothing revisits it. `evaluated_20d` therefore counted
+    only rows somebody backfilled by hand, while `policy.min_hit_rate` gated
+    candidates on that empty column.
+
+    Thirty trading days is the cheapest window that covers both horizons with
+    margin; the upsert already updates the forward columns, so re-walking a day
+    fills it in place. Mirrors `run_vrp_fwd_ret_20d`, which exists for exactly
+    this problem on the VRP table.
+    """
+    from bifrost_research.engines.signal_hit import entry as signal_hit_entry
+
+    out = dict(signal_hit_entry.run(lookback_days=lookback_days))
+    out["engine"] = "signal_hit_fwd_fill"
+    return out
+
+
 def run_momentum(*, lookback_days: int = 2) -> dict[str, Any]:
     return engine_sched.run_slot("momentum", lookback_days=lookback_days)
 

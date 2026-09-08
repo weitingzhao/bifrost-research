@@ -71,8 +71,13 @@ def outcome_id(candidate_id: str, horizon: int) -> str:
 
 def _forward_leg(
     conn: Any, symbol: str, as_of: date, horizon: int
-) -> tuple[float | None, float | None, date | None]:
-    """Entry close, exit close and exit date `horizon` sessions after ``as_of``.
+) -> tuple[float | None, float | None, date | None, date | None]:
+    """Entry close, exit close, exit date and the entry date actually used.
+
+    The entry date is returned because it is often not ``as_of``: the query
+    takes bars at or after that date, so a candidate proposed on a Saturday
+    enters on Monday. The benchmark has to be priced on the same two dates or
+    the comparison is between different windows.
 
     A richer form of ``engines/signal_hit/entry.py::_fwd_return`` — that one
     needs only the scalar return, this one stores the legs it came from so a
@@ -93,8 +98,8 @@ def _forward_leg(
         )
         rows = cur.fetchall() or []
     if len(rows) < horizon + 1:
-        return None, None, None
-    return float(rows[0][1]), float(rows[horizon][1]), rows[horizon][0]
+        return None, None, None, None
+    return float(rows[0][1]), float(rows[horizon][1]), rows[horizon][0], rows[0][0]
 
 
 def _close_on(conn: Any, symbol: str, day: date) -> float | None:
@@ -158,7 +163,7 @@ def build_rows(
     for cand in _pending(conn, lookback_days=lookback_days, horizons=horizons):
         stats["candidates"] += 1
         for horizon in cand["horizons"]:
-            entry, exit_close, exit_date = _forward_leg(
+            entry, exit_close, exit_date, entry_date = _forward_leg(
                 conn, cand["symbol"], cand["trade_date"], horizon
             )
             if entry is None or exit_close is None or exit_date is None:
@@ -168,7 +173,13 @@ def build_rows(
                 continue
             fwd = (exit_close / entry) - 1.0
 
-            bench_entry = _close_on(conn, benchmark, cand["trade_date"])
+            # Price the benchmark on the dates the symbol actually traded, not
+            # on `trade_date`. Eleven of thirty harness candidates were proposed
+            # on a Sunday; SPY has no bar that day, so the exact-date lookup
+            # returned nothing, `hit` was written NULL, and the row was never
+            # revisited — permanently unjudgeable evidence in the one table the
+            # leash and the track record read.
+            bench_entry = _close_on(conn, benchmark, entry_date or cand["trade_date"])
             bench_exit = _close_on(conn, benchmark, exit_date)
             bench_ret = (
                 (bench_exit / bench_entry) - 1.0

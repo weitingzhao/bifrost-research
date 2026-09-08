@@ -238,6 +238,21 @@ def candidate_outcome(context: AssetExecutionContext) -> MaterializeResult:
     return MaterializeResult(metadata=_metadata(result))
 
 
+@asset(
+    key=AssetKey(["engines", "signal_hit_fwd_fill"]),
+    deps=[AssetKey(["engines", "signal_hit"])],
+    group_name="python_analytics",
+    description=(
+        "Late-fill hit_5d / hit_20d on lens rows whose forward window has elapsed. "
+        "The nightly signal_hit run only walks 3 days, so those columns were always NULL."
+    ),
+)
+def signal_hit_fwd_fill(context: AssetExecutionContext) -> MaterializeResult:
+    result = runners.run_signal_hit_fwd_fill()
+    context.log.info("signal_hit_fwd_fill result=%s", result)
+    return MaterializeResult(metadata=_metadata(result))
+
+
 ENGINE_ASSETS = [
     volatility,
     vrp,
@@ -253,4 +268,5 @@ ENGINE_ASSETS = [
     canonical_pnl,
     scan,
     candidate_outcome,
+    signal_hit_fwd_fill,
 ]
