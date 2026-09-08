@@ -66,9 +66,15 @@ def test_hunts_line_reads_the_policy_not_the_prose():
     assert hunts_line(stock) == "SETUP/PIVOT names · SEPA ≥ 70 · option overlay iv_rank:hot · up to 8 a run"
     scan = {"policy_json": {"universe_mode": "scan_legacy", "flag_filter": ["iv_rank:hot", "vrp:hot"], "max_candidates": 3}}
     assert hunts_line(scan) == "iv_rank:hot, vrp:hot · up to 3 a run"
-    assert hunts_line({"description": "  free text  "}) == "free text"
-    # No legible filter: the description carries the meaning, the cap follows.
-    assert hunts_line({"description": "IV ≥ 90 and VRP hot", "policy_json": {"max_candidates": 3}}) == "IV ≥ 90 and VRP hot · up to 3 a run"
+    # A policy with no filters used to fall back to the description, so the
+    # Autopilot page repeated a claim the policy did not implement — one
+    # objective read "IV ≥ 90 and VRP hot" while holding no filter at all.
+    # The line now says what the run does; the description is not evidence.
+    assert hunts_line({"description": "  free text  "}) == "option scan snapshot · ranked, not screened"
+    assert (
+        hunts_line({"description": "IV ≥ 90 and VRP hot", "policy_json": {"max_candidates": 3}})
+        == "option scan snapshot · ranked, not screened · up to 3 a run"
+    )
 
 
 def test_track_record_falls_back_to_the_harness_wide_record_and_says_so(monkeypatch):
@@ -167,3 +173,49 @@ def test_objective_standing_still_accepts_a_bare_count(monkeypatch) -> None:
     _no_outcomes(monkeypatch)
     row = standing.objective_standing(None, {"id": "obj-a", "title": "A"}, [], 4)
     assert row["pending_memos"] == 4 and row["pending_drafts"] == 4
+
+
+# ── the hunts line says what the policy does ───────────────────────────────
+
+
+def test_a_policy_with_no_filters_says_it_ranks_rather_than_screens():
+    # The objective that claimed "iv_rank >= 90" while holding no filter at all.
+    line = hunts_line(
+        {
+            "policy_json": {"source": "harness", "seed_symbols": ["AAPL"], "max_candidates": 3},
+            "description": "Every open — pick 3 candidates with iv_rank>=90 and vrp:hot.",
+        }
+    )
+    assert line == "option scan snapshot · ranked, not screened · up to 3 a run"
+    assert "iv_rank" not in line, "the description must not stand in for the policy"
+
+
+def test_scan_filters_are_named_when_they_exist():
+    line = hunts_line(
+        {
+            "policy_json": {
+                "universe_mode": "scan_legacy",
+                "flag_filter": "iv_rank:hot",
+                "min_composite_score": 70,
+                "preset": "momentum",
+                "max_candidates": 5,
+            }
+        }
+    )
+    assert line == "iv_rank:hot · momentum preset · composite ≥ 70 · up to 5 a run"
+
+
+def test_the_description_fallback_cuts_on_a_word():
+    # Reachable only when even the stock funnel says nothing: no stages, no
+    # score floor, no overlay. Then the description is all there is.
+    long = "A run that " + "explains itself at length " * 8
+    line = hunts_line(
+        {
+            "policy_json": {"universe_mode": "stock_composite", "layers": {"sepa": {"stage": []}}},
+            "description": long,
+        }
+    )
+    assert line.endswith("…")
+    assert "…" in line and not line.replace("…", "").endswith(" ")
+    # No mid-word cut: everything before the ellipsis is whole words.
+    assert all(w in long for w in line.split("…")[0].split())

@@ -45,6 +45,26 @@ def _as_map(v: Any) -> dict[str, Any]:
     return v if isinstance(v, dict) else {}
 
 
+DEFAULT_SCAN_MODE = "scan_legacy"
+
+#: What each universe mode reads, in the Owner's terms rather than the resolver's.
+_UNIVERSE_LABEL = {
+    "scan_legacy": "option scan snapshot",
+    "sepa": "SEPA universe",
+    "momentum": "momentum universe",
+    "events": "events universe",
+    "stock_composite": "stock composite funnel",
+}
+
+
+def _clip(text: str, limit: int) -> str:
+    """Trim to ``limit`` on a word boundary, with an ellipsis when cut."""
+    if len(text) <= limit:
+        return text
+    head = text[:limit].rsplit(" ", 1)[0].rstrip(" ,.;:—-")
+    return f"{head or text[:limit]}…"
+
+
 def next_scheduled_run(now: datetime | None = None) -> str:
     """ISO timestamp of the next weekday 13:30 UTC strictly after ``now``."""
     now = now or datetime.now(UTC)
@@ -182,12 +202,20 @@ def hunts_line(obj: dict[str, Any]) -> str:
         preset = policy.get("preset")
         if preset and preset != "neutral":
             parts.append(f"{preset} preset")
+        floor = policy.get("min_composite_score")
+        if floor is not None:
+            parts.append(f"composite ≥ {float(floor):g}")
+        if not parts:
+            # Nothing filters: the run ranks its universe and takes the top N.
+            # Saying that is more honest than falling back to the description,
+            # which is written by hand and can promise a screen the policy does
+            # not run — one objective claimed to hunt IV rank ≥ 90 while its
+            # policy held no filter at all.
+            parts.append(f"{_UNIVERSE_LABEL.get(mode or DEFAULT_SCAN_MODE, mode)} · ranked, not screened")
     if not parts:
-        # A policy with no legible filters — the description is the only thing
-        # that says what this one is for.
-        desc = str(obj.get("description") or "").strip()
-        if desc:
-            parts.append(desc[:120])
+        # Still nothing legible — the description is all there is. Cut on a word
+        # so the line does not end mid-syllable.
+        parts.append(_clip(str(obj.get("description") or "").strip(), 110))
     n = policy.get("max_candidates")
     if n:
         parts.append(f"up to {n} a run")
