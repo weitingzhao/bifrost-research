@@ -1,7 +1,7 @@
 ---
-version: 2026-09-08.3
+version: 2026-09-08.4
 updated: 2026-09-08
-status: 基础层已深校准 · 宽度方案待拍板
+status: 宽度已拍板 $200M · 三件待确认
 ---
 
 # Research 校准
@@ -220,9 +220,74 @@ Owner 的判断：SEPA 那么宽（3,475）对期权面不现实，今天的 27 
 
 **三个死 lens（C-F4）不是一类动作**：skew 等时间；terrain_regime 保持稀有，或另议是否把 trending 也算一档；order_sentiment 跟丙走，tape 源来了才活。
 
-## 4. 排序讨论（待开）
+## 4. 排序与决定
 
-先深还是先宽、先接缝还是先实绩，在这里记结论。蓝图不讨论顺序。
+### 4.1 已定（2026-09-08，Owner）
+
+- **宽度**：采用三层宇宙、两条规则、零手工名单；稳定核用 **$200M**（覆盖优先）。
+- **顺序**：乙（sepa / momentum 加衰减追踪）可先做，不依赖甲；甲（批量筛选原语）与丙的规则并行；丙的接缝执行等甲。
+
+### 4.2 修正后的规模（$200M 核限定 `dim_universe` 普通股）
+
+| 层 | 规则 | 今日 |
+|---|---|---|
+| 常驻 | 今天的 27（自选 ∪ 基准） | 27 |
+| 稳定核 | `dim_universe` ∩ 20 日均美元成交额 ≥ $200M | **547**（其中 20 与常驻重合） |
+| 轮动边 | SEPA SETUP/PIVOT ≥ 70，且不在前两层 | 21（幸存者 43） |
+| **合计** | | **575** |
+
+之前的 712 混入了 ETF 与非普通股。核的门槛边缘是 EFX / LEN / QXO / SYY / THC，日均 $201M，都是正经大盘股，阈值合理。可期权性不用预判：`raw_market.ticker` 无此字段，枚举时无合约的标的自然退出。
+
+**一次性代价（4 个 option worker，实测速率）**：枚举 547 × 7 分钟 ≈ 64 小时；回填 24 个月 547 × 13 分钟 ≈ 118 小时，12 个月约减半。两者可并行，合计约 **5 个自然日**；worker 加到 8 个约 2.5 天（付费 Starter 无调用上限，`rate_per_sec` 是每进程软上限）。
+
+### 4.3 当前队列：不杀，让它跑完
+
+Owner 看到 744,811 个任务，担心永远跑不完。实测（2026-09-08 17:34 UTC）：
+
+| 项 | 值 |
+|---|---|
+| pending | 770,871（planner 仍在扩展，所以比 Console 上的数略大） |
+| 最近三小时消化速率 | 每 15 分钟 1.1–1.5 万，≈ **5 万 / 小时** |
+| 预计完成 | ≈ **15 小时** |
+| worker 日志 | 干净，无 429 / 403 / 超时 |
+| 构成 | SPXW 22.3 万、SPY 14.5 万、QQQ 13.6 万、IWM 7.6 万、SPX 1.8 万 = **78%** 指数类；其余 META / TSLA / MSFT / NVDA / DDOG / MU / GOOG 等自选股 |
+
+这些标的**全部在新方案的常驻层**，杀掉等于明天重排。Plugin 没有取消队列的接口，要杀只能直接删 `ops_jobs.job_ingest`，那是 Plugin 的 schema，Research 按 D13 不写。结论：保留。
+
+新核的枚举不必排在它后面：`worker/claim.py:122` 按 `priority DESC, created_at ASC` 取任务，核的 `option_contract` / `option_expiration` 以更高 priority 入队即可插队。
+
+### 4.4 分步计划（待三处确认）
+
+**① Research：规则与清单（新表，待 Owner 确认 DDL）**
+
+`research.option_universe`，一行一个标的：
+
+```sql
+CREATE TABLE research.option_universe (
+    symbol          text PRIMARY KEY,
+    tier            text NOT NULL CHECK (tier IN ('resident','core','edge')),
+    entered_on      date NOT NULL,
+    last_seen       date NOT NULL,          -- 边：最后一次通过筛选；核：最后一次过阈值
+    history_months  smallint NOT NULL,      -- 24 / 12
+    reason          text NOT NULL,          -- 'watchlist' | 'benchmark' | 'liquidity>=200M' | 'sepa>=70'
+    updated_at      timestamptz NOT NULL DEFAULT now()
+);
+```
+
+主键用 `symbol` 而非代理键：一标的一行，所有 join 都按 symbol。这是与 Trade 侧 `<table>_id` 惯例的一处有意偏离，理由如上。
+
+每日 Dagster asset `research/option_universe_refresh`：常驻 = 自选 ∪ 持仓 ∪ 基准；核 = 规则，进入 ≥ $200M、退出 < $120M（滞回 60%），每月首个交易日重估；边 = 当日幸存者，`last_seen` 超过 90 个交易日则移除。`db/calendar.load_symbols_from_env_or_query` 改为优先读此表。
+
+**② Plugin：读 Research 清单（Plugin 改动，归 `market-data-subscription-focus`，待 Owner 确认）**
+
+- `scheduler/daily.py` 的 `resolve_watchlist_with_source` 来源链最前面加 `research`：`SELECT symbol, tier, history_months FROM research.option_universe`；读不到时回落到现有链（platform → cache → DB → fallback）。
+- 期权 slot（约 944 行）按 tier 设 priority：常驻 > 核 > 边 > 回填；`option_backfill_plan` 的月数取 `history_months`。
+- 首次加载 547 个核标的时按 priority 入队，不等当前回填。
+
+**③ 引擎耗时（待量）**
+
+575 个标的下游引擎（vol surface fit、GEX、VRP、terrain）的运行时长未测。核的枚举完成后，先跑一次 trading-day job 量时间窗，再决定要不要把 worker 加到 8 个。
+
 
 ## 5. 校准记录
 
@@ -231,3 +296,4 @@ Owner 的判断：SEPA 那么宽（3,475）对期权面不现实，今天的 27 
 | 2026-09-08.1 | 2026-09-08 | 首次校准，对蓝图 v1.1 的 27 条契约。 |
 | 2026-09-08.2 | 2026-09-08 | 基础层深校准：覆盖矩阵、三个死 lens 的根因、两个宇宙、缺批量原语；§3b 列出拉近差距的三类选项供讨论。 |
 | 2026-09-08.3 | 2026-09-08 | 丙的折中方案：成本单位实测、三层宇宙规则、两档总量与代价、归属、未量风险。 |
+| 2026-09-08.4 | 2026-09-08 | Owner 拍板 $200M 与三层方案；核修正为 547（限普通股）；队列实测 15 小时可跑完、全在常驻层，结论保留；分步计划与 DDL 草案待确认。 |
