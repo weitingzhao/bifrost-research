@@ -125,6 +125,34 @@ def copilot_usage(owner_id: str = Depends(require_owner)) -> dict[str, Any]:
     return out
 
 
+@router.get("/standing")
+def copilot_standing_route(owner_id: str = Depends(require_owner)) -> dict[str, Any]:
+    """Level 2 in one read: today's brief, sessions, chat approvals, spend."""
+    from bifrost_research.copilot.standing import copilot_standing
+
+    try:
+        conn = connect()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("copilot standing: no database: %s", exc)
+        return {
+            "ok": True,
+            "data": {
+                "day_utc": None,
+                "brief": None,
+                "sessions": {"today": 0, "recent": []},
+                "approvals": {},
+                "usage": usage_to_dict(get_usage()),
+                "db_ok": False,
+            },
+        }
+    try:
+        data = copilot_standing(conn, owner_id=owner_id)
+    finally:
+        conn.close()
+    data["db_ok"] = True
+    return {"ok": True, "data": data}
+
+
 @router.get("/bridge/presets")
 def bridge_presets() -> dict[str, Any]:
     return {"ok": True, "data": list_presets()}
