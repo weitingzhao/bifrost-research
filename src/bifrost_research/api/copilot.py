@@ -153,6 +153,38 @@ def copilot_standing_route(owner_id: str = Depends(require_owner)) -> dict[str, 
     return {"ok": True, "data": data}
 
 
+@router.get("/tools")
+def copilot_tools(request: Request) -> dict[str, Any]:
+    """What the Copilot can actually reach, read from the tool registry.
+
+    The Trading Copilot page names these capabilities to the Owner. Naming them
+    from a copy in the frontend would drift the moment a tool is added or
+    renamed in this repo, and the page would then promise something that is not
+    there — so the list is served from the registry that answers the calls.
+    """
+    mcp = getattr(request.app.state, "copilot_mcp", None) or create_mcp_server()
+    try:
+        # No public listing API on FastMCP; this is the same accessor the
+        # approval path already uses to fill tool defaults.
+        tools = mcp._tool_manager.list_tools()
+    except Exception:
+        logger.exception("copilot tool listing failed")
+        return {"ok": True, "data": {"tools": [], "count": 0, "error": "tool registry unavailable"}}
+    rows = [
+        {
+            "name": t.name,
+            "description": (getattr(t, "description", "") or "").strip(),
+            # A write tool needs an approval token; the page says so rather than
+            # implying every tool is as safe as a read.
+            "write": t.name in WRITE_TOOL_NAMES,
+            "domain": t.name.split(".", 1)[0],
+        }
+        for t in tools
+    ]
+    rows.sort(key=lambda r: str(r["name"]))
+    return {"ok": True, "data": {"tools": rows, "count": len(rows)}}
+
+
 @router.get("/bridge/presets")
 def bridge_presets() -> dict[str, Any]:
     return {"ok": True, "data": list_presets()}
