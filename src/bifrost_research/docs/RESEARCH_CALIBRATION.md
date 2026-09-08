@@ -1,7 +1,7 @@
 ---
-version: 2026-09-08.5
+version: 2026-09-08.6
 updated: 2026-09-08
-status: 宇宙规则已落地 · 核枚举爬坡中
+status: 核已枚举完 · 回填已启动
 ---
 
 # Research 校准
@@ -278,7 +278,12 @@ CREATE TABLE research.option_universe (
 
 每日 Dagster asset `research/option_universe_refresh`：常驻 = 自选 ∪ 持仓 ∪ 基准；核 = 规则，进入 ≥ $200M、退出 < $120M（滞回 60%），每月首个交易日重估；边 = 当日幸存者，`last_seen` 超过 90 个交易日则移除。`db/calendar.load_symbols_from_env_or_query` 改为优先读此表。
 
-**② Plugin：读 Research 清单 —— 已落地（0.16.0，2026-09-08，四个部署已滚完）**
+**② Plugin：读 Research 清单 —— 已落地（0.16.0 → 0.16.1，2026-09-08）**
+
+0.16.1 修了一个当天暴露的缺陷：爬坡用来判断「已枚举」的查询是 `GROUP BY UPPER(TRIM(underlying))`，合约表从 27 个标的长到 480 个后耗时 2.2 秒，撞上 `bifrost` 角色 **2 秒**的 `statement_timeout`，回落成空集，于是每六小时都从 A 重新枚举同一批 150 个名字，尾部永远到不了（1,210 个任务只覆盖 486 个名字）。现在查询失败时**不爬坡**（fail closed），查询改为松散索引扫描并联合本周已完成的枚举任务，无期权的名字不再每轮当新名字。
+
+**核枚举完成（2026-09-08 19:10 UTC）**：575 / 575 已尝试，566 有合约，9 个供应商无期权链（AVB、EQR、NVR、WBS 与 5 个边层名字）。
+
 
 - `scheduler/daily.py` 的 `resolve_watchlist_with_source` 来源链最前面加 `research`：`SELECT symbol, tier, history_months FROM research.option_universe`；读不到时回落到现有链（platform → cache → DB → fallback）。
 - 期权 slot（约 944 行）按 tier 设 priority：常驻 > 核 > 边 > 回填；`option_backfill_plan` 的月数取 `history_months`。
@@ -297,4 +302,5 @@ CREATE TABLE research.option_universe (
 | 2026-09-08.2 | 2026-09-08 | 基础层深校准：覆盖矩阵、三个死 lens 的根因、两个宇宙、缺批量原语；§3b 列出拉近差距的三类选项供讨论。 |
 | 2026-09-08.3 | 2026-09-08 | 丙的折中方案：成本单位实测、三层宇宙规则、两档总量与代价、归属、未量风险。 |
 | 2026-09-08.4 | 2026-09-08 | Owner 拍板 $200M 与三层方案；核修正为 547（限普通股）；队列实测 15 小时可跑完、全在常驻层，结论保留；分步计划与 DDL 草案待确认。 |
+| 2026-09-08.6 | 2026-09-08 | 核枚举完成 575/575；Plugin 0.16.1 修爬坡查询超时导致的重复枚举（fail closed）；option-backfill 已启动。 |
 | 2026-09-08.5 | 2026-09-08 | ① ② 落地：Research 0.95.0（表、引擎、asset、resolver、乙）与 Plugin 0.16.0（`universe: research`、tier 优先级、按行回填月数、每次 150 个新名字）；首次枚举已排入 173 个任务。 |
