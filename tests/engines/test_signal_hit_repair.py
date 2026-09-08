@@ -47,7 +47,7 @@ class _Conn:
 
 
 def test_it_selects_rows_by_missing_forward_return(monkeypatch):
-    conn = _Conn([(date(2026, 8, 3), "ANET", "iv_rank", "cold")])
+    conn = _Conn([(date(2026, 8, 3), "ANET", "iv_rank", "cold", True, True)])
     monkeypatch.setattr(entry, "_fwd_return", lambda *a, **k: 0.05)
     monkeypatch.setattr(entry, "hit_for", lambda *a, **k: True)
 
@@ -63,7 +63,7 @@ def test_it_selects_rows_by_missing_forward_return(monkeypatch):
 
 def test_a_window_that_has_not_elapsed_stays_unknown(monkeypatch):
     """An unknown outcome must never be written as a miss."""
-    conn = _Conn([(date(2026, 9, 4), "AAPL", "iv_rank", "cold")])
+    conn = _Conn([(date(2026, 9, 4), "AAPL", "iv_rank", "cold", True, True)])
     monkeypatch.setattr(entry, "_fwd_return", lambda *a, **k: None)
 
     out = entry.backfill_missing_forward(conn, horizons=(5, 20))
@@ -74,7 +74,7 @@ def test_a_window_that_has_not_elapsed_stays_unknown(monkeypatch):
 
 
 def test_it_only_fills_the_horizon_that_became_computable(monkeypatch):
-    conn = _Conn([(date(2026, 8, 3), "ANET", "iv_rank", "cold")])
+    conn = _Conn([(date(2026, 8, 3), "ANET", "iv_rank", "cold", True, True)])
     monkeypatch.setattr(entry, "_fwd_return", lambda c, s, d, h: 0.05 if h == 5 else None)
     monkeypatch.setattr(entry, "hit_for", lambda *a, **k: True)
 
@@ -84,3 +84,23 @@ def test_it_only_fills_the_horizon_that_became_computable(monkeypatch):
     update = [s for s, _ in conn.statements if "UPDATE" in s][0]
     assert "fwd_return_5d = %s" in update
     assert "fwd_return_20d" not in update
+
+
+def test_a_horizon_that_is_already_filled_is_not_rewritten(monkeypatch):
+    """Selecting a row for its blank 20d must not rewrite its good 5d.
+
+    The first run of this pass reported 805 fills for 5d where eleven rows had
+    actually been repaired — every row picked up for a missing 20d had its
+    already-correct 5d recomputed and written back.
+    """
+    # 5d is present (False), 20d is blank (True).
+    conn = _Conn([(date(2026, 8, 3), "ANET", "iv_rank", "cold", False, True)])
+    monkeypatch.setattr(entry, "_fwd_return", lambda *a, **k: 0.05)
+    monkeypatch.setattr(entry, "hit_for", lambda *a, **k: True)
+
+    out = entry.backfill_missing_forward(conn, horizons=(5, 20))
+
+    assert out["filled"] == {"5d": 0, "20d": 1}
+    update = [s for s, _ in conn.statements if "UPDATE" in s][0]
+    assert "fwd_return_20d = %s" in update
+    assert "fwd_return_5d" not in update, "a column that was not blank must not be touched"

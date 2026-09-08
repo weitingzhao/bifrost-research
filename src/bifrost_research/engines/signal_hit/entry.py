@@ -379,14 +379,19 @@ def backfill_missing_forward(
     not elapsed stays NULL — an unknown outcome must never be recorded as a
     miss.
     """
-    filled = {h: 0 for h in horizons}
+    filled = {int(h): 0 for h in horizons}
     examined = 0
-    # Horizons are ints from the caller, never user input.
-    missing_any = " OR ".join(f"fwd_return_{int(h)}d IS NULL" for h in horizons)
+    # Horizons are ints from the caller, never user input. Carrying one flag per
+    # horizon keeps the recompute to the columns that are actually blank: a row
+    # selected for a missing 20d must not have its good 5d rewritten, or the
+    # count reports eight hundred repairs where eleven happened.
+    hs = [int(h) for h in horizons]
+    missing_any = " OR ".join(f"fwd_return_{h}d IS NULL" for h in hs)
+    flags = ", ".join(f"fwd_return_{h}d IS NULL" for h in hs)
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT trade_date, symbol, lens, trigger_side
+            SELECT trade_date, symbol, lens, trigger_side, {flags}
             FROM {TABLE_STOCK_SIGNAL_LENS_HIT_DAILY}
             WHERE {missing_any}
             ORDER BY trade_date DESC
@@ -396,14 +401,16 @@ def backfill_missing_forward(
         )
         pending = cur.fetchall() or []
 
-    for trade_date, symbol, lens, side in pending:
+    for trade_date, symbol, lens, side, *blank in pending:
         examined += 1
         updates: list[tuple[str, Any]] = []
-        for h in horizons:
+        for h, is_blank in zip(hs, blank):
+            if not is_blank:
+                continue
             fwd = _fwd_return(conn, str(symbol), trade_date, int(h))
             if fwd is None:
                 continue  # window still open; leave it unknown
-            hit = hit_for(str(lens), side=str(side), fwd_return=fwd, horizon=int(h))
+            hit = hit_for(str(lens), side=str(side), fwd_return=fwd, horizon=h)
             updates.append((f"fwd_return_{h}d", fwd))
             updates.append((f"hit_{h}d", hit))
             filled[h] += 1
