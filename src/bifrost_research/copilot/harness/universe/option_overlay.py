@@ -1,4 +1,16 @@
-"""Option overlay — optional scan composite boost on stock universe."""
+"""Option overlay — optional scan composite boost on stock universe.
+
+The readings a candidate carries come from the lens layer (``lenses.screen``),
+not from the scan table's parallel copy: the same registry bands as the page
+the card links to, so the harness and the Workbench cannot disagree about what
+a symbol's IV rank is (C-A1). Each symbol also carries the option faces it
+does **not** have, so judgement can say "not measured" rather than quietly
+weighing a name on fewer faces than it thinks (C-A2).
+
+What decides who passes is unchanged: the scan composite and the policy's
+``min_composite``. Re-pointing that gate at lens bands would change what an
+Owner-facing policy key means, which is a decision, not a refactor.
+"""
 
 from __future__ import annotations
 
@@ -8,12 +20,39 @@ from typing import Any, Protocol
 from bifrost_research.copilot.harness import data_sources as ds
 from bifrost_research.copilot.harness.policy_schema import LoopPolicy, OptionOverlayPolicy
 from bifrost_research.copilot.harness.universe.types import FunnelStep
+from bifrost_research.lenses.screen import screen
 
 logger = logging.getLogger(__name__)
+
+# The option faces a candidate should carry — one per lens the option side has.
+OVERLAY_LENSES = ("iv_rank", "iv_percentile", "vrp", "gex_regime", "opex_pin", "terrain_regime")
 
 
 class _Connection(Protocol):
     def cursor(self) -> Any: ...
+
+
+def option_faces(conn: _Connection, symbols: list[str]) -> dict[str, dict[str, Any]]:
+    """Per symbol: each option face's reading and band, and the faces it lacks.
+
+    Fails soft — an overlay that cannot read the lens layer still hands back the
+    stock universe, with every face recorded as unread rather than as absent.
+    """
+    try:
+        result = screen(conn, lenses=OVERLAY_LENSES, symbols=symbols)
+    except Exception as exc:  # noqa: BLE001 — the funnel must not die on a reading
+        logger.warning("option overlay could not read the lens layer: %s", exc)
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for row in result.rows:
+        out[row.symbol] = {
+            "option_faces": {
+                lens: {"value": r.value, "band": r.band, "as_of": r.as_of}
+                for lens, r in row.readings.items()
+            },
+            "option_faces_missing": list(row.missing),
+        }
+    return out
 
 
 def apply_option_overlay(
@@ -29,7 +68,9 @@ def apply_option_overlay(
         return symbols, row_meta, None, False
 
     flag = overlay.flag_filter or policy.flag_filter_str()
-    min_comp = overlay.min_composite if overlay.min_composite is not None else policy.min_composite_score
+    min_comp = (
+        overlay.min_composite if overlay.min_composite is not None else policy.min_composite_score
+    )
 
     scan_rows = ds.top_scan_symbols(
         conn,
@@ -71,6 +112,12 @@ def apply_option_overlay(
             "terrain_regime": scan_row.get("terrain_regime"),
         }
 
+    # The lens layer answers for every kept name at once, whatever the scan said.
+    faces = option_faces(conn, kept) if kept else {}
+    for sym in kept:
+        if sym in faces:
+            merged_meta[sym] = {**(merged_meta.get(sym) or {}), **faces[sym]}
+
     if overlay.required and not kept and symbols:
         logger.warning("option overlay required removed all symbols; fail-soft keep stock set")
         kept = symbols
@@ -96,7 +143,9 @@ def apply_option_overlay(
         out_count=len(kept),
         filter_summary=(
             f"enabled required={overlay.required} flag={flag or 'none'} "
-            f"min_composite={min_comp}"
+            f"min_composite={min_comp}; "
+            f"option faces read for {sum(1 for s in kept if faces.get(s, {}).get('option_faces'))}"
+            f"/{len(kept)}"
         ),
         dropped_sample=dropped[:20],
         optional=not overlay.required,
