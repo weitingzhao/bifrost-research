@@ -50,7 +50,7 @@ def _latest_regime(conn: _Connection, symbol: str) -> dict[str, Any] | None:
     sql = """
         SELECT symbol, trade_date, regime, spot, pin_score, vol_squeeze
         FROM features.stock_forecast_terrain_daily
-        WHERE UPPER(TRIM(symbol)) = %s
+        WHERE symbol = %s
         ORDER BY trade_date DESC
         LIMIT 1
     """

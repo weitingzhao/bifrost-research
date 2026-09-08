@@ -51,7 +51,7 @@ def get_latest(conn: _Connection, symbol: str) -> dict[str, Any] | None:
     sql = f"""
         SELECT {_cols()}
         FROM features.stock_signal_vrp_daily
-        WHERE UPPER(TRIM(symbol)) = %s
+        WHERE symbol = %s
         ORDER BY trade_date DESC
         LIMIT 1
     """
@@ -73,7 +73,7 @@ def get_history(
     sql = f"""
         SELECT {_cols()}
         FROM features.stock_signal_vrp_daily
-        WHERE UPPER(TRIM(symbol)) = %s
+        WHERE symbol = %s
         ORDER BY trade_date DESC
         LIMIT %s
     """

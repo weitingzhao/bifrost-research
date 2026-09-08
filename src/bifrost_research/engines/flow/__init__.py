@@ -304,7 +304,7 @@ def fetch_tape_flow_rows(conn: Any, symbol: str, trade_date: date) -> list[Optio
             LEFT JOIN raw_market.option_open_interest oi
               ON oi.option_ticker = t.option_ticker
              AND oi.trade_date = t.trade_date
-            WHERE UPPER(TRIM(t.underlying)) = %s
+            WHERE t.underlying = %s
               AND t.trade_date = %s
             GROUP BY t.expiry, t.strike, t.option_right
             HAVING COALESCE(SUM(t.size), 0) > 0
@@ -376,7 +376,7 @@ def fetch_flow_rows(conn: Any, symbol: str, trade_date: date) -> list[OptionFlow
               ORDER BY s.snapshot_ts DESC
               LIMIT 1
             ) snap ON TRUE
-            WHERE UPPER(TRIM(oi.underlying)) = %s
+            WHERE oi.underlying = %s
               AND oi.trade_date = %s
             ORDER BY oi.option_ticker
             """,

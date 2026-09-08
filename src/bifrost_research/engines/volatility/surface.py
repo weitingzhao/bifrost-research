@@ -356,7 +356,7 @@ def fetch_iv_points_for_date(
               oc.expiry, oc.strike, oc.option_right, v.iv, v.underlying_price
             FROM raw_market.v_option_snapshot_with_stock v
             INNER JOIN raw_market.option_contract oc ON oc.option_ticker = v.option_ticker
-            WHERE UPPER(TRIM(v.underlying)) = %s
+            WHERE v.underlying = %s
               AND DATE(timezone('America/New_York', v.snapshot_ts)) = %s
               AND v.iv IS NOT NULL
             ORDER BY v.option_ticker, v.snapshot_ts DESC
@@ -414,7 +414,7 @@ def fetch_spot_fallback(
                 SELECT oc.strike, os.delta
                 FROM raw_market.option_snapshot os
                 JOIN raw_market.option_contract oc ON oc.option_ticker = os.option_ticker
-                WHERE UPPER(TRIM(os.underlying)) = %s
+                WHERE os.underlying = %s
                   AND DATE(timezone('America/New_York', os.snapshot_ts)) = %s
                   AND os.delta IS NOT NULL
                   AND os.delta BETWEEN 0.4 AND 0.6
@@ -454,7 +454,7 @@ def fetch_spot_fallback(
                 """
                 SELECT max_pain_strike
                 FROM features.option_metric_max_pain_daily
-                WHERE UPPER(TRIM(symbol)) = %s AND trade_date = %s
+                WHERE symbol = %s AND trade_date = %s
                 ORDER BY expiry ASC
                 LIMIT 1
                 """,
@@ -495,7 +495,7 @@ def fetch_atm_iv_history(
             """
             SELECT trade_date, atm_iv
             FROM features.option_metric_atm_iv_daily
-            WHERE UPPER(TRIM(symbol)) = %s
+            WHERE symbol = %s
               AND trade_date >= %s AND trade_date <= %s
             """,
             (symbol.strip().upper(), start, trade_date),

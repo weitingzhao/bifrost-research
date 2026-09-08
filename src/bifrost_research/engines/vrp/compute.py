@@ -132,7 +132,7 @@ def fetch_stock_daily_closes(
             """
             SELECT bar_date, close
             FROM raw_market.stock_daily
-            WHERE UPPER(TRIM(symbol)) = %s
+            WHERE symbol = %s
               AND bar_date <= %s
             ORDER BY bar_date DESC
             LIMIT %s
@@ -193,7 +193,7 @@ def fetch_atm_iv_30d(
             """
             SELECT expiry, atm_iv
             FROM features.option_metric_atm_iv_daily
-            WHERE UPPER(TRIM(symbol)) = %s
+            WHERE symbol = %s
               AND trade_date = %s
               AND atm_iv IS NOT NULL
             """,
@@ -240,7 +240,7 @@ def fetch_prior_vrp_history(
             """
             SELECT trade_date, vrp_60d
             FROM features.stock_signal_vrp_daily
-            WHERE UPPER(TRIM(symbol)) = %s
+            WHERE symbol = %s
               AND trade_date >= %s
               AND trade_date < %s
               AND vrp_60d IS NOT NULL

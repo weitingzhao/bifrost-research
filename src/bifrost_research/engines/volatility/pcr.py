@@ -122,7 +122,7 @@ def fetch_volume_totals_for_date(
             cur.execute(
                 base_sql
                 + """
-                  AND UPPER(TRIM(oc.underlying)) = ANY(%s)
+                  AND oc.underlying = ANY(%s)
                 ORDER BY os.option_ticker, os.snapshot_ts DESC
                 """,
                 (trade_date, syms),

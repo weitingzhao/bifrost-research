@@ -163,7 +163,7 @@ def fetch_reconstructed_iv_rows_for_date(
     """
     with conn.cursor() as cur:
         if syms:
-            cur.execute(base + " AND UPPER(TRIM(symbol)) = ANY(%s)", (trade_date, syms))
+            cur.execute(base + " AND symbol = ANY(%s)", (trade_date, syms))
         else:
             cur.execute(base, (trade_date,))
         raw = cur.fetchall() if hasattr(cur, "fetchall") else []
@@ -207,7 +207,7 @@ def fetch_snapshot_iv_rows_for_date(
             cur.execute(
                 base_sql
                 + """
-                  AND UPPER(TRIM(v.underlying)) = ANY(%s)
+                  AND v.underlying = ANY(%s)
                 ORDER BY v.option_ticker, v.snapshot_ts DESC
                 """,
                 (trade_date, syms),

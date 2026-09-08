@@ -185,7 +185,7 @@ def _resolve_earnings_events(
                 FROM raw_market.stock_financials
                 WHERE filing_date IS NOT NULL
                   AND filing_date BETWEEN %s AND %s
-                  AND (%s::text[] IS NULL OR UPPER(TRIM(symbol)) = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR symbol = ANY(%s::text[]))
                 ORDER BY filing_date
                 """,
                 (start, end, universe or None, universe or None),
@@ -210,7 +210,7 @@ def _resolve_earnings_events(
                 FROM raw_market.corporate_action
                 WHERE action_type = 'earnings'
                   AND ex_date BETWEEN %s AND %s
-                  AND (%s::text[] IS NULL OR UPPER(TRIM(symbol)) = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR symbol = ANY(%s::text[]))
                 ORDER BY ex_date
                 """,
                 (start, end, universe or None, universe or None),
@@ -312,7 +312,7 @@ def _resolve_sepa_hit_events(
         "structure_score",
     }:
         raise ValueError(f"invalid sepa score_col: {score_col!r}")
-    where_extra = "AND UPPER(TRIM(symbol)) = ANY(%s::text[])" if symbols else ""
+    where_extra = "AND symbol = ANY(%s::text[])" if symbols else ""
     params_tuple: list[Any] = [start, end, threshold]
     if symbols:
         params_tuple.append(symbols)
@@ -357,7 +357,7 @@ def _resolve_iv_percentile_events(
     if direction not in {"above", "below"}:
         raise ValueError(f"iv_percentile direction must be 'above'/'below', got {direction!r}")
     op = ">=" if direction == "above" else "<="
-    where_extra = "AND UPPER(TRIM(symbol)) = ANY(%s::text[])" if symbols else ""
+    where_extra = "AND symbol = ANY(%s::text[])" if symbols else ""
     params_tuple: list[Any] = [start, end, threshold]
     if symbols:
         params_tuple.append(symbols)
@@ -431,7 +431,7 @@ def _fetch_stock_price(conn: Any, symbol: str, on_or_before: date) -> dict[str, 
                 """
                 SELECT bar_date, open, close
                 FROM raw_market.stock_daily
-                WHERE UPPER(TRIM(symbol)) = %s
+                WHERE symbol = %s
                   AND bar_date <= %s
                 ORDER BY bar_date DESC
                 LIMIT 1
@@ -474,7 +474,7 @@ def _pick_option(
                 """
                 SELECT expiry, strike, close, open, high, low, bar_date, option_ticker
                 FROM raw_market.option_daily
-                WHERE UPPER(TRIM(underlying)) = %s
+                WHERE underlying = %s
                   AND option_right = %s
                   AND bar_date <= %s
                   AND expiry > %s
@@ -686,7 +686,7 @@ def _mfe_mae_for_run(
                 """
                 SELECT bar_date, high, low, close
                 FROM raw_market.stock_daily
-                WHERE UPPER(TRIM(symbol)) = %s
+                WHERE symbol = %s
                   AND bar_date BETWEEN %s AND %s
                 ORDER BY bar_date
                 """,

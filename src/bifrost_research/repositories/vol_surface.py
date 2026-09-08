@@ -74,7 +74,7 @@ def _resolve_trade_date(
             """
             SELECT MAX(trade_date)
             FROM features.option_surface_fit_daily
-            WHERE UPPER(TRIM(symbol)) = %s
+            WHERE symbol = %s
             """,
             (symbol.strip().upper(),),
         )
@@ -103,7 +103,7 @@ def get_fit(
     sql = f"""
         SELECT {_cols(_FIT_COLUMNS)}
         FROM features.option_surface_fit_daily
-        WHERE UPPER(TRIM(symbol)) = %s AND trade_date = %s
+        WHERE symbol = %s AND trade_date = %s
         ORDER BY expiry
     """
     with conn.cursor() as cur:
@@ -126,7 +126,7 @@ def get_term_structure(
     sql = """
         SELECT expiry, dte, atm_vol, atm_slope, fit_rmse, n_points
         FROM features.option_surface_fit_daily
-        WHERE UPPER(TRIM(symbol)) = %s AND trade_date = %s
+        WHERE symbol = %s AND trade_date = %s
           AND atm_vol IS NOT NULL
         ORDER BY dte
     """
@@ -151,7 +151,7 @@ def get_residuals(
     sql = f"""
         SELECT {_cols(_RESIDUAL_COLUMNS)}
         FROM features.option_surface_residual_daily
-        WHERE UPPER(TRIM(symbol)) = %s
+        WHERE symbol = %s
           AND trade_date = %s
           AND expiry = %s
         ORDER BY strike

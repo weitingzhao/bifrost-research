@@ -271,7 +271,7 @@ def fetch_spot(conn: Any, symbol: str, trade_date: date) -> float | None:
             cur.execute(
                 """
                 SELECT close FROM raw_market.stock_daily
-                WHERE UPPER(TRIM(symbol)) = %s AND bar_date = %s
+                WHERE symbol = %s AND bar_date = %s
                 """,
                 (cand, trade_date),
             )
@@ -286,7 +286,7 @@ def fetch_spot(conn: Any, symbol: str, trade_date: date) -> float | None:
                 cur.execute(
                     """
                     SELECT close FROM raw_market.stock_snapshot
-                    WHERE UPPER(TRIM(symbol)) = %s AND session_date = %s
+                    WHERE symbol = %s AND session_date = %s
                     """,
                     (cand, trade_date),
                 )
@@ -311,7 +311,7 @@ def fetch_spot(conn: Any, symbol: str, trade_date: date) -> float | None:
                 """
                 SELECT strike
                 FROM raw_market.option_open_interest
-                WHERE UPPER(TRIM(underlying)) = %s AND trade_date = %s
+                WHERE underlying = %s AND trade_date = %s
                 GROUP BY strike
                 ORDER BY SUM(open_interest) DESC
                 LIMIT 1
@@ -362,7 +362,7 @@ def fetch_gex_contracts(
           ORDER BY s.snapshot_ts DESC
           LIMIT 1
         ) snap ON TRUE
-        WHERE UPPER(TRIM(oi.underlying)) = %s
+        WHERE oi.underlying = %s
           AND oi.trade_date = %s
     """
     params: list[Any] = [trade_date, symbol.strip().upper(), trade_date]

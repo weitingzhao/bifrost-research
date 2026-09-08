@@ -312,7 +312,7 @@ def fetch_daily_bars(
             """
             SELECT bar_date, open, high, low, close, volume, vwap
             FROM raw_market.stock_daily
-            WHERE UPPER(TRIM(symbol)) = %s AND bar_date <= %s
+            WHERE symbol = %s AND bar_date <= %s
             ORDER BY bar_date DESC
             LIMIT %s
             """,
@@ -347,7 +347,7 @@ def fetch_snapshot_vwap(conn: Any, symbol: str, session_date: date) -> float | N
         cur.execute(
             """
             SELECT vwap FROM raw_market.stock_snapshot
-            WHERE UPPER(TRIM(symbol)) = %s AND session_date = %s
+            WHERE symbol = %s AND session_date = %s
             """,
             (symbol.strip().upper(), session_date),
         )

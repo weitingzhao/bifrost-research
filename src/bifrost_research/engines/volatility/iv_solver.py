@@ -233,7 +233,7 @@ def solve_symbol_window(
             FROM raw_market.option_daily o
             JOIN raw_market.stock_daily s
               ON s.symbol = o.underlying AND s.bar_date = o.bar_date
-            WHERE UPPER(TRIM(o.underlying)) = %s
+            WHERE o.underlying = %s
               AND o.bar_date BETWEEN %s AND %s
               AND s.close IS NOT NULL AND s.close > 0
             ORDER BY o.bar_date, o.option_ticker
@@ -344,7 +344,7 @@ def project_vendor_snapshot_window(
             FROM raw_market.v_option_snapshot_with_stock v
             INNER JOIN raw_market.option_contract oc
               ON oc.option_ticker = v.option_ticker
-            WHERE UPPER(TRIM(v.underlying)) = %s
+            WHERE v.underlying = %s
               AND DATE(timezone('America/New_York', v.snapshot_ts)) BETWEEN %s AND %s
               AND v.iv IS NOT NULL AND v.iv > 0
               AND v.underlying_price IS NOT NULL AND v.underlying_price > 0
