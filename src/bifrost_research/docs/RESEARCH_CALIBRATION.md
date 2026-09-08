@@ -1,7 +1,7 @@
 ---
-version: 2026-09-08.1
+version: 2026-09-08.2
 updated: 2026-09-08
-status: 快照 · 排序待讨论
+status: 基础层已深校准 · 排序待讨论
 ---
 
 # Research 校准
@@ -49,17 +49,43 @@ status: 快照 · 排序待讨论
 
 "命中率 / 实绩"在代码里 ≥ 10 处实现，回答 4 个问题，`lenses/track_record.fetch_track_record` 与 `harness/evidence._fetch_track_record` 名字几乎相同、问题完全不同。对照 C-R1。
 
+### 1.5 三个不触发的 lens：根因各不相同（C-F4）
+
+| lens | 上游 | 近 30 天上游 | 触发规则 | 为什么不触发 | 性质 |
+|---|---|---|---|---|---|
+| skew | `option_surface_fit_daily.atm_slope` | 27 标的 | \|slope\| 在自身 252 日百分位的 hot 带，且历史 ≥ `SKEW_MIN_HISTORY_DAYS`=60 | 历史只有 3–10 天（表从 2026-08-21 开始）；今天有 3 个标的百分位 ≥ 90，历史够就会触发 | **成熟度门**，约 60 个交易日后自愈，不用改 |
+| terrain_regime | `stock_forecast_terrain_daily.regime` | 28 标的 | 只有 `crash-risk` 算 hot | 近 30 天 range 537 / trending 19 / crash-risk 4；4 行正好对上 | **设计上稀有**，尾部风险标；命中率永远不会有统计意义 |
+| order_sentiment | `option_flow_sentiment_daily.sentiment_score` | 28 标的、418 行 | 只认 `data_source == option_trades_tape`，带 hot=+30 / cold=−30 | **418 行全是 `option_snapshot_aggregates`**，tape 源不存在；分数本身很极端（均值 16，大多数在 ±30 外） | **数据源门**：exhibit 层同样拒信 aggregates（`exhibit_lenses.py:486`），口径一致；是否放开是订阅层面的决定 |
+
+### 1.6 覆盖矩阵（近 30 天有数据的标的数）
+
+| 面 | 表 | 标的 | 截止 |
+|---|---|---|---|
+| 趋势与结构 | `stock_signal_sepa_daily` | **3,475** | 09-05 |
+| 趋势与结构 | `stock_signal_momentum_daily` | 27 | 09-04 |
+| 波动面 | `option_surface_iv_daily` / `_fit_daily` / `_residual_daily` | 27–28 | 09-04 |
+| 波动面 | `option_metric_iv_percentile_daily` / `atm_iv_daily` / `vrp_daily` | 26 | 09-04 |
+| 持仓面 | `option_metric_gex_daily` / `gex_levels_daily` / `vanna_charm_daily` | 27 | 09-04 |
+| 持仓面 | `option_metric_max_pain_daily` / `pcr_daily` / `flow_sentiment_daily` / `flow_multi_leg_daily` | 28 | 09-04 |
+| 持仓面 | `option_metric_gex_intraday` | 19 | **09-02**（落后两个交易日） |
+| 预测面 | `stock_forecast_terrain_daily` / `_session` / `_hourly` | 28 | 09-07 |
+| 验证面 | `stock_signal_lens_hit_daily` | 28 | 09-04 |
+| 验证面 | `stock_backtest_settlement` | 26 | 09-04 |
+| 告警 | `stock_signal_alert_daily` | **1** | 09-04 |
+
+对照蓝图 §3.2 的六个面：除趋势与结构里的 SEPA 之外，其余全部落在 26–28。事件面（`event_signal_radar_daily`）按事件而非标的存，不在此表。
+
 ## 2. 契约状态
 
-### 基础层
+### 基础层（2026-09-08.2 深校准）
 
 | 编号 | 状态 | 证据 |
 |---|---|---|
-| C-F1 | ⚠️ | `lenses/exhibits` 是统一入口；`copilot/harness/universe/{sepa,momentum,events}.py` 用自己的 SQL 重做了筛选 |
-| C-F2 | ✅ | `engines/`、`lenses/` 无 objective 依赖 |
-| C-F3 | ✅ | `lenses/registry.py` 9 个 spec |
-| C-F4 | ❌ | 见 §1.2；task 已开 |
-| C-F5 | ❌ | 见 §1.1；宇宙无规则 |
+| C-F1 | ❌ | 基础层**没有批量筛选原语**：`lenses/exhibits.build_exhibit(conn, lens, symbol)` 逐标的，registry 只有 `scan_flag(band)` 一个 helper。harness 要在 3,475 个标的上筛，只能自己写 SQL（`copilot/harness/universe/{sepa,momentum,events}.py` 各自 SELECT `features.*` 并重做 score / grade / importance 过滤）。这不是 harness 不守纪律，是基础层缺一个它需要的能力 |
+| C-F2 | ✅ | `engines/`、`lenses/` 无 objective / policy 依赖；`iv_solver.py`、`vol_surface/fit.py` 里的 `objective` 是最小二乘的目标函数 |
+| C-F3 | ⚠️ | 12 个 spec 都有 route、bands、hot/cold 说明；但 **5 个没有 `decay_lens`**（iv_percentile、term_slope、momentum、sepa、forecast_path），其中 sepa 与 momentum 正是覆盖 3,475 个标的的两个面——**最宽的面没有自我度量** |
+| C-F4 | ❌ | 三个 lens 不触发，上游表都有 27–28 个标的、数据齐全，根因各不相同（见 §1.5） |
+| C-F5 | ❌ | 股票宇宙有规则：`dw_stock.dim_universe` = CS · stocks · active · USD → 5,376，SEPA 覆盖其中 3,475。期权宇宙**没有规则**：`db/calendar.load_symbols_from_env_or_query` = 显式列表 → `RESEARCH_WATCHLIST` env → 否则「近 5 天有 OI 的 underlying」∪ {SPY,QQQ,IWM} ≈ 27，即"Plugin 采到了什么"；Plugin 的采集范围来自 `ops_jobs.watchlist_cache`（18 个，source=platform-api）。两个宇宙，一个有规则一个没有，相差 200 倍 |
 
 ### 实绩层
 
@@ -104,7 +130,7 @@ status: 快照 · 排序待讨论
 | C-U3 | ✅ | Research、Portfolio、Strategy |
 | C-U4 | ✅ | Objectives 不再借控制台路由 |
 
-**计数**：✅ 16　⚠️ 4　❌ 6　⏳ 1，共 27 条。
+**计数**：✅ 15　⚠️ 5　❌ 6　⏳ 1，共 27 条。（基础层深校准后 C-F1 由 ⚠️ 改 ❌、C-F3 由 ✅ 改 ⚠️、C-F5 补充证据）
 
 ## 3. 已知差距与最小改动（未排序）
 
@@ -119,6 +145,27 @@ status: 快照 · 排序待讨论
 | C-A6 | 命名 | Autopilot → 智囊（英文待定）：seat、路由、存储键、文案 |
 | C-A8 | 基础一端缺入口 | 给 objective 一个"只摆读数"的模式 |
 
+## 3b. 基础层：拉近差距的选项（供讨论，未定）
+
+差距只有三类，对应三种性质不同的动作：
+
+**甲 · 缺一个原语（C-F1，连带 C-A1）**
+基础层要长出**批量筛选**：对一个宇宙、一组 lens、一组 band/阈值，返回幸存者与每个标的的读数，用的是 registry 里同一份定义。harness 随后改为调用它，删掉自己的 SQL。这是唯一能同时关掉 C-F1 与 C-A1 的改动，也是接缝契约（C-A2）能落地的前提：筛选原语知道每个标的有哪些面，才能拒绝把缺面的标的送进判断。
+- 代价：一个新模块 `lenses/screen.py`，加 harness 三个 universe 文件的替换；纯 Research 侧。
+- 不做的后果：C-A1 永远无法满足，智囊与页面读数不一致的可能性一直存在。
+
+**乙 · 度量缺口（C-F3、C-R4 相关）**
+sepa 与 momentum 两个最宽的面没有衰减追踪。给它们加 `decay_lens`，定义触发（如 SEPA 进入 PIVOT、momentum 升到 A）与命中口径，signal_hit 引擎自动接管回填。
+- 代价：registry 两个 spec、`signal_hit/build.py` 两个 classify、一次回填；纯 Research 侧。
+- 不做的后果：覆盖 3,475 个标的的那一层永远不知道自己准不准，智囊对它的评级没有战绩可依。
+
+**丙 · 宇宙（C-F5）**
+分两半。规则那一半是 Research 的：写下"期权宇宙 = 股票宇宙 ∩ 有期权链 ∩ 流动性阈值"，让 `load_symbols_from_env_or_query` 读这条规则而不是读"采到了什么"。供给那一半不是 Research 的：Plugin 按这条规则采多少，由订阅决定，归 program `market-data-subscription-focus`。
+- 代价：规则一行；供给的代价在 Plugin 与订阅。
+- 不做的后果：宽度永远是采集的副产品，接缝契约没有东西可对。
+
+**三个死 lens（C-F4）不是一类动作**：skew 等时间；terrain_regime 保持稀有，或另议是否把 trending 也算一档；order_sentiment 跟丙走，tape 源来了才活。
+
 ## 4. 排序讨论（待开）
 
 先深还是先宽、先接缝还是先实绩，在这里记结论。蓝图不讨论顺序。
@@ -128,3 +175,4 @@ status: 快照 · 排序待讨论
 | 快照 | 日期 | 说明 |
 |---|---|---|
 | 2026-09-08.1 | 2026-09-08 | 首次校准，对蓝图 v1.1 的 27 条契约。 |
+| 2026-09-08.2 | 2026-09-08 | 基础层深校准：覆盖矩阵、三个死 lens 的根因、两个宇宙、缺批量原语；§3b 列出拉近差距的三类选项供讨论。 |
