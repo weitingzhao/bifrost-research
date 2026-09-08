@@ -14,6 +14,8 @@
 | 硬边界 | D10 交易执行冻结（BLOCKED）· D13 三域边界 · 平台/业务解耦（Flywheel A/B） |
 | 事实基线 | `../AGENT_FACTS.md`（§8c 运行时与安全事实）· 规则 `../CLAUDE.md`（§8 Claude Code 运行配置） |
 
+**蓝图（校准基准）**：`src/bifrost_research/docs/RESEARCH_BLUEPRINT.md`（API `GET /research/docs/blueprint`，UI `/docs/research-blueprint`）。四层模型、深与宽的决定、编号契约 `C-F1…C-U4`。任何「Research 应该是什么 / 差距在哪」的讨论以它为准，校准结果回写它的 §4 状态列与 §7 修订记录。
+
 会话请在工作区根 `/stocks` 启动（加载治理层 hooks / auto mode / 共享记忆）；运行时与安全事实以 `../AGENT_FACTS.md` §8c 为准。
 
 ## 职责

@@ -16,6 +16,7 @@ from bifrost_research.api.canonical_pnl import router as canonical_pnl_router
 from bifrost_research.api.candidates import router as candidates_router
 from bifrost_research.api.copilot import router as copilot_router
 from bifrost_research.api.copilot_sessions import router as copilot_sessions_router
+from bifrost_research.api.docs import router as docs_router
 from bifrost_research.api.elementary import router as elementary_router
 from bifrost_research.api.exhibit import router as exhibit_router
 from bifrost_research.api.symbol_verdicts import router as symbol_verdicts_router
@@ -65,6 +66,7 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
     app.include_router(health_router)
+    app.include_router(docs_router)
     app.include_router(sepa_router)
     app.include_router(options_router)
     app.include_router(elementary_router)

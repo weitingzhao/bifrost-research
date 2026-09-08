@@ -52,6 +52,8 @@ where = ["src"]
 # installs hid this because __file__ points back at the source tree.
 [tool.setuptools.package-data]
 bifrost_research = [
+    # Documents the API serves (docs/*.md); the blueprint is read from the product.
+    "docs/*.md",
     "dbt/dbt_project.yml",
     "dbt/profiles.yml",
     "dbt/packages.yml",
