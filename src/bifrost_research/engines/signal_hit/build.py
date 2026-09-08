@@ -48,24 +48,31 @@ def classify_skew(atm_slope: float | None, slope_pctile: float | None, history_d
 
 
 def classify_sepa(score: float | None, path: str | None) -> str | None:
-    """SEPA's trigger: the registry's score band, and hot only on a buyable path.
+    """SEPA's trigger: the registry's hot band, on a buyable path, and nothing else.
 
-    A high score on an EXTENDED or AVOID path is not a setup, it is a name
-    that already moved; hot is reserved for SETUP / PIVOT, which is what the
-    Loop's own universe means by the word. Cold is the score band alone.
+    Hot is reserved for SETUP / PIVOT — a high score on a name that already
+    moved is not a setup. Measured 2026-09-08 over 3,473 names a day: about
+    two a day. The cold side is not tracked: score <= 20 is four hundred
+    names a day, nothing consumes it, and walking it thirty days deep is what
+    put the late-fill over the pod's memory. Revisit when something needs it.
     """
-    side = trigger_side("sepa", score)
-    if side == "hot" and (path or "").upper() not in ("SETUP", "PIVOT"):
+    if trigger_side("sepa", score) != "hot":
         return None
-    return side
+    return "hot" if (path or "").upper() in ("SETUP", "PIVOT") else None
 
 
 def classify_momentum(score: float | None, grade: str | None) -> str | None:
-    """Momentum's trigger: the registry's score band, hot only with an A grade."""
-    side = trigger_side("momentum", score)
-    if side == "hot" and (grade or "").upper() not in ("A", "A+"):
+    """Momentum's trigger: an A grade, and nothing else.
+
+    The grade is the engine's own band on its own scale. Measured 2026-09-08:
+    A grades score 77 to 85, so gating on the registry's 80 would cut some of
+    the very names the grade exists to mark. Hot only, for the same reason as
+    sepa. Sparse today (five A rows in thirty days) because the engine runs on
+    the option universe — twenty-seven names — and grows with it.
+    """
+    if score is None:
         return None
-    return side
+    return "hot" if (grade or "").upper() in ("A", "A+") else None
 
 
 def classify_gex_regime(total_net_gex: float | None) -> str | None:

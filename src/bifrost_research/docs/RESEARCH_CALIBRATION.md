@@ -83,7 +83,7 @@ status: 宇宙规则已落地 · 核枚举爬坡中
 |---|---|---|
 | C-F1 | ❌ | 基础层**没有批量筛选原语**：`lenses/exhibits.build_exhibit(conn, lens, symbol)` 逐标的，registry 只有 `scan_flag(band)` 一个 helper。harness 要在 3,475 个标的上筛，只能自己写 SQL（`copilot/harness/universe/{sepa,momentum,events}.py` 各自 SELECT `features.*` 并重做 score / grade / importance 过滤）。这不是 harness 不守纪律，是基础层缺一个它需要的能力 |
 | C-F2 | ✅ | `engines/`、`lenses/` 无 objective / policy 依赖；`iv_solver.py`、`vol_surface/fit.py` 里的 `objective` 是最小二乘的目标函数 |
-| C-F3 | ⚠️ | 12 个 spec 都有 route、bands、hot/cold 说明。**0.95.0 起 sepa 与 momentum 加入衰减追踪**（`decay_lens` + `hit_rule=follow`，hot 分别要求 SETUP/PIVOT 与 A 级），最宽的两个面开始自我度量；仍无 decay 的 3 个：iv_percentile、term_slope、forecast_path |
+| C-F3 | ⚠️ | 12 个 spec 都有 route、bands、hot/cold 说明。**0.95.1 起 sepa 与 momentum 加入衰减追踪**（`decay_lens` + `hit_rule=follow`，只追踪 hot 侧：sepa ≥ 80 且 SETUP/PIVOT ≈ 2 个/天，momentum 看 A 级；cold 侧 400 个/天无人消费且会 OOM 回补），最宽的两个面开始自我度量；仍无 decay 的 3 个：iv_percentile、term_slope、forecast_path |
 | C-F4 | ❌ | 三个 lens 不触发，上游表都有 27–28 个标的、数据齐全，根因各不相同（见 §1.5） |
 | C-F5 | ⏳ | **规则已落地（0.95.0）**：`research.option_universe` 三层，首次填充 575（常驻 27 / 核 527 / 边 21），`load_symbols_from_env_or_query` 优先读它，Dagster asset `engines/option_universe` 每日刷新。**供给爬坡中（Plugin 0.16.0）**：option-refresh 以 `universe: research` 枚举，2026-09-08 18:05 UTC 首跑排入 173 个任务（常驻 11 个优先级 7、核 162 个优先级 6），每次最多 150 个新名字，六小时一次。核全部枚举完约 1–2 天，之后 `option-backfill` 一次性按行回填（边 12 个月、其余 24 个月） |
 

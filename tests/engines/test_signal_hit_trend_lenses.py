@@ -26,22 +26,24 @@ def test_sepa_hot_needs_a_buyable_path() -> None:
     assert build.classify_sepa(hot, "AVOID") is None
 
 
-def test_sepa_cold_is_the_score_band_alone() -> None:
-    assert build.classify_sepa(SCORE_BANDS.cold, "AVOID") == "cold"
-    assert build.classify_sepa(SCORE_BANDS.cold, "SETUP") == "cold"
+def test_sepa_tracks_the_hot_side_only() -> None:
+    # score <= 20 is four hundred names a day and nothing consumes it; walking
+    # it thirty days deep is what put the late-fill over the pod's memory.
+    assert build.classify_sepa(SCORE_BANDS.cold, "AVOID") is None
+    assert build.classify_sepa(SCORE_BANDS.cold, "SETUP") is None
 
 
-def test_momentum_hot_needs_an_a_grade() -> None:
-    hot = SCORE_BANDS.hot
-    assert build.classify_momentum(hot, "A") == "hot"
-    assert build.classify_momentum(hot, "A+") == "hot"
-    assert build.classify_momentum(hot, "B") is None
+def test_momentum_hot_is_the_a_grade_on_its_own_scale() -> None:
+    # A grades score 77 to 85; the registry's 80 would cut some of them.
+    assert build.classify_momentum(77.0, "A") == "hot"
+    assert build.classify_momentum(85.0, "A+") == "hot"
+    assert build.classify_momentum(85.0, "B") is None
+    assert build.classify_momentum(20.0, "D") is None, "hot side only"
 
 
 def test_the_middle_of_the_band_is_no_trigger() -> None:
     mid = (SCORE_BANDS.hot + SCORE_BANDS.cold) / 2
     assert build.classify_sepa(mid, "PIVOT") is None
-    assert build.classify_momentum(mid, "A") is None
 
 
 def test_missing_values_never_trigger() -> None:
