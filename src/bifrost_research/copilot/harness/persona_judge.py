@@ -367,12 +367,25 @@ def consensus(
     *,
     fallback_models: set[str] | None = None,
 ) -> dict[str, Any]:
-    """What the judges agree on.
+    """What the judges agree on, counting only the judges that answered.
 
-    ``net_stance`` is the verdict every judge reached, else ``dissent``.
-    ``validate_stance`` is the most severe validate stance across judges — one
-    block is a block. A judge that fell back is a dissent, never an agreement.
-    A single judge is ``single``: its stance stands, but it is not agreement.
+    A judge that fell back produced no judgement of its own: the heuristic
+    stood in. It used to be recorded as a dissent, which put "the models
+    disagree" and "we ran out of budget" in the same word — and on DEV ten of
+    fourteen fallbacks were the deepseek daily cap. The consensus is now taken
+    over the judges that spoke:
+
+    * ``agree``   — two or more answered and reached the same verdict
+    * ``dissent`` — two or more answered and did not
+    * ``single``  — exactly one answered; its stance stands, but one judge is
+      not agreement, so the leash still holds the candidate
+    * ``none``    — nobody answered
+
+    The safety property is unchanged: auto-accept still requires ``agree``,
+    which still requires two judges that both answered and matched.
+
+    ``validate_stance`` stays the most severe across *every* judge, fallbacks
+    included — a heuristic that says block is still a block.
     """
     fallback_models = fallback_models or set()
     by_model: dict[str, dict[str, str]] = {}
@@ -380,18 +393,17 @@ def consensus(
         by_model[model] = {
             "net": net_stance_from_verdicts(rows),
             "validate": validate_stance(rows),
+            "answered": model not in fallback_models,
         }
-    nets = [v["net"] for v in by_model.values()]
-    validate = most_severe([v["validate"] for v in by_model.values()])
-    if len(by_model) <= 1:
-        model = next(iter(by_model), None)
-        if model is None:
-            agreement, net = "single", "abstain"
-        elif model in fallback_models:
-            agreement, net = DISSENT, DISSENT
-        else:
-            agreement, net = "single", nets[0]
-    elif fallback_models & set(by_model) or len(set(nets)) > 1:
+    validate = most_severe([str(v["validate"]) for v in by_model.values()])
+    answered = {m: v for m, v in by_model.items() if v["answered"]}
+    nets = [str(v["net"]) for v in answered.values()]
+
+    if not answered:
+        agreement, net = "none", "abstain"
+    elif len(answered) == 1:
+        agreement, net = "single", nets[0]
+    elif len(set(nets)) > 1:
         agreement, net = DISSENT, DISSENT
     else:
         agreement, net = "agree", nets[0]
@@ -400,6 +412,9 @@ def consensus(
         "validate_stance": validate,
         "agreement": agreement,
         "by_model": by_model,
+        # Which judges were absent, so a hold can name them rather than calling
+        # a budget event a disagreement.
+        "absent_models": sorted(m for m in by_model if m in fallback_models),
     }
 
 

@@ -54,7 +54,15 @@ def accept_gate(
 
     agreement = item.get("agreement") or evidence.get("agreement")
     if agreement != "agree":
-        reasons.append(f"judges did not agree ({agreement or 'no judge record'})")
+        # "single" and "none" mean a judge never answered, which is a spent
+        # purse or a timeout far more often than a split opinion. Naming it
+        # keeps a budget event from reading as a disagreement.
+        absent = [a for a in (evidence.get("absent_judges") or []) if isinstance(a, dict)]
+        if absent:
+            who = "; ".join(f"{a.get('model')} — {a.get('reason')}" for a in absent)
+            reasons.append(f"a judge did not answer ({who})")
+        else:
+            reasons.append(f"judges did not agree ({agreement or 'no judge record'})")
 
     net = item.get("net_stance") or evidence.get("net_stance")
     if item.get("blocked_by_validate"):

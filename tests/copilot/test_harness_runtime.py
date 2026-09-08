@@ -718,7 +718,7 @@ def test_run_objective_judges_even_when_the_llm_plan_omits_the_step(
     persona = result["outputs"]["persona_eval"]
     assert persona is not None
     assert persona["mode"] == "heuristic"
-    assert persona["agreement"] == {"agree": 0, "dissent": 0, "single": 1}
+    assert persona["agreement"] == {"agree": 0, "dissent": 0, "single": 1, "none": 0}
 
     # And the Owner's off switch still wins over a plan that asks for judges.
     monkeypatch.setattr(

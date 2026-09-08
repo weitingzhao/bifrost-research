@@ -180,7 +180,9 @@ def evaluate_candidates(
     blocked = 0
     fallback_count = 0
     budget_exhausted = 0
-    agreement_counts: dict[str, int] = {"agree": 0, DISSENT: 0, "single": 0}
+    # "none" joined the vocabulary when a judge that did not answer stopped
+    # counting as a dissenting voice.
+    agreement_counts: dict[str, int] = {"agree": 0, DISSENT: 0, "single": 0, "none": 0}
     model_totals: dict[str, dict[str, Any]] = {
         m: {
             "model": m,
@@ -253,6 +255,7 @@ def evaluate_candidates(
                 "validate_stance": validate_stance(verdicts),
                 "agreement": "single",
                 "by_model": {},
+                "absent_models": [],
             }
 
         if any(v.get("source") == "heuristic_fallback" for v in verdicts):
@@ -272,6 +275,15 @@ def evaluate_candidates(
         ev["agent_verdicts"] = verdicts
         ev["net_stance"] = net
         ev["agreement"] = verdict["agreement"]
+        # Which judges never spoke, and why — so a hold can name a spent purse
+        # instead of reporting it as a disagreement.
+        absent = [
+            {"model": c["model"], "reason": str(c["error"] or "judge failed")}
+            for c in calls
+            if c["model"] in set(verdict.get("absent_models") or [])
+        ]
+        if absent:
+            ev["absent_judges"] = absent
         item["blocked_by_validate"] = blocked_by_validate
         item["net_stance"] = net
         item["agreement"] = verdict["agreement"]
@@ -305,15 +317,25 @@ def evaluate_candidates(
     eligible = [
         i
         for i in items
-        if not i.get("blocked_by_validate") and i.get("net_stance") in {"support", "caution"}
+        if not i.get("blocked_by_validate")
+        and i.get("agreement") == "agree"
+        and i.get("net_stance") in {"support", "caution"}
     ]
     dissent_count = sum(1 for i in items if i.get("net_stance") == DISSENT)
     # Agreement is the gate: every judge on every symbol on the same side of
-    # support / caution, nobody blocked, nobody fell back.
+    # support / caution, nobody blocked, nobody absent.
+    #
+    # This reads `agreement`, not `net_stance`. It used to be enough that no
+    # symbol carried the dissent stance — safe only because a judge that fell
+    # back forced that stance. Once an absent judge stopped being a dissenting
+    # voice, the surviving judge's "support" would have passed here, and one
+    # judge would have been able to auto-approve a batch. The leash never
+    # allowed that; this flag would have said it was fine.
     auto_approve_eligible = (
         len(items) > 0
         and blocked == 0
         and dissent_count == 0
+        and all(i.get("agreement") == "agree" for i in items)
         and all((i.get("net_stance") in {"support", "caution"}) for i in items)
     )
 

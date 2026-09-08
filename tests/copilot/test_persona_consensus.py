@@ -105,8 +105,13 @@ def test_consensus_agree_dissent_and_fallback() -> None:
     assert c["by_model"]["gpt-4o-mini"]["net"] == "caution"
 
     # Same words, but one judge is the heuristic standing in for a failed model.
+    # It used to be recorded as a dissent, which put "the models disagree" and
+    # "the purse ran out" in one word — ten of fourteen fallbacks on DEV were
+    # the deepseek daily cap. A judge that did not answer is absent, and one
+    # judge is never agreement, so the leash still holds this candidate.
     c = consensus(both, fallback_models={"gpt-4o-mini"})
-    assert (c["net_stance"], c["agreement"]) == (DISSENT, DISSENT)
+    assert (c["net_stance"], c["agreement"]) == ("support", "single")
+    assert c["absent_models"] == ["gpt-4o-mini"]
 
 
 def test_consensus_validate_is_the_most_severe() -> None:
@@ -125,9 +130,11 @@ def test_consensus_validate_is_the_most_severe() -> None:
 def test_consensus_single_judge() -> None:
     c = consensus({"deepseek-chat": _rows("deepseek-chat", "caution")})
     assert (c["net_stance"], c["agreement"]) == ("caution", "single")
+    # Nobody answered: "none", never a stance that could be mistaken for one.
     c = consensus({"deepseek-chat": _rows("deepseek-chat")}, fallback_models={"deepseek-chat"})
-    assert (c["net_stance"], c["agreement"]) == (DISSENT, DISSENT)
+    assert (c["net_stance"], c["agreement"]) == ("abstain", "none")
     assert consensus({})["net_stance"] == "abstain"
+    assert consensus({})["agreement"] == "none"
 
 
 # --------------------------------------------------------------------------- #
@@ -145,7 +152,7 @@ def test_two_judges_agree_is_eligible(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert summary["mode"] == "agent"
     assert sorted(calls) == ["deepseek-chat", "deepseek-chat", "gpt-4o-mini", "gpt-4o-mini"]
-    assert summary["agreement"] == {"agree": 2, "dissent": 0, "single": 0}
+    assert summary["agreement"] == {"agree": 2, "dissent": 0, "single": 0, "none": 0}
     assert summary["dissent_count"] == 0
     assert summary["auto_approve_eligible"] is True
     assert summary["fallback_used"] is False
@@ -191,7 +198,7 @@ def test_disagreement_is_dissent_and_holds_the_batch(monkeypatch: pytest.MonkeyP
     assert [m["net"] for m in per["models"]] == ["support", "caution"]
 
 
-def test_failed_judge_counts_as_dissent(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_failed_judge_is_absent_not_dissenting(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_judges(
         monkeypatch,
         {"deepseek-chat": ("support", "support"), "gpt-4o-mini": TimeoutError("judge timed out")},
@@ -200,7 +207,13 @@ def test_failed_judge_counts_as_dissent(monkeypatch: pytest.MonkeyPatch) -> None
 
     summary = persona_eval.evaluate_candidates(items, policy={"require_validate_pass": True})
 
-    assert items[0]["net_stance"] == DISSENT
+    # The judge that spoke still stands; one judge is not agreement, so this
+    # is held — but it is held as "a judge did not answer", not as a split.
+    assert items[0]["net_stance"] == "support"
+    assert items[0]["agreement"] == "single"
+    assert items[0]["evidence"]["absent_judges"] == [
+        {"model": "gpt-4o-mini", "reason": "judge timed out"}
+    ]
     assert summary["fallback_used"] is True
     assert summary["fallback_count"] == 1
     assert summary["auto_approve_eligible"] is False
@@ -248,7 +261,9 @@ def test_provider_cap_exhausted_skips_that_judge(monkeypatch: pytest.MonkeyPatch
     assert gpt["cap_exceeded"] is True and gpt["fallback"] is True
     assert "daily cap reached for openai" in gpt["error"]
     assert "PERSONA_EVAL_DAILY_CAP_USD_OPENAI=0.50" in gpt["error"]
-    assert items[0]["net_stance"] == DISSENT
+    # A spent purse is not a disagreement; the remaining judge stands alone.
+    assert (items[0]["net_stance"], items[0]["agreement"]) == ("support", "single")
+    assert items[0]["evidence"]["absent_judges"][0]["model"] == "gpt-4o-mini"
     assert summary["auto_approve_eligible"] is False
     by_model = {m["model"]: m for m in summary["models"]}
     assert by_model["gpt-4o-mini"]["cap_exceeded"] == 1
@@ -271,7 +286,8 @@ def test_budget_exhausted_falls_back_for_the_rest(monkeypatch: pytest.MonkeyPatc
     assert summary["budget_s"] == 0.04
     assert summary["budget_exhausted_symbols"] == 1
     assert items[0]["net_stance"] == "support"
-    assert items[1]["net_stance"] == DISSENT
+    # Neither judge reached the second symbol: nobody answered.
+    assert (items[1]["net_stance"], items[1]["agreement"]) == ("abstain", "none")
     second = summary["per_symbol"][1]
     assert all(m["fallback"] and "eval budget exhausted" in m["error"] for m in second["models"])
     assert summary["auto_approve_eligible"] is False
@@ -286,7 +302,7 @@ def test_single_judge_is_single_not_agreement(monkeypatch: pytest.MonkeyPatch) -
 
     assert items[0]["net_stance"] == "caution"
     assert items[0]["agreement"] == "single"
-    assert summary["agreement"] == {"agree": 0, "dissent": 0, "single": 1}
+    assert summary["agreement"] == {"agree": 0, "dissent": 0, "single": 1, "none": 0}
     assert len(summary["models"]) == 1
 
 
@@ -368,7 +384,7 @@ def test_heuristic_mode_is_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == []
     assert summary["mode"] == "heuristic"
     assert summary["models"] == []
-    assert summary["agreement"] == {"agree": 0, "dissent": 0, "single": 1}
+    assert summary["agreement"] == {"agree": 0, "dissent": 0, "single": 1, "none": 0}
     assert items[0]["agreement"] == "single"
     assert summary["per_symbol"][0]["models"] == []
     assert len(items[0]["evidence"]["agent_verdicts"]) == 4
@@ -456,7 +472,12 @@ def test_a_partial_json_reply_is_a_failed_judgement(monkeypatch: pytest.MonkeyPa
     assert gpt["cost_usd"] > 0
     ds = next(m for m in per["models"] if m["model"] == "deepseek-chat")
     assert ds["ok"] is True and ds["net"] == "support"
-    assert items[0]["net_stance"] == DISSENT
+    # A reply that carries only the analyst's block is a judge that did not
+    # answer, not one that disagreed: the judge that did answer stands alone,
+    # and one judge is never agreement, so this is still held.
+    assert (items[0]["net_stance"], items[0]["agreement"]) == ("support", "single")
+    assert items[0]["evidence"]["absent_judges"][0]["model"] == "gpt-4o-mini"
+    assert summary["auto_approve_eligible"] is False
 
 
 def test_a_judge_timeout_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -495,3 +516,41 @@ def test_summary_records_the_leash(monkeypatch: pytest.MonkeyPatch) -> None:
     assert summary["judge_max_turns"] == 4
     monkeypatch.delenv("BIFROST_PERSONA_EVAL_AGENTS", raising=False)
     assert persona_eval.evaluate_candidates([_item("AAPL")])["judge_max_turns"] is None
+
+
+def test_one_judge_can_never_make_a_batch_auto_approvable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The gate is agreement, not the absence of a dissent stance.
+
+    While a fallback forced ``net_stance = dissent`` the old eligibility test —
+    "no symbol carries the dissent stance" — was safe by accident. The moment an
+    absent judge stopped being a dissenting voice, the surviving judge's
+    "support" satisfied it, and a single judge could have marked a whole batch
+    auto-approvable. The leash never allowed that; this flag would have said it
+    was fine, and the flag is what the run records.
+    """
+    _install_judges(
+        monkeypatch,
+        {"deepseek-chat": ("support", "support"), "gpt-4o-mini": TimeoutError("judge timed out")},
+    )
+    items = [_item("AAPL")]
+
+    summary = persona_eval.evaluate_candidates(items, policy={"require_validate_pass": True})
+
+    assert items[0]["agreement"] == "single"
+    assert items[0]["net_stance"] == "support"  # the judge that spoke stands
+    assert summary["auto_approve_eligible"] is False
+    assert summary["eligible_count"] == 0
+
+
+def test_two_judges_that_agree_are_still_the_only_way_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_judges(
+        monkeypatch,
+        {"deepseek-chat": ("support", "support"), "gpt-4o-mini": ("support", "support")},
+    )
+    items = [_item("AAPL")]
+
+    summary = persona_eval.evaluate_candidates(items, policy={"require_validate_pass": True})
+
+    assert items[0]["agreement"] == "agree"
+    assert summary["auto_approve_eligible"] is True
+    assert summary["eligible_count"] == 1
