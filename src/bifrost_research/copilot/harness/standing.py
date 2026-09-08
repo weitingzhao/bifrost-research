@@ -16,6 +16,7 @@ from the cluster matrix. No model is called.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -314,6 +315,87 @@ def pending_memos_by_objective(conn: Any) -> dict[str, dict[str, int]]:
     return counts
 
 
+#: Recurring agent posts. They live under Briefings and carry no call, so the
+#: Decision Inbox counts everything else. By exclusion on purpose, mirroring
+#: ``harnessDraftHelpers.isDecisionKind``: a kind the UI does not yet model is
+#: exactly the draft a human most needs to see.
+BRIEFING_KINDS = frozenset({"morning_brief", "eod_verdict", "daily_digest"})
+
+
+def policy_suggestion_writes(payload: Mapping[str, Any]) -> int:
+    """How many fields approving this suggestion would actually write.
+
+    Answered here because this side is the one that would do the writing: it
+    owns both whitelists and picks between them by author, exactly as
+    ``api/agents.py`` does at approval time. A suggestion whose whitelisted
+    fields all match the policy it was written against is reading material —
+    Approve writes nothing — and an Approve button that does nothing teaches
+    you to clear the queue without looking.
+    """
+    from bifrost_research.repositories.objective import (
+        OWNER_POLICY_WHITELIST,
+        POLICY_SUGGESTION_WHITELIST,
+    )
+
+    suggestion = payload.get("suggestion")
+    if not isinstance(suggestion, Mapping):
+        return 0
+    current = payload.get("current_policy")
+    current = current if isinstance(current, Mapping) else {}
+    owner = payload.get("manual") is True or payload.get("source") == "owner"
+    whitelist = OWNER_POLICY_WHITELIST if owner else POLICY_SUGGESTION_WHITELIST
+    return sum(
+        1
+        for key, proposed in suggestion.items()
+        if key in whitelist and current.get(key) != proposed
+    )
+
+
+def pending_decision_calls(conn: Any) -> dict[str, int]:
+    """The Decision Inbox queue as calls, matching what that page shows.
+
+    ``pending_memos`` counts candidate batches for the active objectives, which
+    is the right number on an objective row and the wrong one on the Inbox
+    badge: the badge sat on a page offering twenty-four calls and said three.
+    Same queue, counted two ways — the failure this module already carries a
+    fix for once, on the folding of repeated batches.
+
+    ``calls`` applies the page's own three rules: briefings are not calls,
+    repeats of the same batch are one call, and a policy suggestion that would
+    write nothing is not a call.
+    """
+    from bifrost_research.repositories import ai_draft as draft_repo
+
+    out = {"calls": 0, "drafts": 0, "folded": 0, "inert": 0, "briefings": 0}
+    try:
+        rows = draft_repo.list_drafts(conn, status="pending", limit=500)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pending decision count failed: %s", exc)
+        return out
+
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+    for r in rows:
+        kind = str(r.get("kind") or "")
+        if kind in BRIEFING_KINDS:
+            out["briefings"] += 1
+            continue
+        out["drafts"] += 1
+        payload = _as_map(r.get("payload"))
+        if kind == "policy_suggestion" and policy_suggestion_writes(payload) == 0:
+            out["inert"] += 1
+            continue
+        if kind == "candidate_batch":
+            key = batch_call_key(payload)
+            # A batch with no symbols cannot be matched to another; it stands alone.
+            if key[1]:
+                if key in seen:
+                    out["folded"] += 1
+                    continue
+                seen.add(key)
+        out["calls"] += 1
+    return out
+
+
 def all_standings(conn: Any, *, status: str = "active", runs_per_objective: int = 30) -> list[dict[str, Any]]:
     from bifrost_research.repositories import objective as obj_repo
 
@@ -370,12 +452,16 @@ def autopilot_standing(conn: Any) -> dict[str, Any]:
         "purse": purse_today(conn),
         "pending_memos": sum(s.get("pending_memos", 0) for s in standings),
         "pending_drafts": sum(s.get("pending_drafts", 0) for s in standings),
+        # The whole Inbox queue, not just candidate batches — this is what the
+        # badge on the Decision Inbox link should say.
+        "pending_decisions": pending_decision_calls(conn),
         "best_conviction": max((s.get("last_memo") or {}).get("best_conviction", 0) or 0 for s in standings) if standings else 0,
         "objectives": standings,
     }
 
 
 __all__ = [
+    "BRIEFING_KINDS",
     "all_standings",
     "autopilot_standing",
     "batch_call_key",
@@ -383,6 +469,8 @@ __all__ = [
     "last_memo",
     "next_scheduled_run",
     "objective_standing",
+    "pending_decision_calls",
+    "policy_suggestion_writes",
     "purse_today",
     "spend_30d",
     "track_record",

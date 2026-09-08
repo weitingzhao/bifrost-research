@@ -101,6 +101,8 @@ market_option_bars = _make_slot_asset(
     ("option-bars",),
     "UTC 22:45 — option-bars",
 )
+# oi-gap-heal retired on 2026-09-08 (P3): open interest now comes from the
+# chain snapshot keyed to the session, so there is no gap left to heal.
 # option-trades left this asset on 2026-09-06: Options Starter has no trades
 # entitlement, so the Plugin retired the slot (it answers skipped, not failed)
 # until the subscription is upgraded. corporate is now a whole-market pull.
@@ -140,12 +142,6 @@ market_trim = _make_slot_asset(
     ("trim",),
     "UTC 02:15 — trim / maintenance",
 )
-market_oi_gap_heal = _make_slot_asset(
-    "market_oi_gap_heal",
-    ("oi-gap-heal",),
-    "UTC Sat 04:00 — oi-gap-heal",
-)
-
 MARKET_SCHEDULE_ASSETS = [
     market_snapshot,
     market_movers,
@@ -159,7 +155,6 @@ MARKET_SCHEDULE_ASSETS = [
     market_fundamentals_market,
     market_option_refresh,
     market_trim,
-    market_oi_gap_heal,
 ]
 
 _MARKET_SPECS: list[tuple[str, str, Any, str, str]] = [
@@ -205,13 +200,6 @@ _MARKET_SPECS: list[tuple[str, str, Any, str, str]] = [
         "option-refresh",
     ),
     ("market_trim_schedule", "market_trim_job", market_trim, "15 2 * * *", "trim"),
-    (
-        "market_oi_gap_heal_schedule",
-        "market_oi_gap_heal_job",
-        market_oi_gap_heal,
-        "0 4 * * 6",
-        "oi-gap-heal",
-    ),
 ]
 
 MARKET_SCHEDULE_JOBS: list[Any] = []

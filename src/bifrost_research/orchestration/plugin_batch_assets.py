@@ -108,9 +108,10 @@ def _enqueue_flex(context: AssetExecutionContext, *, slot: str) -> MaterializeRe
     ],
     group_name="plugin_batch",
     description=(
-        "Gate before Research dbt/engines: Market husbandry.verdict and Flex "
-        "token + ingest outcome must not be degraded. Blocks dual-track when red. "
-        "draining is allowed (queue may still be processing non-EOD slots). "
+        "Gate before Research dbt/engines. Market is judged on the doctor's "
+        "EOD-critical verdict — what the session's tables actually hold "
+        "(chain coverage, open interest, stock bars) — not on cron adherence, "
+        "so a lagging rotate or a maintenance slot no longer blocks dbt. "
         "Flex is checked on its outcome (freshness-kpis: last attempt ok, last "
         "success within FLEX_GATE_MAX_AGE_HOURS) — an accepted enqueue is not a success."
     ),
@@ -126,14 +127,20 @@ def husbandry_gate(context: AssetExecutionContext) -> MaterializeResult:
     ).rstrip("/")
 
     market_verdict = "unknown"
+    eod_verdict = "unknown"
+    eod_detail = "doctor not probed"
+    market_session = "unknown"
     flex_source = "unknown"
     try:
-        dash = get_json(f"{market_base}/market/ingest/queue-dashboard")
-        hus = dash.get("husbandry") if isinstance(dash, dict) else None
-        if isinstance(hus, dict):
-            market_verdict = str(hus.get("verdict") or "unknown")
+        doctor = get_json(f"{market_base}/market/doctor?probes=false", timeout=180.0)
+        market_session = str(doctor.get("session") or "unknown")
+        market_verdict = str(doctor.get("verdict") or "unknown")
+        eod = doctor.get("eod_critical") if isinstance(doctor, dict) else None
+        if isinstance(eod, dict):
+            eod_verdict = str(eod.get("verdict") or "unknown")
+            eod_detail = str(eod.get("detail") or "")
     except Exception as exc:  # noqa: BLE001
-        context.log.warning("market husbandry probe failed: %s", exc)
+        context.log.warning("market doctor probe failed: %s", exc)
 
     try:
         summary = get_json(f"{flex_base}/flex/config/summary")
@@ -153,14 +160,16 @@ def husbandry_gate(context: AssetExecutionContext) -> MaterializeResult:
         raise RuntimeError("husbandry_gate: Flex source=none — block dbt")
     if flex_verdict in ("failed", "stale"):
         raise RuntimeError(f"husbandry_gate: Flex ingest {flex_verdict} ({flex_reason}) — block dbt")
-    if market_verdict in ("missed", "degraded"):
+    if eod_verdict == "critical":
         raise RuntimeError(
-            f"husbandry_gate: Market verdict={market_verdict} — block dbt"
+            f"husbandry_gate: Market EOD session {market_session} incomplete — {eod_detail}"
         )
 
     context.log.info(
-        "husbandry_gate ok market=%s flex_source=%s flex_ingest=%s (%s)",
+        "husbandry_gate ok market=%s eod=%s session=%s flex_source=%s flex_ingest=%s (%s)",
         market_verdict,
+        eod_verdict,
+        market_session,
         flex_source,
         flex_verdict,
         flex_reason,
@@ -169,6 +178,9 @@ def husbandry_gate(context: AssetExecutionContext) -> MaterializeResult:
         metadata=meta(
             {
                 "market_verdict": market_verdict,
+                "market_eod": eod_verdict,
+                "market_eod_detail": eod_detail,
+                "market_session": market_session,
                 "flex_source": flex_source,
                 "flex_ingest": flex_verdict,
                 "flex_ingest_reason": flex_reason,

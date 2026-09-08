@@ -13,9 +13,9 @@ from bifrost_research.orchestration.failure_alerts import alertmanager_payload, 
 
 def test_payload_is_on_the_bifrost_route() -> None:
     now = datetime(2026, 9, 6, 4, 0, tzinfo=timezone.utc)
-    [alert] = alertmanager_payload("market_oi_gap_heal_job", "abc123", "RemoteDisconnected", now=now)
+    [alert] = alertmanager_payload("market_universe_calendar_job", "abc123", "RemoteDisconnected", now=now)
     assert alert["labels"]["alertname"].startswith("Bifrost")
-    assert alert["labels"]["job"] == "market_oi_gap_heal_job"
+    assert alert["labels"]["job"] == "market_universe_calendar_job"
     assert alert["labels"]["run_id"] == "abc123"
     assert alert["startsAt"] == "2026-09-06T04:00:00Z"
     assert alert["endsAt"] == "2026-09-06T10:00:00Z"
