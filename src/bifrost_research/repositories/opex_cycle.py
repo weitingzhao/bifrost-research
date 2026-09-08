@@ -3,6 +3,12 @@
 Reads ``features.option_metric_vanna_charm_daily`` (daily totals) and joins
 against ``features.option_metric_gex_daily`` / ``features.option_metric_max_pain_daily``
 for the per-strike Vanna/Charm map and pin-risk history.
+
+Every predicate compares ``symbol`` directly: the callers upper-case and strip
+before querying, and both ``features.*`` and ``raw_market.stock_daily`` store the
+column already clean. Wrapping the column in ``UPPER(TRIM(...))`` only hid the
+index — on the 13.6M-row ``stock_daily`` that turned a 0.00s point lookup into a
+3.4s scan, and it was most of the OpEx exhibit's 20s.
 """
 
 from __future__ import annotations
@@ -61,7 +67,7 @@ def _resolve_trade_date(conn: Any, symbol: str, trade_date: date | None) -> date
             """
             SELECT MAX(trade_date)
             FROM features.option_metric_vanna_charm_daily
-            WHERE UPPER(TRIM(symbol)) = %s
+            WHERE symbol = %s
             """,
             (symbol.strip().upper(),),
         )
@@ -90,7 +96,7 @@ def get_current(
     sql = f"""
         SELECT {_cols(_DAILY_COLUMNS)}
         FROM features.option_metric_vanna_charm_daily
-        WHERE UPPER(TRIM(symbol)) = %s AND trade_date = %s
+        WHERE symbol = %s AND trade_date = %s
         LIMIT 1
     """
     with conn.cursor() as cur:
@@ -134,7 +140,7 @@ def get_vanna_charm_map(
                SUM(put_gex)  AS put_gex,
                SUM(net_gex)  AS net_gex
         FROM features.option_metric_gex_daily
-        WHERE UPPER(TRIM(symbol)) = %s AND trade_date = %s
+        WHERE symbol = %s AND trade_date = %s
         GROUP BY strike
         ORDER BY strike
         LIMIT %s
@@ -188,7 +194,7 @@ def get_history(
     sql = f"""
         SELECT {_cols(_DAILY_COLUMNS)}
         FROM features.option_metric_vanna_charm_daily
-        WHERE UPPER(TRIM(symbol)) = %s AND trade_date >= %s
+        WHERE symbol = %s AND trade_date >= %s
         ORDER BY trade_date
     """
     with conn.cursor() as cur:
@@ -261,7 +267,7 @@ def get_pin_analysis(
     sql = """
         SELECT trade_date, expiry, max_pain_strike, total_oi
         FROM features.option_metric_max_pain_daily
-        WHERE UPPER(TRIM(symbol)) = %s
+        WHERE symbol = %s
           AND expiry = ANY(%s)
         ORDER BY trade_date DESC
     """
@@ -290,7 +296,7 @@ def get_pin_analysis(
     sql2 = """
         SELECT bar_date, close
         FROM raw_market.stock_daily
-        WHERE UPPER(TRIM(symbol)) = %s
+        WHERE symbol = %s
           AND bar_date = ANY(%s)
     """
     with conn.cursor() as cur:
