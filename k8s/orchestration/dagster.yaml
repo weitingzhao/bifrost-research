@@ -42,6 +42,20 @@ data:
             env: ANALYTICS_PG_PORT
           params:
             options: "-c search_path=ops_dagster,public"
+    # A run whose process dies — a daemon restart, an OOM kill — stays STARTED
+    # forever without this, and a zombie run is indistinguishable from a healthy
+    # one on every surface we have. research_trading_day sat STARTED for 20.5h
+    # on 2026-09-08 with no process behind it and no alert, so the six analytical
+    # faces went unrecomputed from 09-05 and nothing said so.
+    run_monitoring:
+      enabled: true
+      start_timeout_seconds: 300
+      # The job takes ~5 minutes at 27 symbols and is projected near 5 hours at
+      # 575, so the ceiling is generous; it exists to catch a corpse, not to
+      # bound a slow run.
+      max_runtime_seconds: 32400
+      poll_interval_seconds: 120
+      max_resume_run_attempts: 0
 ---
 apiVersion: apps/v1
 kind: Deployment
