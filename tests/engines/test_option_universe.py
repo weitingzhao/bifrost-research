@@ -111,3 +111,97 @@ def test_a_resident_name_dropped_from_the_watchlist_leaves() -> None:
     prev = {"tier": "resident", "entered_on": D - timedelta(days=30), "last_seen": D - timedelta(days=1),
             "history_months": 24, "reason": "watchlist"}
     assert "X" not in build(existing={"X": prev})
+
+
+# ── the ingested route admits index roots only (0.102.0) ──────────────────
+#
+# Until 0.102.0 every underlying in raw_market.option_contract was resident.
+# The Plugin ingests every name in this table, so the rule absorbed its own
+# output: on 2026-09-11 one refresh moved 548 names from core/edge to
+# resident, and the Plugin snapshots resident chains whole (~187,000
+# contracts a session would have become 716,787).
+
+
+class _FakeCursor:
+    def __init__(self, calls: list, answers: dict) -> None:
+        self.calls, self.answers, self._rows = calls, answers, []
+
+    def __enter__(self) -> _FakeCursor:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: object = None) -> None:
+        self.calls.append((sql, params))
+        self._rows = self.answers["watchlist" if "watchlist_cache" in sql else "contract"]
+
+    def fetchall(self) -> list:
+        return self._rows
+
+
+class _FakeConn:
+    def __init__(self, answers: dict) -> None:
+        self.calls: list = []
+        self.answers = answers
+
+    def cursor(self) -> _FakeCursor:
+        return _FakeCursor(self.calls, self.answers)
+
+    def rollback(self) -> None:
+        return None
+
+
+def test_the_ingested_route_asks_only_for_index_roots() -> None:
+    conn = _FakeConn({"watchlist": [("NVDA",)], "contract": [("SPX",)]})
+    resident = ou.load_resident(conn)
+    contract_sql, params = next(c for c in conn.calls if "option_contract" in c[0])
+    assert "ANY(%s)" in contract_sql
+    assert set(params[0]) == ou.INDEX_OPTION_ROOTS
+    assert resident == {"SPY": "benchmark", "QQQ": "benchmark", "IWM": "benchmark",
+                        "NVDA": "watchlist", "SPX": "ingested"}
+
+
+def test_the_index_roots_are_indices_not_stocks() -> None:
+    assert {"SPX", "SPXW", "NDX", "RUT", "VIX"} <= ou.INDEX_OPTION_ROOTS
+    assert not ou.INDEX_OPTION_ROOTS & {"SPY", "QQQ", "IWM", "AAPL", "AVB", "SATS"}
+
+
+def _promoted(days_ago: int = 0) -> dict:
+    """A row the old route made resident: reason 'ingested', placed on the refresh."""
+    return {"tier": "resident", "entered_on": D - timedelta(days=days_ago),
+            "last_seen": D - timedelta(days=days_ago), "history_months": 24, "reason": "ingested"}
+
+
+def test_a_promoted_name_still_liquid_returns_to_core() -> None:
+    out = build(existing={"A": _promoted()}, liquidity={"A": 3e8})
+    assert out["A"]["tier"] == "core"
+
+
+def test_a_promoted_name_in_the_hysteresis_band_keeps_core() -> None:
+    # 1.2e8 <= dv < 2e8: a fresh name would not enter, a core name would stay.
+    out = build(existing={"B": _promoted()}, liquidity={"B": 1.5e8})
+    assert out["B"]["tier"] == "core"
+
+
+def test_a_promoted_name_below_the_exit_floor_steps_down_to_edge() -> None:
+    out = build(existing={"C": _promoted()}, liquidity={"C": 1e7})
+    assert out["C"]["tier"] == "edge"
+    assert out["C"]["reason"] == "stepped-down:ingested"
+    assert out["C"]["history_months"] == ou.EDGE_HISTORY_MONTHS
+
+
+def test_a_stepped_down_name_then_ages_out_like_any_edge_name() -> None:
+    stale = _promoted(days_ago=ou.EDGE_RETENTION_DAYS + 1)
+    assert "D" not in build(existing={"D": stale})
+
+
+def test_an_index_root_stays_resident() -> None:
+    out = build(existing={"SPX": _promoted()}, resident={"SPX": "ingested"})
+    assert out["SPX"]["tier"] == "resident"
+
+
+def test_a_watchlist_resident_still_leaves_when_dropped() -> None:
+    # The step-down is for the route being narrowed, not a new rule for residents.
+    prev = dict(_promoted(), reason="watchlist")
+    assert "W" not in build(existing={"W": prev}, liquidity={"W": 1e7})

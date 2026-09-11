@@ -9,8 +9,10 @@ to read (what to enumerate) and for Research's engines (what to compute).
 
 Tiers, in precedence order:
 
-- resident — holdings, the Owner's watchlist, the IV-radar benchmarks. Never
-  leaves. 24 months of history.
+- resident — holdings, the Owner's watchlist, the IV-radar benchmarks, and the
+  index option roots the Plugin already ingests. Never leaves. 24 months of
+  history. The Plugin snapshots resident chains whole, so this tier is the
+  expensive one: it must stay the names someone asked for.
 - core — common stock in `dim_universe` whose 20-session average dollar
   volume clears CORE_ENTER_USD; leaves only below CORE_EXIT_USD. The
   hysteresis is what keeps a name's percentile history from fragmenting at
@@ -40,6 +42,12 @@ from bifrost_research.schema.schemas import TABLE_RESEARCH_OPTION_UNIVERSE
 logger = logging.getLogger(__name__)
 
 RESIDENT_BENCHMARKS: tuple[str, ...] = ("SPY", "QQQ", "IWM")
+#: Cash-settled US index option roots. A market fact, not a coverage choice: it
+#: says which underlyings are indices, and only already-ingested ones count
+#: (see load_resident), so a root the Plugin does not fetch has no effect.
+INDEX_OPTION_ROOTS: frozenset[str] = frozenset(
+    {"SPX", "SPXW", "XSP", "NDX", "NDXP", "RUT", "RUTW", "MRUT", "VIX", "VIXW", "DJX", "OEX", "XEO"}
+)
 CORE_ENTER_USD = 2.0e8
 CORE_EXIT_USD = 1.2e8  # 60% of the entry floor
 LIQUIDITY_WINDOW_DAYS = 30  # calendar days ≈ 20 sessions
@@ -79,22 +87,33 @@ def load_existing(conn: Any) -> dict[str, dict[str, Any]]:
 
 
 def load_resident(conn: Any) -> dict[str, str]:
-    """symbol → reason: benchmarks, the Plugin's watchlist union, and every underlying already ingested.
+    """symbol → reason: benchmarks, the Plugin's watchlist union, and the index roots already ingested.
 
     The watchlist union is stocks only (`sec_type = 'STK'`), so the index
     underlyings the Owner watches — SPX, SPXW — never arrive through it. They
     are in `raw_market.option_contract` because the Plugin was told to fetch
-    them; that is as good a statement of "the Owner wants this" as the
-    watchlist is, so what is already ingested is grandfathered in.
+    them, so an ingested *index root* is grandfathered in.
+
+    Only index roots. Until 0.102.0 every ingested underlying qualified, and
+    that rule absorbs its own output: the Plugin ingests every name in this
+    table, so each refresh made the names it had just collected resident. On
+    2026-09-11 the first refresh to succeed since 09-05 moved 548 names from
+    core and edge into resident; the Plugin snapshots resident chains whole,
+    and a session's snapshot would have gone from ~187,000 contracts to
+    716,787 — ~18 GB of 90-session retention to ~130 GB.
     """
     out: dict[str, str] = {s: "benchmark" for s in RESIDENT_BENCHMARKS}
-    for sql, reason in (
-        ("SELECT symbol FROM ops_jobs.watchlist_cache", "watchlist"),
-        ("SELECT DISTINCT underlying FROM raw_market.option_contract WHERE underlying IS NOT NULL", "ingested"),
+    for sql, params, reason in (
+        ("SELECT symbol FROM ops_jobs.watchlist_cache", None, "watchlist"),
+        (
+            "SELECT DISTINCT underlying FROM raw_market.option_contract WHERE underlying = ANY(%s)",
+            (sorted(INDEX_OPTION_ROOTS),),
+            "ingested",
+        ),
     ):
         try:
             with conn.cursor() as cur:
-                cur.execute(sql)
+                cur.execute(sql, params)
                 for (sym,) in cur.fetchall() or []:
                     out.setdefault(str(sym).strip().upper(), reason)
         except Exception as exc:  # noqa: BLE001
@@ -136,6 +155,11 @@ def load_edge_candidates(conn: Any) -> set[str]:
 # ── the rule ──────────────────────────────────────────────────────────────
 
 
+def _grandfathered(prev: dict[str, Any] | None) -> bool:
+    """Held as resident only by the old every-ingested-name route (see load_resident)."""
+    return prev is not None and prev.get("tier") == "resident" and prev.get("reason") == "ingested"
+
+
 def build_universe(
     *,
     as_of: date,
@@ -164,7 +188,10 @@ def build_universe(
     for sym, dv in liquidity.items():
         if sym in out:
             continue
-        was_core = existing.get(sym, {}).get("tier") == "core"
+        # A name the old ingested route promoted left core or edge to get there;
+        # which one was not recorded, so it keeps core's exit floor on the way
+        # back rather than having to clear the entry floor again.
+        was_core = existing.get(sym, {}).get("tier") == "core" or _grandfathered(existing.get(sym))
         if dv >= CORE_ENTER_USD or (was_core and dv >= CORE_EXIT_USD):
             place(sym, "core", f"dollar_volume>={CORE_ENTER_USD:.0e}", CORE_HISTORY_MONTHS, seen=True)
 
@@ -174,13 +201,17 @@ def build_universe(
 
     # Edge names not seen today stay until their retention runs out. A core
     # name that fell below the exit floor, or a resident name gone from the
-    # watchlist, is simply not re-placed and leaves.
+    # watchlist, is simply not re-placed and leaves. A name only the old
+    # ingested route held steps down to edge instead: dropping it would
+    # fragment its IV history over a labelling fault, not a change in the name.
     cutoff = as_of - timedelta(days=EDGE_RETENTION_DAYS)
     for sym, prev in existing.items():
-        if sym in out or prev["tier"] != "edge":
+        if sym in out or prev["last_seen"] < cutoff:
             continue
-        if prev["last_seen"] >= cutoff:
+        if prev["tier"] == "edge":
             out[sym] = dict(prev)
+        elif _grandfathered(prev):
+            place(sym, "edge", "stepped-down:ingested", EDGE_HISTORY_MONTHS, seen=False)
     return out
 
 
