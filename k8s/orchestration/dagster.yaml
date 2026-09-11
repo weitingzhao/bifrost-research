@@ -79,7 +79,7 @@ spec:
     spec:
       containers:
         - name: webserver
-          image: 192.168.10.73:30500/bifrost-research:0.100.0-dagster
+          image: 192.168.10.73:30500/bifrost-research:0.101.0-dagster
           imagePullPolicy: IfNotPresent
           command:
             [
@@ -191,7 +191,7 @@ spec:
     spec:
       containers:
         - name: daemon
-          image: 192.168.10.73:30500/bifrost-research:0.100.0-dagster
+          image: 192.168.10.73:30500/bifrost-research:0.101.0-dagster
           imagePullPolicy: IfNotPresent
           command: ["dagster-daemon", "run", "-w", "/opt/dagster/workspace.yaml"]
           envFrom:
@@ -240,7 +240,10 @@ spec:
               memory: 512Mi
             limits:
               cpu: "1"
-              memory: 2Gi
+              # Runs execute inside this container (DefaultRunLauncher), so every step
+              # subprocess shares it. 2Gi OOMKilled it on 2026-09-11 02:34:31 when the
+              # trading-day fan-out started; the job now caps concurrency at 3 as well.
+              memory: 4Gi
       volumes:
         - name: workspace
           configMap:
