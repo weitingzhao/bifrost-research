@@ -214,7 +214,7 @@ def canonical_pnl(context: AssetExecutionContext) -> MaterializeResult:
     group_name="python_analytics",
     description=(
         "Materialized multi-lens scanner → features.stock_signal_scan_daily. "
-        "VRP / OpEx run on dedicated Dagster schedules (research_vrp / research_opex)."
+        "OpEx runs on its own Dagster schedule (research_opex); VRP is in this graph."
     ),
 )
 def scan(context: AssetExecutionContext) -> MaterializeResult:

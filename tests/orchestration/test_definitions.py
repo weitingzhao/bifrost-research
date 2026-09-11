@@ -130,6 +130,26 @@ def test_module_entrypoint_defs() -> None:
     assert "research_vrp_schedule" not in {s.name for s in defs.schedules}
 
 
+def test_husbandry_whitelist_is_exactly_the_declared_schedule_set() -> None:
+    """The API's schedule whitelist must equal Dagster's declared schedules.
+
+    On 2026-09-11 two drifts cancelled out: a retired ``research_vrp_schedule``
+    still listed, and ``market_ticker_details_schedule`` never registered. The
+    totals matched (35 vs 35), so nothing looked wrong while ``/signal-health``
+    attributed stale ``vrp`` to a schedule that does not exist, sending the
+    operator to inspect nothing.
+    """
+    from bifrost_research.api.orchestration_schedules import HUSBANDRY_SCHEDULE_JOBS
+    from bifrost_research.orchestration.definitions import defs
+
+    declared = {s.name for s in defs.schedules}
+    listed = {name for name, _ in HUSBANDRY_SCHEDULE_JOBS}
+    assert listed == declared, (
+        f"ghosts (listed, not declared)={sorted(listed - declared)} "
+        f"missing (declared, not listed)={sorted(declared - listed)}"
+    )
+
+
 def test_market_schedules_cover_the_subscribed_slots_only() -> None:
     """option-trades left the schedule (Options Starter); ratios/short data joined it."""
     from bifrost_research.orchestration.market_slot_schedules import (
