@@ -1,4 +1,11 @@
-{{ config(materialized='view') }}
+{{ config(materialized='table') }}
+{#-
+  A table, not a view: its upstreams are table models, and dbt-postgres rebuilds
+  a table by renaming the old one to __dbt_backup and dropping that CASCADE --
+  which silently drops any view bound to it. As a view this relation vanished at
+  every nightly rebuild of mart_sepa_fundamental_eval until dbt reached it again,
+  and on 2026-09-11 the run died in between, leaving the Stock Screener down.
+-#}
 
 /*
   Pre-aggregated per-condition pass/fail statistics.

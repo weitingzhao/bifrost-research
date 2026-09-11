@@ -56,9 +56,22 @@ _EXCLUDED = (
     | FLEX_MORNING_SELECTION
 )
 
+# Runs launch inside the dagster-daemon container (DefaultRunLauncher), so every
+# step subprocess shares its memory. Uncapped, the gate released dbt, five engines
+# and option_universe at once; on 2026-09-11 that fan-out OOMKilled the container
+# (2Gi) at 02:34:31 and the run died mid-dbt -- after dbt's CASCADE had dropped
+# mart_sepa_criteria_stats, taking the Stock Screener down with it. The engines
+# grew heavy with this week's backfills; three at a time costs minutes, not hours.
+TRADING_DAY_MAX_CONCURRENT = 3
+
 research_trading_day_job = define_asset_job(
     name="research_trading_day",
     selection=AssetSelection.all() - _EXCLUDED,
+    config={
+        "execution": {
+            "config": {"multiprocess": {"max_concurrent": TRADING_DAY_MAX_CONCURRENT}}
+        }
+    },
     description=(
         "Trading-day batch: Plugin EOD enqueue → husbandry gate → "
         "dbt (if present) → SEPA projection → core engines + scan. D10 BLOCKED."

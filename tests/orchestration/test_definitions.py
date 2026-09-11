@@ -150,6 +150,22 @@ def test_husbandry_whitelist_is_exactly_the_declared_schedule_set() -> None:
     )
 
 
+def test_trading_day_caps_step_concurrency() -> None:
+    """Uncapped, the gate released ~7 steps into one 2Gi container and it OOMKilled.
+
+    2026-09-11 02:34:31: dbt + five engines + option_universe started together,
+    the dagster-daemon container died, and the run with it -- mid-dbt, after the
+    CASCADE that drops mart_sepa_criteria_stats and before anything rebuilt it.
+    """
+    from bifrost_research.orchestration.definitions import defs
+    from bifrost_research.orchestration.schedules import TRADING_DAY_MAX_CONCURRENT
+
+    job = defs.resolve_job_def("research_trading_day")
+    execution = job.run_config["execution"]["config"]["multiprocess"]
+    assert execution["max_concurrent"] == TRADING_DAY_MAX_CONCURRENT
+    assert 1 <= TRADING_DAY_MAX_CONCURRENT <= 3
+
+
 def test_market_schedules_cover_the_subscribed_slots_only() -> None:
     """option-trades left the schedule (Options Starter); ratios/short data joined it."""
     from bifrost_research.orchestration.market_slot_schedules import (

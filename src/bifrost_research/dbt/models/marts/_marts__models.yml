@@ -114,7 +114,7 @@ models:
         description: "Decile bucket 1 (best) to 10"
 
   - name: mart_sepa_criteria_stats
-    description: "Pre-aggregated per-condition pass/fail statistics (domain + stats jsonb); materialized as view (Wave 13)"
+    description: "Pre-aggregated per-condition pass/fail statistics (domain + stats jsonb). A table: as a view it was dropped by the CASCADE of every upstream rebuild."
     columns:
       - name: domain
         description: "'fundamental' or 'technical'"
