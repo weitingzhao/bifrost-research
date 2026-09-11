@@ -153,7 +153,12 @@ market_intraday_chain = _make_slot_asset(
 market_treasury = _make_slot_asset(
     "market_treasury",
     ("treasury",),
-    "UTC 12:00 — Treasury constant-maturity yields (risk-free leg for option models)",
+    "UTC 12:00 / 23:00 — Treasury constant-maturity yields (risk-free leg for option models)",
+)
+market_ticker_details = _make_slot_asset(
+    "market_ticker_details",
+    ("ticker-details",),
+    "UTC 03:30 — ticker overview fields (list_date / sector / market_cap), 200 a day",
 )
 
 MARKET_SCHEDULE_ASSETS = [
@@ -171,6 +176,7 @@ MARKET_SCHEDULE_ASSETS = [
     market_trim,
     market_intraday_chain,
     market_treasury,
+    market_ticker_details,
 ]
 
 _MARKET_SPECS: list[tuple[str, str, Any, str, str]] = [
@@ -223,6 +229,19 @@ _MARKET_SPECS: list[tuple[str, str, Any, str, str]] = [
     # was 2026-09-08 while Polygon already held 09-09, so the 12:00 run had
     # simply preceded its arrival. A second late poll costs one page of twenty
     # rows and removes the need to guess the hour correctly.
+    # Reference data, every day. /v3/reference/tickers/{ticker} is the only
+    # source of list_date, sector, market_cap and description; the list endpoint
+    # carries none of them, which is why list_date was null for all 5,317 active
+    # tickers. 200 a day drains that in about four weeks and then keeps
+    # refreshing the stalest. No weekday restriction — a listing date does not
+    # depend on the market being open.
+    (
+        "market_ticker_details_schedule",
+        "market_ticker_details_job",
+        market_ticker_details,
+        "30 3 * * *",
+        "ticker-details",
+    ),
     (
         "market_treasury_schedule",
         "market_treasury_job",
