@@ -216,7 +216,20 @@ _MARKET_SPECS: list[tuple[str, str, Any, str, str]] = [
         "option-refresh",
     ),
     ("market_trim_schedule", "market_trim_job", market_trim, "15 2 * * *", "trim"),
-    ("market_treasury_schedule", "market_treasury_job", market_treasury, "0 12 * * 1-5", "treasury yields"),
+    # Twice a day. The vendor's publication hour is not measurable from what we
+    # keep: `treasury_yield.fetched_at` is a last-write column, because the
+    # slot's 30-day lookback rewrites the whole window on every run, so "when did
+    # this row first become available" is gone. Measured 2026-09-11: our newest
+    # was 2026-09-08 while Polygon already held 09-09, so the 12:00 run had
+    # simply preceded its arrival. A second late poll costs one page of twenty
+    # rows and removes the need to guess the hour correctly.
+    (
+        "market_treasury_schedule",
+        "market_treasury_job",
+        market_treasury,
+        "0 12,23 * * 1-5",
+        "treasury yields",
+    ),
 ]
 
 # The three intraday fires share one job; only the clock differs.
