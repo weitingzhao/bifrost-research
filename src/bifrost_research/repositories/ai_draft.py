@@ -144,9 +144,9 @@ def insert_draft(
         UPDATE {TABLE_RESEARCH_AI_DRAFT}
         SET status = 'expired'
         WHERE kind = %s
-          AND scope = %s
           AND status = 'pending'
           AND id <> %s
+          AND created_at < NOW()
     """
     insert_sql = f"""
         INSERT INTO {TABLE_RESEARCH_AI_DRAFT} (
@@ -169,9 +169,10 @@ def insert_draft(
     try:
         with conn.cursor() as cur:
             if expire_prior_pending:
-                # Same write transaction: older pending digests of this scope
-                # leave the Inbox before the new row becomes visible.
-                cur.execute(expire_sql, (validated_kind, scope_s, did))
+                # Same write transaction: older pending rows of this kind leave
+                # the Inbox. Scope is not a match key — digest scope is one
+                # calendar day, so yesterday's pending would never expire.
+                cur.execute(expire_sql, (validated_kind, did))
             cur.execute(insert_sql, insert_params)
             row = cur.fetchone()
         conn.commit()

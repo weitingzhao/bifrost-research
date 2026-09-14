@@ -17,14 +17,9 @@ class _Cursor:
         self._conn.params.append(params)
         q = " ".join(query.split()).lower()
         if q.startswith("update") and "status = 'expired'" in q:
-            kind, scope, exclude = params
+            kind, exclude = params
             for did, row in list(self._conn.drafts.items()):
-                if (
-                    row["kind"] == kind
-                    and row["scope"] == scope
-                    and row["status"] == "pending"
-                    and did != exclude
-                ):
+                if row["kind"] == kind and row["status"] == "pending" and did != exclude:
                     row["status"] = "expired"
             self._last = None
             return
@@ -64,11 +59,11 @@ class _Conn:
                 "id": "old",
                 "kind": "daily_digest",
                 "payload": "{}",
-                "scope": "digest:2026-09-14",
+                "scope": "digest:2026-09-13",
                 "status": "pending",
                 "generated_by": "digest_agent",
                 "linked_action_id": None,
-                "created_at": "2026-09-13T00:00:00+00:00",
+                "created_at": "2026-09-13T11:30:00+00:00",
                 "expires_at": None,
             },
             "other_kind": {
@@ -94,7 +89,9 @@ class _Conn:
         return None
 
 
-def test_insert_draft_expire_prior_pending_same_scope() -> None:
+def test_insert_draft_expire_prior_pending_across_days() -> None:
+    # A same-scope pair cannot catch the production bug: digest_scope is
+    # digest:YYYY-MM-DD, so yesterday never matches today's INSERT.
     conn = _Conn()
     new = draft_repo.insert_draft(
         conn,
@@ -107,8 +104,11 @@ def test_insert_draft_expire_prior_pending_same_scope() -> None:
     assert conn.drafts["old"]["status"] == "expired"
     assert conn.drafts["other_kind"]["status"] == "pending"
     assert new["status"] == "pending"
-    assert any("status = 'expired'" in s.lower() for s in conn.statements)
-    # Expire runs before insert in the same cursor session.
+    assert conn.drafts["old"]["scope"] != new["scope"]
+    expire_params = next(
+        p for p, s in zip(conn.params, conn.statements) if "status = 'expired'" in s.lower()
+    )
+    assert expire_params == ("daily_digest", new["id"])
     expire_i = next(i for i, s in enumerate(conn.statements) if "status = 'expired'" in s.lower())
     insert_i = next(i for i, s in enumerate(conn.statements) if "insert into" in s.lower())
     assert expire_i < insert_i
