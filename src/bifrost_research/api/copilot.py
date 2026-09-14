@@ -426,6 +426,9 @@ async def copilot_stream(
                 model=body.model,
                 turn_frames=turn_buffer,
                 owner_id=owner_id,
+                client_context=(
+                    None if body.client_context is None else body.client_context.model_dump()
+                ),
             )
             if new_sid and new_sid != body.session_id:
                 try:
@@ -682,6 +685,7 @@ def _persist_turn_best_effort(
     model: str,
     turn_frames: list[dict[str, Any]],
     owner_id: str = "owner",
+    client_context: dict[str, Any] | None = None,
 ) -> str | None:
     """Persist full turn frames after SSE completes (RS-KB1). Returns canonical session id."""
     if not turn_frames:
@@ -705,6 +709,15 @@ def _persist_turn_best_effort(
             if existing and existing.get("title"):
                 title = None
             session_repo.append_turn(conn, sid, turn_frames, title=title)
+            # First turn's page context sticks; COALESCE inside set_origin_once.
+            if client_context:
+                session_repo.set_origin_once(
+                    conn,
+                    sid,
+                    origin_page=client_context.get("origin_page"),
+                    origin_label=client_context.get("origin_label"),
+                    origin_symbol=client_context.get("symbol"),
+                )
             return sid
         finally:
             conn.close()

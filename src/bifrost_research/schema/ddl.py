@@ -707,6 +707,25 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         ADD COLUMN IF NOT EXISTS candidate_ids text[] NOT NULL DEFAULT '{{}}'::text[]
         """
     )
+    # Desk Threads Origin / Symbol — first-turn client_context, never overwritten.
+    cur.execute(
+        f"""
+        ALTER TABLE {SCHEMA_RESEARCH}.copilot_session
+        ADD COLUMN IF NOT EXISTS origin_page text
+        """
+    )
+    cur.execute(
+        f"""
+        ALTER TABLE {SCHEMA_RESEARCH}.copilot_session
+        ADD COLUMN IF NOT EXISTS origin_label text
+        """
+    )
+    cur.execute(
+        f"""
+        ALTER TABLE {SCHEMA_RESEARCH}.copilot_session
+        ADD COLUMN IF NOT EXISTS origin_symbol text
+        """
+    )
 
     # --- P0-2: named, editable Loop policy templates ---
     #

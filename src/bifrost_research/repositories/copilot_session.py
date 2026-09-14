@@ -39,13 +39,17 @@ _COLUMNS = (
     "pinned",
     "group_name",
     "candidate_ids",
+    "origin_page",
+    "origin_label",
+    "origin_symbol",
 )
 
 _SELECT_COLS = (
     "id, owner_id, title, model, agent_trail, messages, "
     "hypothesis_id, created_at, updated_at, expires_at, status, "
     "COALESCE(pinned, false) AS pinned, group_name, "
-    "COALESCE(candidate_ids, '{}'::text[]) AS candidate_ids"
+    "COALESCE(candidate_ids, '{}'::text[]) AS candidate_ids, "
+    "origin_page, origin_label, origin_symbol"
 )
 
 
@@ -159,6 +163,34 @@ def append_turn(
     if not row:
         return None
     return _serialize(_row(row, _COLUMNS))
+
+
+def set_origin_once(
+    conn: _Connection,
+    session_id: str,
+    *,
+    origin_page: str | None = None,
+    origin_label: str | None = None,
+    origin_symbol: str | None = None,
+) -> None:
+    """Write origin fields only where still NULL — first turn wins, later turns do not overwrite."""
+    page = (origin_page or "").strip() or None
+    label = (origin_label or "").strip() or None
+    symbol = (origin_symbol or "").strip().upper() or None
+    if page is None and label is None and symbol is None:
+        return
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE {TABLE_RESEARCH_COPILOT_SESSION}
+            SET origin_page = COALESCE(origin_page, %s),
+                origin_label = COALESCE(origin_label, %s),
+                origin_symbol = COALESCE(origin_symbol, %s)
+            WHERE id = %s::uuid
+            """,
+            (page, label, symbol, session_id),
+        )
+    conn.commit()
 
 
 def touch_expires_at(conn: _Connection, session_id: str) -> None:
@@ -444,6 +476,7 @@ __all__ = [
     "ensure_session",
     "get_session",
     "list_recent",
+    "set_origin_once",
     "touch_expires_at",
     "update_metadata",
 ]

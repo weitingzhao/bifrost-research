@@ -48,6 +48,9 @@ def _summary(row: dict[str, Any]) -> dict[str, Any]:
         "pinned": bool(row.get("pinned") or False),
         "group_name": row.get("group_name"),
         "candidate_ids": list(row.get("candidate_ids") or []),
+        "origin_page": row.get("origin_page"),
+        "origin_label": row.get("origin_label"),
+        "origin_symbol": row.get("origin_symbol"),
     }
 
 
