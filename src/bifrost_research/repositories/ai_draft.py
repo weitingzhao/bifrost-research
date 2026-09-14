@@ -127,18 +127,28 @@ def insert_draft(
     status: str = "pending",
     expires_at: Any = None,
     draft_id: str | None = None,
+    expire_prior_pending: bool = False,
 ) -> dict[str, Any]:
     did = (draft_id or generate_draft_id()).strip()
     validated_kind = _validate_kind(kind)
     validated_status = _validate_status(status)
-    if not scope or not str(scope).strip():
+    scope_s = str(scope).strip()
+    if not scope_s:
         raise ValueError("scope is required")
     if not generated_by or not str(generated_by).strip():
         raise ValueError("generated_by is required")
     if payload is None:
         raise ValueError("payload is required")
 
-    sql = f"""
+    expire_sql = f"""
+        UPDATE {TABLE_RESEARCH_AI_DRAFT}
+        SET status = 'expired'
+        WHERE kind = %s
+          AND scope = %s
+          AND status = 'pending'
+          AND id <> %s
+    """
+    insert_sql = f"""
         INSERT INTO {TABLE_RESEARCH_AI_DRAFT} (
             id, kind, payload, scope, status, generated_by,
             linked_action_id, expires_at
@@ -146,11 +156,11 @@ def insert_draft(
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING {_cols()}
     """
-    params = (
+    insert_params = (
         did,
         validated_kind,
         _serialize_json(payload),
-        str(scope).strip(),
+        scope_s,
         validated_status,
         str(generated_by).strip(),
         linked_action_id,
@@ -158,7 +168,11 @@ def insert_draft(
     )
     try:
         with conn.cursor() as cur:
-            cur.execute(sql, params)
+            if expire_prior_pending:
+                # Same write transaction: older pending digests of this scope
+                # leave the Inbox before the new row becomes visible.
+                cur.execute(expire_sql, (validated_kind, scope_s, did))
+            cur.execute(insert_sql, insert_params)
             row = cur.fetchone()
         conn.commit()
     except Exception:
