@@ -143,11 +143,26 @@ def test_husbandry_whitelist_is_exactly_the_declared_schedule_set() -> None:
     from bifrost_research.orchestration.definitions import defs
 
     declared = {s.name for s in defs.schedules}
-    listed = {name for name, _ in HUSBANDRY_SCHEDULE_JOBS}
+    listed = {name for name, _job, _tz in HUSBANDRY_SCHEDULE_JOBS}
     assert listed == declared, (
         f"ghosts (listed, not declared)={sorted(listed - declared)} "
         f"missing (declared, not listed)={sorted(declared - listed)}"
     )
+
+
+def test_husbandry_tz_matches_schedule_definitions() -> None:
+    """Whitelist tz must equal each ScheduleDefinition.execution_timezone.
+
+    The instigator row has cron but not tz; next_tick_at used to treat every
+    cron as UTC. Sources: schedules.py:85,108 (NY); market_slot_schedules.py:65
+    vs :286 (UTC vs NY intraday); research_aux_schedules.py:310 (per spec).
+    """
+    from bifrost_research.api.orchestration_schedules import HUSBANDRY_SCHEDULE_JOBS
+    from bifrost_research.orchestration.definitions import defs
+
+    declared = {s.name: (s.execution_timezone or "UTC") for s in defs.schedules}
+    for name, _job, tz in HUSBANDRY_SCHEDULE_JOBS:
+        assert declared[name] == tz, f"{name}: whitelist {tz!r} vs definition {declared[name]!r}"
 
 
 def test_trading_day_caps_step_concurrency() -> None:

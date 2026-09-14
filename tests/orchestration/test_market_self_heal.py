@@ -151,4 +151,4 @@ def test_schedule_and_whitelist_wired() -> None:
     assert msh.market_self_heal_schedule.cron_schedule == "45 0 * * 2-6"
     assert msh.market_self_heal_schedule in RESEARCH_SCHEDULES
     assert msh.market_self_heal_job in RESEARCH_JOBS
-    assert ("market_self_heal_schedule", "market_self_heal_job") in HUSBANDRY_SCHEDULE_JOBS
+    assert ("market_self_heal_schedule", "market_self_heal_job", "UTC") in HUSBANDRY_SCHEDULE_JOBS

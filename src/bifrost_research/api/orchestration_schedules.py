@@ -6,46 +6,48 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
-# (schedule_name, pipeline/job name in ops_dagster.runs)
-HUSBANDRY_SCHEDULE_JOBS: tuple[tuple[str, str], ...] = (
-    ("research_trading_day_schedule", "research_trading_day"),
-    ("research_flex_morning_schedule", "research_flex_morning"),
-    ("research_canonical_pnl_schedule", "research_canonical_pnl_job"),
-    ("market_snapshot_schedule", "market_snapshot_job"),
-    ("market_movers_schedule", "market_movers_job"),
-    ("market_reference_schedule", "market_reference_job"),
-    ("market_universe_calendar_schedule", "market_universe_calendar_job"),
-    ("market_related_schedule", "market_related_job"),
-    ("market_option_bars_schedule", "market_option_bars_job"),
-    ("market_corporate_schedule", "market_corporate_job"),
-    ("market_minute_bars_schedule", "market_minute_bars_job"),
-    ("market_fundamentals_rotate_schedule", "market_fundamentals_rotate_job"),
-    ("market_fundamentals_market_schedule", "market_fundamentals_market_job"),
-    ("market_option_refresh_schedule", "market_option_refresh_job"),
-    ("market_trim_schedule", "market_trim_job"),
-    ("market_self_heal_schedule", "market_self_heal_job"),
-    ("market_treasury_schedule", "market_treasury_job"),
-    ("market_ticker_details_schedule", "market_ticker_details_job"),
-    ("market_intraday_chain_1030_schedule", "market_intraday_chain_job"),
-    ("market_intraday_chain_1300_schedule", "market_intraday_chain_job"),
-    ("market_intraday_chain_1530_schedule", "market_intraday_chain_job"),
-    ("research_opex_schedule", "research_opex_job"),
-    ("research_vol_surface_svi_schedule", "research_vol_surface_svi_job"),
-    ("research_iv_solver_schedule", "research_iv_solver_job"),
-    ("research_alert_scan_schedule", "research_alert_scan_job"),
-    ("research_signal_hit_schedule", "research_signal_hit_job"),
-    ("research_settlement_schedule", "research_settlement_job"),
-    ("research_forecast_schedule", "research_forecast_job"),
-    ("research_intraday_schedule", "research_intraday_job"),
-    ("research_event_radar_schedule", "research_event_radar_job"),
-    ("research_daily_digest_schedule", "research_daily_digest_job"),
-    ("research_weekly_policy_review_schedule", "research_weekly_policy_review_job"),
-    ("research_eod_review_schedule", "research_eod_review_job"),
-    ("research_ensure_partitions_schedule", "research_ensure_partitions_job"),
-    ("research_vol_weekly_backfill_schedule", "research_vol_weekly_backfill_job"),
+# (schedule_name, pipeline/job name in ops_dagster.runs, execution_timezone)
+# Timezone is the ScheduleDefinition's, not the instigator row (which omits it).
+HUSBANDRY_SCHEDULE_JOBS: tuple[tuple[str, str, str], ...] = (
+    ("research_trading_day_schedule", "research_trading_day", "America/New_York"),
+    ("research_flex_morning_schedule", "research_flex_morning", "America/New_York"),
+    ("research_canonical_pnl_schedule", "research_canonical_pnl_job", "UTC"),
+    ("market_snapshot_schedule", "market_snapshot_job", "UTC"),
+    ("market_movers_schedule", "market_movers_job", "UTC"),
+    ("market_reference_schedule", "market_reference_job", "UTC"),
+    ("market_universe_calendar_schedule", "market_universe_calendar_job", "UTC"),
+    ("market_related_schedule", "market_related_job", "UTC"),
+    ("market_option_bars_schedule", "market_option_bars_job", "UTC"),
+    ("market_corporate_schedule", "market_corporate_job", "UTC"),
+    ("market_minute_bars_schedule", "market_minute_bars_job", "UTC"),
+    ("market_fundamentals_rotate_schedule", "market_fundamentals_rotate_job", "UTC"),
+    ("market_fundamentals_market_schedule", "market_fundamentals_market_job", "UTC"),
+    ("market_option_refresh_schedule", "market_option_refresh_job", "UTC"),
+    ("market_trim_schedule", "market_trim_job", "UTC"),
+    ("market_self_heal_schedule", "market_self_heal_job", "UTC"),
+    ("market_treasury_schedule", "market_treasury_job", "UTC"),
+    ("market_ticker_details_schedule", "market_ticker_details_job", "UTC"),
+    ("market_intraday_chain_1030_schedule", "market_intraday_chain_job", "America/New_York"),
+    ("market_intraday_chain_1300_schedule", "market_intraday_chain_job", "America/New_York"),
+    ("market_intraday_chain_1530_schedule", "market_intraday_chain_job", "America/New_York"),
+    ("research_opex_schedule", "research_opex_job", "UTC"),
+    ("research_vol_surface_svi_schedule", "research_vol_surface_svi_job", "UTC"),
+    ("research_iv_solver_schedule", "research_iv_solver_job", "UTC"),
+    ("research_alert_scan_schedule", "research_alert_scan_job", "UTC"),
+    ("research_signal_hit_schedule", "research_signal_hit_job", "UTC"),
+    ("research_settlement_schedule", "research_settlement_job", "UTC"),
+    ("research_forecast_schedule", "research_forecast_job", "America/New_York"),
+    ("research_intraday_schedule", "research_intraday_job", "UTC"),
+    ("research_event_radar_schedule", "research_event_radar_job", "UTC"),
+    ("research_daily_digest_schedule", "research_daily_digest_job", "UTC"),
+    ("research_weekly_policy_review_schedule", "research_weekly_policy_review_job", "UTC"),
+    ("research_eod_review_schedule", "research_eod_review_job", "UTC"),
+    ("research_ensure_partitions_schedule", "research_ensure_partitions_job", "UTC"),
+    ("research_vol_weekly_backfill_schedule", "research_vol_weekly_backfill_job", "UTC"),
 )
 
 
@@ -92,7 +94,7 @@ def _iso(dt: datetime | None) -> str | None:
 
 
 def _cron_from_body(payload: dict[str, Any]) -> str | None:
-    """Dagster stores the cron under job_specific_data.cron_schedule (UTC)."""
+    """Dagster stores the cron under job_specific_data.cron_schedule."""
     specific = payload.get("job_specific_data")
     if not isinstance(specific, dict):
         return None
@@ -107,11 +109,14 @@ def next_tick_at(
     *,
     status: str,
     now: datetime | None = None,
+    tz: str = "UTC",
 ) -> str | None:
     """Next fire time in UTC ISO-Z when the schedule is RUNNING; else None.
 
-    STOPPED schedules must not promise a next run. Missing croniter (image
-    without the copilot extra) fails soft to None.
+    ``tz`` is the ScheduleDefinition execution_timezone. Cron fields are wall
+    clock in that zone; the return value is always UTC. STOPPED schedules must
+    not promise a next run. Missing croniter (image without the copilot extra)
+    fails soft to None.
     """
     if status != "RUNNING":
         return None
@@ -123,18 +128,21 @@ def next_tick_at(
     except ImportError:
         logger.debug("croniter not installed — next_tick_at unavailable")
         return None
+    try:
+        zone = ZoneInfo(tz) if tz else timezone.utc
+    except (KeyError, ValueError):
+        zone = timezone.utc
     base = now or datetime.now(timezone.utc)
     if base.tzinfo is None:
         base = base.replace(tzinfo=timezone.utc)
-    else:
-        base = base.astimezone(timezone.utc)
+    base = base.astimezone(zone)
     try:
         nxt = croniter(expr, base).get_next(datetime)
     except (ValueError, KeyError, TypeError) as exc:
         logger.debug("croniter failed for %r: %s", expr, exc)
         return None
     if nxt.tzinfo is None:
-        nxt = nxt.replace(tzinfo=timezone.utc)
+        nxt = nxt.replace(tzinfo=zone)
     return _iso(nxt)
 
 
@@ -268,7 +276,7 @@ def build_schedules_summary(
     stopped = 0
     failures: list[dict[str, Any]] = []
 
-    for sched_name, job_name in HUSBANDRY_SCHEDULE_JOBS:
+    for sched_name, job_name, tz in HUSBANDRY_SCHEDULE_JOBS:
         info = meta.get(sched_name) or {}
         st = str(info.get("status") or "unknown")
         cron = info.get("cron_schedule")
@@ -286,7 +294,7 @@ def build_schedules_summary(
             "job_name": job_name,
             "status": st,
             "cron_schedule": cron_s,
-            "next_tick_at": next_tick_at(cron_s, status=st, now=now),
+            "next_tick_at": next_tick_at(cron_s, status=st, now=now, tz=tz),
             "last_run_status": last_status,
             "last_run_ended_at": last_ended,
             "last_run_id": last_id,

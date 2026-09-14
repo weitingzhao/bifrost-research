@@ -94,14 +94,25 @@ def test_schedules_summary_counts_and_failures() -> None:
     assert snap["next_tick_at"] is None
 
 
-def test_next_tick_at_running_cron_utc() -> None:
+def test_next_tick_at_running_cron_uses_schedule_timezone() -> None:
     from bifrost_research.api.orchestration_schedules import next_tick_at
 
-    now = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)  # Sunday
-    # Mon–Fri 22:30 UTC
-    assert next_tick_at("30 22 * * 1-5", status="RUNNING", now=now) == "2026-09-14T22:30:00Z"
-    assert next_tick_at("30 22 * * 1-5", status="STOPPED", now=now) is None
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)  # Monday 08:00 ET
+    # Mon–Fri 22:30 America/New_York → 02:30Z the next calendar day (EDT).
+    assert (
+        next_tick_at("30 22 * * 1-5", status="RUNNING", now=now, tz="America/New_York")
+        == "2026-09-15T02:30:00Z"
+    )
+    # Same cron in UTC stays 22:30Z the same day.
+    assert next_tick_at("30 22 * * 1-5", status="RUNNING", now=now, tz="UTC") == "2026-09-14T22:30:00Z"
+    assert next_tick_at("30 22 * * 1-5", status="STOPPED", now=now, tz="America/New_York") is None
     assert next_tick_at(None, status="RUNNING", now=now) is None
+    # 04:00 ET Monday: 06:30 America/New_York (Mon–Sat) → 10:30Z the same day (EDT).
+    morning = datetime(2026, 9, 14, 8, 0, tzinfo=timezone.utc)
+    assert (
+        next_tick_at("30 6 * * 1-6", status="RUNNING", now=morning, tz="America/New_York")
+        == "2026-09-14T10:30:00Z"
+    )
 
 
 def test_schedules_summary_computes_next_tick() -> None:
@@ -112,6 +123,10 @@ def test_schedules_summary_computes_next_tick() -> None:
                 "status": "RUNNING",
                 "cron_schedule": "0 3 * * *",
             },
+            "research_trading_day_schedule": {
+                "status": "RUNNING",
+                "cron_schedule": "30 22 * * 1-5",
+            },
             "research_eod_review_schedule": {
                 "status": "STOPPED",
                 "cron_schedule": "30 22 * * 1-5",
@@ -120,7 +135,9 @@ def test_schedules_summary_computes_next_tick() -> None:
         now=now,
     )
     digest = next(s for s in summary["schedules"] if s["name"] == "research_daily_digest_schedule")
+    trading = next(s for s in summary["schedules"] if s["name"] == "research_trading_day_schedule")
     eod = next(s for s in summary["schedules"] if s["name"] == "research_eod_review_schedule")
     assert digest["next_tick_at"] == "2026-09-15T03:00:00Z"
+    assert trading["next_tick_at"] == "2026-09-15T02:30:00Z"
     assert eod["next_tick_at"] is None
     assert eod["cron_schedule"] == "30 22 * * 1-5"
