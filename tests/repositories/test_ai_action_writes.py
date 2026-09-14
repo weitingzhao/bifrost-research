@@ -76,6 +76,32 @@ def test_cost_by_sessions_empty() -> None:
     assert action_repo.cost_by_sessions(_FakeConn([]), []) == {}
 
 
+def test_list_actions_exclude_kinds() -> None:
+    conn = _FakeConn([])
+    action_repo.list_actions(
+        conn,
+        status="executed",
+        action_source="user_chat",
+        exclude_kinds=action_repo._NON_WRITE_KINDS,
+        limit=100,
+    )
+    sql = conn.cursor_obj.sql or ""
+    assert "status = %s" in sql
+    assert "action_source = %s" in sql
+    assert "action_kind <> ALL" in sql
+    assert conn.cursor_obj.params[0] == "executed"
+    assert conn.cursor_obj.params[1] == "user_chat"
+    assert set(conn.cursor_obj.params[2]) == set(action_repo._NON_WRITE_KINDS)
+    assert conn.cursor_obj.params[-2:] == (100, 0)
+
+
+def test_list_actions_without_exclude_kinds() -> None:
+    conn = _FakeConn([])
+    action_repo.list_actions(conn, status="executed", limit=50)
+    assert "action_kind <> ALL" not in (conn.cursor_obj.sql or "")
+    assert conn.cursor_obj.params == ("executed", 50, 0)
+
+
 def test_spend_today_chat_turns_shape() -> None:
     conn = _FakeConn([(1.25, 900)])
     out = action_repo.spend_today_chat_turns(conn)

@@ -184,7 +184,12 @@ def _draft_rows(conn: Any, symbol: str) -> list[dict[str, Any]]:
 
 def _action_rows(conn: Any, symbol: str) -> list[dict[str, Any]]:
     out = []
-    for a in action_repo.list_actions(conn, action_source="user_chat", limit=100):
+    for a in action_repo.list_actions(
+        conn,
+        action_source="user_chat",
+        limit=100,
+        exclude_kinds=action_repo._NON_WRITE_KINDS,
+    ):
         args = _dict(_dict(a.get("input")).get("arguments"))
         if symbol not in _symbols_of(args):
             continue

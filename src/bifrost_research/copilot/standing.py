@@ -94,7 +94,12 @@ def approvals_today(conn: Any, today: str) -> dict[str, int]:
     out = {"proposed": 0, "approved": 0, "executed": 0, "rejected": 0, "error": 0}
     for status in out:
         try:
-            rows = log_repo.list_actions(conn, status=status, limit=100)
+            rows = log_repo.list_actions(
+                conn,
+                status=status,
+                limit=100,
+                exclude_kinds=log_repo._NON_WRITE_KINDS,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("copilot standing: action log (%s) failed: %s", status, exc)
             continue

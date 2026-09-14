@@ -52,7 +52,7 @@ def test_sessions_today_counts_and_trims(monkeypatch) -> None:
 def test_approvals_today_by_status(monkeypatch) -> None:
     from bifrost_research.repositories import ai_action_log
 
-    def fake(conn, *, status, limit):
+    def fake(conn, *, status, limit, **kw):
         if status == "proposed":
             return [{"created_at": f"{_today()}T01:00:00+00:00"}, {"created_at": "2020-01-01T00:00:00+00:00"}]
         if status == "executed":
@@ -62,6 +62,34 @@ def test_approvals_today_by_status(monkeypatch) -> None:
     monkeypatch.setattr(ai_action_log, "list_actions", fake)
     out = standing.approvals_today(object(), _today())
     assert out == {"proposed": 1, "approved": 0, "executed": 1, "rejected": 0, "error": 0}
+
+
+def test_approvals_today_ignores_chat_turn(monkeypatch) -> None:
+    from bifrost_research.repositories import ai_action_log
+
+    captured: dict[str, object] = {}
+
+    def fake(conn, *, status, limit, exclude_kinds=None, **kw):
+        captured[status] = exclude_kinds
+        if status != "executed":
+            return []
+        rows = [
+            {
+                "created_at": f"{_today()}T02:00:00+00:00",
+                "action_kind": "chat_turn",
+            },
+            {
+                "created_at": f"{_today()}T02:01:00+00:00",
+                "action_kind": "research.loop.propose_candidate",
+            },
+        ]
+        skip = set(exclude_kinds or ())
+        return [r for r in rows if r["action_kind"] not in skip]
+
+    monkeypatch.setattr(ai_action_log, "list_actions", fake)
+    out = standing.approvals_today(object(), _today())
+    assert out["executed"] == 1
+    assert captured["executed"] == ai_action_log._NON_WRITE_KINDS
 
 
 def test_standing_is_fail_soft(monkeypatch) -> None:

@@ -325,6 +325,7 @@ def list_actions(
     *,
     status: str | None = None,
     action_source: str | None = None,
+    exclude_kinds: frozenset[str] | set[str] | list[str] | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
@@ -337,6 +338,10 @@ def list_actions(
     if action_source:
         clauses.append("action_source = %s")
         params.append(action_source)
+    skipped = [k for k in (exclude_kinds or ()) if k]
+    if skipped:
+        clauses.append("action_kind <> ALL(%s)")
+        params.append(skipped)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     sql = f"""
         SELECT {_cols()}

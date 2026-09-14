@@ -74,6 +74,50 @@ def _drafts(kw: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def test_action_rows_ignore_chat_turn_and_keep_real_writes(monkeypatch) -> None:
+    """chat_turn spend rows must not occupy the 100-row user_chat window."""
+    monkeypatch.setattr(SV.draft_repo, "list_drafts", lambda conn, **kw: [])
+    monkeypatch.setattr(SV.cand_repo, "list_candidates", lambda conn, **kw: [])
+    monkeypatch.setattr(SV.hyp_repo, "list_hypotheses", lambda conn, **kw: [])
+    captured: dict[str, object] = {}
+
+    def fake_actions(conn, **kw):
+        captured.update(kw)
+        exclude = set(kw.get("exclude_kinds") or ())
+        chats = [
+            {
+                "id": f"chat_{i}",
+                "action_kind": "chat_turn",
+                "status": "executed",
+                "created_at": f"2026-09-07T04:00:{i:02d}+00:00",
+                "input": {"arguments": {"symbol": "NVDA"}},
+            }
+            for i in range(100)
+        ]
+        write = {
+            "id": "act_write",
+            "action_kind": "research.loop.propose_candidate",
+            "status": "executed",
+            "approved_by": "owner",
+            "session_id": "s1",
+            "created_at": "2026-09-07T03:00:01+00:00",
+            "input": {
+                "tool_name": "research.loop.propose_candidate",
+                "arguments": {"symbol": "nvda", "source": "copilot"},
+            },
+        }
+        rows = chats + [write]
+        filtered = [r for r in rows if r["action_kind"] not in exclude]
+        return filtered[: kw.get("limit", 100)]
+
+    monkeypatch.setattr(SV.action_repo, "list_actions", fake_actions)
+    out = SV.build_symbol_verdicts(object(), "NVDA", now=datetime(2026, 9, 7, 5, tzinfo=timezone.utc))
+    assert captured.get("exclude_kinds") == SV.action_repo._NON_WRITE_KINDS
+    tools = [p["tool"] for p in out["proposals"] if p["kind"] == "action"]
+    assert tools == ["research.loop.propose_candidate"]
+    assert out["counts"] == {"action": 1}
+
+
 def test_nothing_said_is_an_empty_answer_not_an_error(monkeypatch) -> None:
     monkeypatch.setattr(SV.draft_repo, "list_drafts", lambda conn, **kw: [])
     monkeypatch.setattr(SV.cand_repo, "list_candidates", lambda conn, **kw: [])
