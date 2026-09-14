@@ -449,6 +449,7 @@ def autopilot_standing(conn: Any) -> dict[str, Any]:
             ),
         },
         "next_run_at": next_scheduled_run(),
+        "next_run_source": "computed",
         "purse": purse_today(conn),
         "pending_memos": sum(s.get("pending_memos", 0) for s in standings),
         "pending_drafts": sum(s.get("pending_drafts", 0) for s in standings),

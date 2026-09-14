@@ -25,6 +25,7 @@ copilot = [
     "anthropic>=0.30",
     "openai>=1.40",
     "openai-agents>=0.6,<1",
+    "croniter>=2.0,<4",
 ]
 dev = [
     "pytest>=8.0",

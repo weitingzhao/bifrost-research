@@ -91,3 +91,36 @@ def test_schedules_summary_counts_and_failures() -> None:
     snap = next(s for s in summary["schedules"] if s["name"] == "market_snapshot_schedule")
     assert snap["status"] == "STOPPED"
     assert snap["last_run_id"] is None
+    assert snap["next_tick_at"] is None
+
+
+def test_next_tick_at_running_cron_utc() -> None:
+    from bifrost_research.api.orchestration_schedules import next_tick_at
+
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)  # Sunday
+    # Mon–Fri 22:30 UTC
+    assert next_tick_at("30 22 * * 1-5", status="RUNNING", now=now) == "2026-09-14T22:30:00Z"
+    assert next_tick_at("30 22 * * 1-5", status="STOPPED", now=now) is None
+    assert next_tick_at(None, status="RUNNING", now=now) is None
+
+
+def test_schedules_summary_computes_next_tick() -> None:
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
+    summary = build_schedules_summary(
+        schedule_meta={
+            "research_daily_digest_schedule": {
+                "status": "RUNNING",
+                "cron_schedule": "0 3 * * *",
+            },
+            "research_eod_review_schedule": {
+                "status": "STOPPED",
+                "cron_schedule": "30 22 * * 1-5",
+            },
+        },
+        now=now,
+    )
+    digest = next(s for s in summary["schedules"] if s["name"] == "research_daily_digest_schedule")
+    eod = next(s for s in summary["schedules"] if s["name"] == "research_eod_review_schedule")
+    assert digest["next_tick_at"] == "2026-09-15T03:00:00Z"
+    assert eod["next_tick_at"] is None
+    assert eod["cron_schedule"] == "30 22 * * 1-5"

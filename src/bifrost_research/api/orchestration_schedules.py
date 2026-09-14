@@ -91,6 +91,53 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _cron_from_body(payload: dict[str, Any]) -> str | None:
+    """Dagster stores the cron under job_specific_data.cron_schedule (UTC)."""
+    specific = payload.get("job_specific_data")
+    if not isinstance(specific, dict):
+        return None
+    cron = specific.get("cron_schedule")
+    if isinstance(cron, str) and cron.strip():
+        return cron.strip()
+    return None
+
+
+def next_tick_at(
+    cron: str | None,
+    *,
+    status: str,
+    now: datetime | None = None,
+) -> str | None:
+    """Next fire time in UTC ISO-Z when the schedule is RUNNING; else None.
+
+    STOPPED schedules must not promise a next run. Missing croniter (image
+    without the copilot extra) fails soft to None.
+    """
+    if status != "RUNNING":
+        return None
+    expr = (cron or "").strip()
+    if not expr:
+        return None
+    try:
+        from croniter import croniter
+    except ImportError:
+        logger.debug("croniter not installed — next_tick_at unavailable")
+        return None
+    base = now or datetime.now(timezone.utc)
+    if base.tzinfo is None:
+        base = base.replace(tzinfo=timezone.utc)
+    else:
+        base = base.astimezone(timezone.utc)
+    try:
+        nxt = croniter(expr, base).get_next(datetime)
+    except (ValueError, KeyError, TypeError) as exc:
+        logger.debug("croniter failed for %r: %s", expr, exc)
+        return None
+    if nxt.tzinfo is None:
+        nxt = nxt.replace(tzinfo=timezone.utc)
+    return _iso(nxt)
+
+
 def _is_permission_error(exc: BaseException) -> bool:
     msg = str(exc).lower()
     return (
@@ -102,7 +149,12 @@ def _is_permission_error(exc: BaseException) -> bool:
 
 def probe_schedule_states(conn: Any) -> dict[str, str]:
     """Map schedule_name → RUNNING|STOPPED|unknown from ops_dagster.instigators."""
-    out: dict[str, str] = {}
+    return {name: meta["status"] for name, meta in probe_schedule_meta(conn).items()}
+
+
+def probe_schedule_meta(conn: Any) -> dict[str, dict[str, Any]]:
+    """Map schedule_name → {status, cron_schedule} from ops_dagster.instigators."""
+    out: dict[str, dict[str, Any]] = {}
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -131,15 +183,20 @@ def probe_schedule_states(conn: Any) -> dict[str, str]:
                     payload = json.loads(body) if isinstance(body, str) else (body or {})
                 except (TypeError, json.JSONDecodeError):
                     continue
-                origin = payload.get("origin") if isinstance(payload, dict) else None
+                if not isinstance(payload, dict):
+                    continue
+                origin = payload.get("origin")
                 name = None
                 if isinstance(origin, dict):
                     name = origin.get("job_name") or origin.get("instigator_name")
                 if not name or name in out:
                     continue
-                out[str(name)] = _normalize_schedule_status(
-                    str(status) if status is not None else payload.get("status")
-                )
+                out[str(name)] = {
+                    "status": _normalize_schedule_status(
+                        str(status) if status is not None else payload.get("status")
+                    ),
+                    "cron_schedule": _cron_from_body(payload),
+                }
     except Exception as exc:
         if _is_permission_error(exc):
             try:
@@ -147,7 +204,7 @@ def probe_schedule_states(conn: Any) -> dict[str, str]:
             except Exception:
                 pass
             return out
-        logger.warning("probe_schedule_states failed: %s", exc)
+        logger.warning("probe_schedule_meta failed: %s", exc)
         try:
             conn.rollback()
         except Exception:
@@ -195,10 +252,16 @@ def probe_last_runs_by_job(conn: Any) -> dict[str, dict[str, Any]]:
 def build_schedules_summary(
     *,
     schedule_states: dict[str, str] | None = None,
+    schedule_meta: dict[str, dict[str, Any]] | None = None,
     last_runs: dict[str, dict[str, Any]] | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Pure builder for unit tests."""
-    states = schedule_states or {}
+    meta = dict(schedule_meta or {})
+    if schedule_states:
+        for name, st in schedule_states.items():
+            bucket = meta.setdefault(name, {})
+            bucket.setdefault("status", st)
     runs = last_runs or {}
     rows: list[dict[str, Any]] = []
     running = 0
@@ -206,7 +269,10 @@ def build_schedules_summary(
     failures: list[dict[str, Any]] = []
 
     for sched_name, job_name in HUSBANDRY_SCHEDULE_JOBS:
-        st = states.get(sched_name, "unknown")
+        info = meta.get(sched_name) or {}
+        st = str(info.get("status") or "unknown")
+        cron = info.get("cron_schedule")
+        cron_s = str(cron) if isinstance(cron, str) else None
         if st == "RUNNING":
             running += 1
         elif st == "STOPPED":
@@ -219,6 +285,8 @@ def build_schedules_summary(
             "name": sched_name,
             "job_name": job_name,
             "status": st,
+            "cron_schedule": cron_s,
+            "next_tick_at": next_tick_at(cron_s, status=st, now=now),
             "last_run_status": last_status,
             "last_run_ended_at": last_ended,
             "last_run_id": last_id,
@@ -255,7 +323,7 @@ def attach_schedules_from_conn(conn: Any, data: dict[str, Any]) -> dict[str, Any
     """Mutate status payload with multi-schedule summary (fail-soft)."""
     try:
         summary = build_schedules_summary(
-            schedule_states=probe_schedule_states(conn),
+            schedule_meta=probe_schedule_meta(conn),
             last_runs=probe_last_runs_by_job(conn),
         )
         data.update(summary)
@@ -275,6 +343,8 @@ __all__ = [
     "HUSBANDRY_SCHEDULE_JOBS",
     "build_schedules_summary",
     "attach_schedules_from_conn",
+    "next_tick_at",
+    "probe_schedule_meta",
     "probe_schedule_states",
     "probe_last_runs_by_job",
 ]
