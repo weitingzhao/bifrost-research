@@ -515,6 +515,7 @@ def copilot_approve(
                     action_id,
                     status="approved",
                     approved_by=owner_id,
+                    session_id=body.session_id,
                 )
         finally:
             conn.close()

@@ -12,7 +12,7 @@ from typing import Any, Protocol
 from bifrost_research.schema.schemas import TABLE_RESEARCH_AI_ACTION_LOG
 
 _ALLOWED_STATUSES = frozenset(
-    {"proposed", "approved", "rejected", "executed", "error"}
+    {"proposed", "approved", "rejected", "executed", "error", "expired"}
 )
 
 _COLUMNS: tuple[str, ...] = (
@@ -177,10 +177,15 @@ def update_action_status(
     status: str,
     approved_by: str | None = None,
     executed_result: Any = None,
+    session_id: str | None = None,
 ) -> dict[str, Any] | None:
     validated = _validate_status(status)
     sets = ["status = %s"]
     params: list[Any] = [validated]
+    # Fill session_id if the row was proposed elsewhere without one (D2).
+    if session_id:
+        sets.append("session_id = COALESCE(session_id, %s)")
+        params.append(session_id)
     if status in {"approved", "rejected"} and approved_by is not None:
         sets.append("approved_by = %s")
         params.append(approved_by)
@@ -213,6 +218,36 @@ def update_action_status(
         conn.rollback()
         raise
     return _row_to_dict(row) if row is not None else None
+
+
+def writes_by_sessions(
+    conn: _Connection,
+    session_ids: list[str],
+) -> dict[str, dict[str, int]]:
+    """Per-session write counts keyed by status — for Desk Threads Writes column."""
+    ids = [s for s in session_ids if s]
+    if not ids:
+        return {}
+    sql = f"""
+        SELECT session_id, status, COUNT(*)::int
+        FROM {TABLE_RESEARCH_AI_ACTION_LOG}
+        WHERE session_id = ANY(%s)
+        GROUP BY session_id, status
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (ids,))
+        rows = cur.fetchall() or []
+    out: dict[str, dict[str, int]] = {}
+    for row in rows:
+        if isinstance(row, Mapping):
+            sid, status, n = row["session_id"], row["status"], row["count"]
+        else:
+            sid, status, n = row[0], row[1], row[2]
+        if not sid:
+            continue
+        bucket = out.setdefault(str(sid), {})
+        bucket[str(status)] = int(n or 0)
+    return out
 
 
 def list_actions(

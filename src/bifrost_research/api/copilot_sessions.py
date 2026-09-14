@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from bifrost_research.auth.deps import require_owner
 from bifrost_research.copilot.bridge_runtime import build_bridge
 from bifrost_research.db.conn import connect
+from bifrost_research.repositories import ai_action_log as action_repo
 from bifrost_research.repositories import copilot_session as session_repo
 
 router = APIRouter(prefix="/research/copilot/sessions", tags=["research-copilot-sessions"])
@@ -38,7 +39,7 @@ class BridgeBody(BaseModel):
     frames_from_message_id: str | None = None
 
 
-def _summary(row: dict[str, Any]) -> dict[str, Any]:
+def _summary(row: dict[str, Any], *, writes: dict[str, int] | None = None) -> dict[str, Any]:
     return {
         "id": row["id"],
         "title": row.get("title"),
@@ -51,6 +52,7 @@ def _summary(row: dict[str, Any]) -> dict[str, Any]:
         "origin_page": row.get("origin_page"),
         "origin_label": row.get("origin_label"),
         "origin_symbol": row.get("origin_symbol"),
+        "writes": writes or {},
     }
 
 
@@ -65,9 +67,15 @@ def list_sessions(
     conn = connect()
     try:
         rows = session_repo.list_recent(conn, owner_id=owner_id, limit=limit, q=q)
+        writes_map = action_repo.writes_by_sessions(
+            conn,
+            [str(r["id"]) for r in rows if r.get("id")],
+        )
     finally:
         conn.close()
-    return SessionListResponse(rows=[_summary(r) for r in rows])
+    return SessionListResponse(
+        rows=[_summary(r, writes=writes_map.get(str(r["id"]))) for r in rows]
+    )
 
 
 @router.get("/{session_id}")
