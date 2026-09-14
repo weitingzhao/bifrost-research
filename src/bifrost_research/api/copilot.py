@@ -25,11 +25,12 @@ from bifrost_research.copilot.approvals import (
     issue_token,
     strip_meta_args,
 )
-from bifrost_research.mcp.server import create_mcp_server
-from bifrost_research.copilot.orchestrator import execute_approved_write, orchestrate
 from bifrost_research.copilot.bridge_presets import list_presets
-from bifrost_research.copilot.rate_limit import check_rate_limit, get_usage, usage_to_dict
+from bifrost_research.copilot.models import provider_for_model_id
+from bifrost_research.copilot.orchestrator import execute_approved_write, orchestrate
+from bifrost_research.copilot.rate_limit import check_rate_limit, get_usage, seed_usage, usage_to_dict
 from bifrost_research.db.conn import connect
+from bifrost_research.mcp.server import create_mcp_server
 from bifrost_research.mcp.tools._write_common import WRITE_TOOL_NAMES
 from bifrost_research.repositories import ai_action_log as action_repo
 from bifrost_research.repositories import copilot_bridge as bridge_repo
@@ -111,6 +112,19 @@ def copilot_usage(owner_id: str = Depends(require_owner)) -> dict[str, Any]:
     try:
         conn = connect()
         try:
+            chat = action_repo.spend_today_chat_turns(conn)
+            cost = float(chat.get("cost_usd") or 0.0)
+            tokens = int(chat.get("tokens") or 0)
+            seeded = seed_usage(tokens=tokens, cost_usd=cost)
+            out.update(
+                {
+                    "tokens_today": tokens,
+                    "cost_estimate_usd": round(cost, 6),
+                    "cap_usd": seeded.cap_usd,
+                    "remaining_usd": round(max(0.0, seeded.cap_usd - cost), 6),
+                    "day_utc": seeded.day_utc,
+                }
+            )
             out.update(bridge_repo.usage_stats_today(conn, owner_id=owner_id))
         finally:
             conn.close()
@@ -383,6 +397,21 @@ async def copilot_stream(
     request: Request,
     owner_id: str = Depends(require_owner),
 ) -> StreamingResponse:
+    # Rebuild the rate-limit counter from the ledger so a restart cannot
+    # reopen the daily cap after chat turns already spent it.
+    try:
+        conn = connect()
+        try:
+            chat = action_repo.spend_today_chat_turns(conn)
+            seed_usage(
+                tokens=int(chat.get("tokens") or 0),
+                cost_usd=float(chat.get("cost_usd") or 0.0),
+            )
+        finally:
+            conn.close()
+    except Exception:
+        logger.debug("copilot stream: spend seed skipped", exc_info=True)
+
     snap = check_rate_limit()
     if snap is None:
         raise HTTPException(
@@ -401,6 +430,7 @@ async def copilot_stream(
     async def event_gen():
         sid = body.session_id
         turn_buffer: list[dict[str, Any]] = []
+        turn_usage: dict[str, Any] = {}
         try:
             async for frame in orchestrate(
                 messages=messages,
@@ -411,6 +441,7 @@ async def copilot_stream(
                 provider=provider,
                 mcp=mcp,
                 turn_buffer=turn_buffer,
+                turn_usage=turn_usage,
                 client_context=(
                     None if body.client_context is None else body.client_context.model_dump()
                 ),
@@ -425,6 +456,7 @@ async def copilot_stream(
                 session_id=sid,
                 model=body.model,
                 turn_frames=turn_buffer,
+                turn_usage=turn_usage,
                 owner_id=owner_id,
                 client_context=(
                     None if body.client_context is None else body.client_context.model_dump()
@@ -685,11 +717,12 @@ def _persist_turn_best_effort(
     session_id: str | None,
     model: str,
     turn_frames: list[dict[str, Any]],
+    turn_usage: dict[str, Any] | None = None,
     owner_id: str = "owner",
     client_context: dict[str, Any] | None = None,
 ) -> str | None:
     """Persist full turn frames after SSE completes (RS-KB1). Returns canonical session id."""
-    if not turn_frames:
+    if not turn_frames and not turn_usage:
         return session_id
     try:
         conn = connect()
@@ -700,16 +733,17 @@ def _persist_turn_best_effort(
                 model=model,
                 owner_id=owner_id,
             )
-            user_text = ""
-            for frame in turn_frames:
-                if frame.get("kind") == "text" and frame.get("role") == "user":
-                    user_text = str(frame.get("content", ""))
-                    break
-            title = session_repo.derive_title(user_text) if user_text else None
-            existing = session_repo.get_session(conn, sid, owner_id=owner_id)
-            if existing and existing.get("title"):
-                title = None
-            session_repo.append_turn(conn, sid, turn_frames, title=title)
+            if turn_frames:
+                user_text = ""
+                for frame in turn_frames:
+                    if frame.get("kind") == "text" and frame.get("role") == "user":
+                        user_text = str(frame.get("content", ""))
+                        break
+                title = session_repo.derive_title(user_text) if user_text else None
+                existing = session_repo.get_session(conn, sid, owner_id=owner_id)
+                if existing and existing.get("title"):
+                    title = None
+                session_repo.append_turn(conn, sid, turn_frames, title=title)
             # First turn's page context sticks; COALESCE inside set_origin_once.
             if client_context:
                 session_repo.set_origin_once(
@@ -719,6 +753,26 @@ def _persist_turn_best_effort(
                     origin_label=client_context.get("origin_label"),
                     origin_symbol=client_context.get("symbol"),
                 )
+            # D3: chat spend ledger — tokens count only, never full text.
+            if turn_usage:
+                tokens = int(turn_usage.get("tokens") or 0)
+                cost = float(turn_usage.get("cost_usd") or 0.0)
+                if tokens > 0 or cost > 0.0:
+                    action_repo.insert_action(
+                        conn,
+                        action_kind="chat_turn",
+                        action_source="user_chat",
+                        session_id=sid,
+                        model=str(turn_usage.get("model") or model),
+                        provider=str(
+                            turn_usage.get("provider")
+                            or provider_for_model_id(str(turn_usage.get("model") or model))
+                        ),
+                        cost_usd=cost,
+                        status="executed",
+                        input_payload={"tokens": tokens},
+                        output_payload=None,
+                    )
             return sid
         finally:
             conn.close()

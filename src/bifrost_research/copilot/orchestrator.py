@@ -30,6 +30,7 @@ async def orchestrate(
     provider: LlmProvider | None = None,
     mcp: Any | None = None,
     turn_buffer: list[dict[str, Any]] | None = None,
+    turn_usage: dict[str, Any] | None = None,
     client_context: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     """Yield SSE frames: token | tool_call | tool_result | error | done | agent_handoff."""
@@ -42,6 +43,7 @@ async def orchestrate(
             session_id=session_id,
             provider=provider,
             mcp=mcp,
+            turn_usage=turn_usage,
         ):
             yield frame
         return
@@ -53,6 +55,7 @@ async def orchestrate(
         owner_id=owner_id,
         max_turns=max(1, max_tools) + 1,
         turn_buffer=turn_buffer,
+        turn_usage=turn_usage,
     ):
         yield frame
 

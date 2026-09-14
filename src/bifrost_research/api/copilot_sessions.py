@@ -39,13 +39,32 @@ class BridgeBody(BaseModel):
     frames_from_message_id: str | None = None
 
 
-def _summary(row: dict[str, Any], *, writes: dict[str, int] | None = None) -> dict[str, Any]:
+def _count_turns(messages: Any) -> int:
+    """User questions only — not tool/handoff frames (D5)."""
+    if not isinstance(messages, list):
+        return 0
+    n = 0
+    for frame in messages:
+        if not isinstance(frame, dict):
+            continue
+        if frame.get("role") == "user" and frame.get("kind", "text") == "text":
+            n += 1
+    return n
+
+
+def _summary(
+    row: dict[str, Any],
+    *,
+    writes: dict[str, int] | None = None,
+    cost_usd: float | None = None,
+) -> dict[str, Any]:
     return {
         "id": row["id"],
         "title": row.get("title"),
         "model": row.get("model"),
         "updated_at": row.get("updated_at"),
         "message_count": len(row.get("messages") or []),
+        "turns": _count_turns(row.get("messages")),
         "pinned": bool(row.get("pinned") or False),
         "group_name": row.get("group_name"),
         "candidate_ids": list(row.get("candidate_ids") or []),
@@ -53,6 +72,7 @@ def _summary(row: dict[str, Any], *, writes: dict[str, int] | None = None) -> di
         "origin_label": row.get("origin_label"),
         "origin_symbol": row.get("origin_symbol"),
         "writes": writes or {},
+        "cost_usd": cost_usd,
     }
 
 
@@ -67,14 +87,20 @@ def list_sessions(
     conn = connect()
     try:
         rows = session_repo.list_recent(conn, owner_id=owner_id, limit=limit, q=q)
-        writes_map = action_repo.writes_by_sessions(
-            conn,
-            [str(r["id"]) for r in rows if r.get("id")],
-        )
+        sids = [str(r["id"]) for r in rows if r.get("id")]
+        writes_map = action_repo.writes_by_sessions(conn, sids)
+        cost_map = action_repo.cost_by_sessions(conn, sids)
     finally:
         conn.close()
     return SessionListResponse(
-        rows=[_summary(r, writes=writes_map.get(str(r["id"]))) for r in rows]
+        rows=[
+            _summary(
+                r,
+                writes=writes_map.get(str(r["id"])),
+                cost_usd=cost_map.get(str(r["id"])),
+            )
+            for r in rows
+        ]
     )
 
 

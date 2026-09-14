@@ -220,11 +220,19 @@ def update_action_status(
     return _row_to_dict(row) if row is not None else None
 
 
+# Spend / audit rows that are not "writes the Copilot asked to do".
+_NON_WRITE_KINDS = frozenset({"chat_turn", "guardrail_reject"})
+
+
 def writes_by_sessions(
     conn: _Connection,
     session_ids: list[str],
 ) -> dict[str, dict[str, int]]:
-    """Per-session write counts keyed by status — for Desk Threads Writes column."""
+    """Per-session write counts keyed by status — for Desk Threads Writes column.
+
+    Excludes ``chat_turn`` (D3 spend ledger) and ``guardrail_reject`` so Cost
+    rows do not inflate Writes / With writes.
+    """
     ids = [s for s in session_ids if s]
     if not ids:
         return {}
@@ -232,10 +240,11 @@ def writes_by_sessions(
         SELECT session_id, status, COUNT(*)::int
         FROM {TABLE_RESEARCH_AI_ACTION_LOG}
         WHERE session_id = ANY(%s)
+          AND action_kind <> ALL(%s)
         GROUP BY session_id, status
     """
     with conn.cursor() as cur:
-        cur.execute(sql, (ids,))
+        cur.execute(sql, (ids, list(_NON_WRITE_KINDS)))
         rows = cur.fetchall() or []
     out: dict[str, dict[str, int]] = {}
     for row in rows:
@@ -248,6 +257,67 @@ def writes_by_sessions(
         bucket = out.setdefault(str(sid), {})
         bucket[str(status)] = int(n or 0)
     return out
+
+
+def cost_by_sessions(
+    conn: _Connection,
+    session_ids: list[str],
+) -> dict[str, float]:
+    """Per-session chat spend (``chat_turn`` rows) — Desk Threads Cost column."""
+    ids = [s for s in session_ids if s]
+    if not ids:
+        return {}
+    sql = f"""
+        SELECT session_id, COALESCE(SUM(cost_usd), 0)
+        FROM {TABLE_RESEARCH_AI_ACTION_LOG}
+        WHERE session_id = ANY(%s)
+          AND action_kind = 'chat_turn'
+        GROUP BY session_id
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (ids,))
+        rows = cur.fetchall() or []
+    out: dict[str, float] = {}
+    for row in rows:
+        if isinstance(row, Mapping):
+            sid, cost = row["session_id"], list(row.values())[1]
+        else:
+            sid, cost = row[0], row[1]
+        if sid:
+            out[str(sid)] = round(float(cost or 0.0), 6)
+    return out
+
+
+def spend_today_chat_turns(conn: _Connection) -> dict[str, float | int]:
+    """UTC-day chat spend from the ledger — survives process restart."""
+    sql = f"""
+        SELECT
+            COALESCE(SUM(cost_usd), 0),
+            COALESCE(
+                SUM(
+                    CASE
+                        WHEN input ? 'tokens'
+                        THEN NULLIF(input->>'tokens', '')::int
+                        ELSE 0
+                    END
+                ),
+                0
+            )
+        FROM {TABLE_RESEARCH_AI_ACTION_LOG}
+        WHERE action_kind = 'chat_turn'
+          AND created_at >= timezone('UTC', date_trunc('day', timezone('UTC', now())))
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        row = cur.fetchone()
+    if row is None:
+        return {"cost_usd": 0.0, "tokens": 0}
+    if isinstance(row, Mapping):
+        vals = list(row.values())
+        cost, tokens = vals[0], vals[1]
+    else:
+        cost, tokens = row[0], row[1]
+    return {"cost_usd": float(cost or 0.0), "tokens": int(tokens or 0)}
 
 
 def list_actions(

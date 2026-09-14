@@ -91,6 +91,27 @@ def record_usage(*, tokens: int, cost_usd: float) -> UsageSnapshot:
         )
 
 
+def seed_usage(*, tokens: int, cost_usd: float) -> UsageSnapshot:
+    """Replay ledger spend into the process counter (max of both).
+
+    After a restart the in-memory rate-limit counter is zero; standing already
+    reads the DB. Seeding keeps the fast-path cap honest across processes.
+    """
+    global _tokens_today, _cost_today
+    with _lock:
+        _roll_day_locked()
+        _tokens_today = max(_tokens_today, max(0, int(tokens)))
+        _cost_today = max(_cost_today, max(0.0, float(cost_usd)))
+        cap = _cap_usd()
+        return UsageSnapshot(
+            tokens_today=_tokens_today,
+            cost_estimate_usd=round(_cost_today, 6),
+            cap_usd=cap,
+            remaining_usd=round(max(0.0, cap - _cost_today), 6),
+            day_utc=_day_utc,
+        )
+
+
 def reset_usage_for_tests() -> None:
     """Test helper — clear counters."""
     global _day_utc, _tokens_today, _cost_today

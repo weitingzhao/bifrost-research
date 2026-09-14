@@ -118,4 +118,24 @@ def resolve_model_for_agent(model_id: str) -> Model:
     raise ModelConfigError(f"Unknown model id: {model_id!r}")
 
 
-__all__ = ["ChatEndpoint", "ModelConfigError", "resolve_chat_endpoint", "resolve_model_for_agent"]
+def provider_for_model_id(model_id: str) -> str:
+    """Best-effort provider label for spend ledger rows (never raises)."""
+    lower = (model_id or "").strip().lower()
+    if lower.startswith("deepseek"):
+        return "deepseek"
+    if lower.startswith(("ollama", "llama")):
+        return "ollama"
+    if lower.startswith(("gpt", "openai")):
+        return "openai"
+    if lower.startswith("claude"):
+        return "anthropic"
+    return "unknown"
+
+
+__all__ = [
+    "ChatEndpoint",
+    "ModelConfigError",
+    "provider_for_model_id",
+    "resolve_chat_endpoint",
+    "resolve_model_for_agent",
+]

@@ -15,8 +15,6 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from bifrost_research.copilot.rate_limit import get_usage, usage_to_dict
-
 logger = logging.getLogger(__name__)
 
 RECENT_SESSIONS = 3
@@ -105,9 +103,35 @@ def approvals_today(conn: Any, today: str) -> dict[str, int]:
 
 
 def usage_today(conn: Any, owner_id: str) -> dict[str, Any]:
+    """Chat spend for the UTC day — ledger first, process counter for cap math.
+
+    Process-local ``get_usage`` is the rate-limit fast path; after restart it
+    starts at zero. Standing (and the Desk spend chip) read ``chat_turn`` rows
+    so the figure survives restarts. Cap / remaining still come from the same
+    ``COPILOT_DAILY_CAP_USD`` env the rate-limit uses.
+    """
+    from bifrost_research.copilot.rate_limit import get_usage, seed_usage, usage_to_dict
+    from bifrost_research.repositories import ai_action_log as action_repo
     from bifrost_research.repositories import copilot_bridge as bridge_repo
 
-    out = usage_to_dict(get_usage())
+    snap = get_usage()
+    out = usage_to_dict(snap)
+    try:
+        chat = action_repo.spend_today_chat_turns(conn)
+        cost = float(chat.get("cost_usd") or 0.0)
+        tokens = int(chat.get("tokens") or 0)
+        seeded = seed_usage(tokens=tokens, cost_usd=cost)
+        out.update(
+            {
+                "tokens_today": tokens,
+                "cost_estimate_usd": round(cost, 6),
+                "cap_usd": seeded.cap_usd,
+                "remaining_usd": round(max(0.0, seeded.cap_usd - cost), 6),
+                "day_utc": seeded.day_utc,
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("copilot standing: chat spend read failed: %s", exc)
     try:
         out.update(bridge_repo.usage_stats_today(conn, owner_id=owner_id))
     except Exception as exc:  # noqa: BLE001

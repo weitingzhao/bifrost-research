@@ -26,7 +26,7 @@ from bifrost_research.copilot.guardrails import (
     D10_FREEZE_MESSAGE,
     check_input,
 )
-from bifrost_research.copilot.models import ModelConfigError
+from bifrost_research.copilot.models import ModelConfigError, provider_for_model_id
 from bifrost_research.copilot.providers import estimate_cost
 from bifrost_research.copilot.rate_limit import record_usage
 from bifrost_research.copilot.tracing import maybe_configure_otlp, trace_event
@@ -368,6 +368,26 @@ def _text_delta(event: RawResponsesStreamEvent) -> str:
     return ""
 
 
+def _fill_turn_usage(
+    turn_usage: dict[str, Any] | None,
+    *,
+    tokens: int,
+    cost_usd: float,
+    model_id: str,
+) -> None:
+    if turn_usage is None:
+        return
+    turn_usage.clear()
+    turn_usage.update(
+        {
+            "tokens": int(tokens),
+            "cost_usd": round(float(cost_usd), 6),
+            "model": model_id,
+            "provider": provider_for_model_id(model_id),
+        }
+    )
+
+
 async def stream_agent(
     *,
     messages: list[dict[str, Any]],
@@ -376,6 +396,7 @@ async def stream_agent(
     owner_id: str | None = None,
     max_turns: int = 12,
     turn_buffer: list[dict[str, Any]] | None = None,
+    turn_usage: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     """Yield SSE frames compatible with RS-E contract + RS-F extensions."""
     recorder = _TurnFrameRecorder(turn_buffer)
@@ -584,6 +605,12 @@ async def stream_agent(
     recorder.finalize()
 
     record_usage(tokens=total_tokens, cost_usd=total_cost)
+    _fill_turn_usage(
+        turn_usage,
+        tokens=total_tokens,
+        cost_usd=total_cost,
+        model_id=model_id,
+    )
     logger.info(
         "copilot_turn session=%s model=%s tokens=%s cost=%.6f agent=%s",
         session_id,

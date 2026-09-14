@@ -12,6 +12,7 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
+from bifrost_research.copilot.models import provider_for_model_id
 from bifrost_research.copilot.providers import (
     LlmProvider,
     ProviderTurn,
@@ -24,6 +25,26 @@ from bifrost_research.mcp.server import ALL_TOOL_NAMES, TOOL_NAMES, create_mcp_s
 from bifrost_research.mcp.tools._write_common import WRITE_TOOL_NAMES
 
 logger = logging.getLogger("bifrost.copilot.audit")
+
+
+def _fill_turn_usage(
+    turn_usage: dict[str, Any] | None,
+    *,
+    tokens: int,
+    cost_usd: float,
+    model: str,
+) -> None:
+    if turn_usage is None:
+        return
+    turn_usage.clear()
+    turn_usage.update(
+        {
+            "tokens": int(tokens),
+            "cost_usd": round(float(cost_usd), 6),
+            "model": model,
+            "provider": provider_for_model_id(model),
+        }
+    )
 
 _SYSTEM = (
     "You are Bifrost Research Copilot. Answer using Research MCP tools when needed. "
@@ -137,6 +158,7 @@ async def orchestrate(
     session_id: str | None = None,
     provider: LlmProvider | None = None,
     mcp: Any | None = None,
+    turn_usage: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     """Yield SSE frames: token | tool_call | tool_result | error | done."""
     llm = provider or resolve_provider(model)
@@ -164,6 +186,7 @@ async def orchestrate(
         if turn.error:
             yield _sse("error", {"message": turn.error, "session_id": session_id})
             record_usage(tokens=total_tokens, cost_usd=total_cost)
+            _fill_turn_usage(turn_usage, tokens=total_tokens, cost_usd=total_cost, model=model)
             yield _sse("done", {"session_id": session_id, "ok": False})
             return
 
@@ -172,6 +195,7 @@ async def orchestrate(
 
         if not turn.tool_calls:
             record_usage(tokens=total_tokens, cost_usd=total_cost)
+            _fill_turn_usage(turn_usage, tokens=total_tokens, cost_usd=total_cost, model=model)
             logger.info(
                 "copilot_turn session=%s model=%s tokens=%s cost=%.6f tools=%s",
                 session_id,
@@ -250,6 +274,7 @@ async def orchestrate(
         break
 
     record_usage(tokens=total_tokens, cost_usd=total_cost)
+    _fill_turn_usage(turn_usage, tokens=total_tokens, cost_usd=total_cost, model=model)
     yield _sse("done", {"session_id": session_id, "ok": True, "tokens": total_tokens})
 
 
