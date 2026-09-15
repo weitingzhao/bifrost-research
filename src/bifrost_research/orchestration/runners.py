@@ -44,6 +44,13 @@ def run_option_universe() -> dict[str, Any]:
     return universe_entry.run()
 
 
+def run_option_pinned_contract() -> dict[str, Any]:
+    """Refresh `research.option_pinned_contract`: held and recently traded option legs (R9 F5)."""
+    from bifrost_research.engines.option_pinned import entry as pinned_entry
+
+    return pinned_entry.run()
+
+
 def run_signal_hit_fwd_fill(*, lookback_days: int = 30) -> dict[str, Any]:
     """Fill hit_5d / hit_20d on lens rows whose forward window has elapsed.
 

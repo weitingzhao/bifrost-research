@@ -573,6 +573,35 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         ON {SCHEMA_RESEARCH}.option_universe (tier, last_seen DESC)
         """
     )
+    # --- Wave R9 F5: research.option_pinned_contract ---
+    # Which option contracts must keep their history no matter what the
+    # retention window says: the ones the Owner holds, and the ones traded
+    # recently enough that a post-mortem still needs their bars. The Plugin
+    # reads it to backfill (P7) and to keep them out of its delete candidates
+    # (P8). Keyed by option_ticker — one row per contract, and the Plugin joins
+    # by ticker.
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.option_pinned_contract (
+            option_ticker   text        PRIMARY KEY,
+            underlying      text        NOT NULL,
+            expiry          date        NOT NULL,
+            strike          numeric     NOT NULL,
+            option_right    text        NOT NULL CHECK (option_right IN ('C','P')),
+            reason          text        NOT NULL CHECK (reason IN ('held','closed_recent')),
+            first_pinned    date        NOT NULL,
+            last_seen       date        NOT NULL,
+            pin_until       date        NOT NULL,
+            updated_at      timestamptz NOT NULL DEFAULT now()
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS option_pinned_contract_pin_until
+        ON {SCHEMA_RESEARCH}.option_pinned_contract (pin_until)
+        """
+    )
     # --- Wave Loop v1: research.candidate_pool ---
     cur.execute(
         f"""

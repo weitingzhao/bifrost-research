@@ -255,6 +255,23 @@ def option_universe(context: AssetExecutionContext) -> MaterializeResult:
 
 
 @asset(
+    key=AssetKey(["engines", "option_pinned_contract"]),
+    deps=[AssetKey(["engines", "option_universe"])],
+    group_name="python_analytics",
+    description=(
+        "research.option_pinned_contract — the option contracts whose history the "
+        "Plugin's retention window must not touch: held legs and anything traded in "
+        "the last 180 days. Read from the Trade API over HTTP; a Trade API that is "
+        "down skips the round rather than emptying the list."
+    ),
+)
+def option_pinned_contract(context: AssetExecutionContext) -> MaterializeResult:
+    result = runners.run_option_pinned_contract()
+    context.log.info("option_pinned_contract result=%s", result)
+    return MaterializeResult(metadata=_metadata(result))
+
+
+@asset(
     key=AssetKey(["engines", "signal_hit_fwd_fill"]),
     deps=[AssetKey(["engines", "signal_hit"])],
     group_name="python_analytics",
@@ -286,4 +303,5 @@ ENGINE_ASSETS = [
     candidate_outcome,
     signal_hit_fwd_fill,
     option_universe,
+    option_pinned_contract,
 ]

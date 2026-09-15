@@ -125,6 +125,13 @@ spec:
                   name: bifrost-research-secrets
                   key: flex-query-write-token
                   optional: true
+            # option_pinned_contract reads held legs and executions from the
+            # Trade read-only API; a run that cannot reach it skips instead of
+            # writing an empty pin list.
+            - name: TRADE_API_TRADING_URL
+              value: "http://api-trading.bifrost-prod.svc.cluster.local:8769"
+            - name: TRADE_API_TIMEOUT
+              value: "8.0"
           volumeMounts:
             - name: workspace
               mountPath: /opt/dagster/workspace.yaml
@@ -225,6 +232,13 @@ spec:
                   name: bifrost-research-secrets
                   key: flex-query-write-token
                   optional: true
+            # option_pinned_contract reads held legs and executions from the
+            # Trade read-only API; a run that cannot reach it skips instead of
+            # writing an empty pin list.
+            - name: TRADE_API_TRADING_URL
+              value: "http://api-trading.bifrost-prod.svc.cluster.local:8769"
+            - name: TRADE_API_TIMEOUT
+              value: "8.0"
           volumeMounts:
             - name: workspace
               mountPath: /opt/dagster/workspace.yaml
