@@ -270,6 +270,19 @@ maint_vol_weekly_backfill = _run_asset(
     fn=_run_vol_weekly_backfill,
 )
 
+# Materialised by hand, not on a schedule: it fills terrain for the sessions the
+# Owner opened positions that are now closed, and reports every session whose
+# inputs cannot support a regime rather than scoring one from defaults (R9 F3).
+maint_terrain_backfill = _run_asset(
+    key_path=["maintenance", "terrain_backfill"],
+    group=GROUP_MAINT,
+    description=(
+        "Terrain on closed instances' opening sessions, only where GEX / momentum / IV "
+        "really cover the date. Manual run; reports input floors and coverage."
+    ),
+    fn=runners.run_terrain_backfill,
+)
+
 RESEARCH_AUX_ASSETS = [
     engines_opex,
     engines_vol_surface_svi,
@@ -286,6 +299,7 @@ RESEARCH_AUX_ASSETS = [
     agents_eod_review,
     maint_ensure_partitions,
     maint_vol_weekly_backfill,
+    maint_terrain_backfill,
 ]
 
 

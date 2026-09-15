@@ -44,6 +44,13 @@ def run_option_universe() -> dict[str, Any]:
     return universe_entry.run()
 
 
+def run_terrain_backfill() -> dict[str, Any]:
+    """Fill terrain on the sessions closed instances were opened, where the inputs exist (R9 F3)."""
+    from bifrost_research.engines.forecast import terrain_backfill
+
+    return terrain_backfill.run()
+
+
 def run_option_pinned_contract() -> dict[str, Any]:
     """Refresh `research.option_pinned_contract`: held and recently traded option legs (R9 F5)."""
     from bifrost_research.engines.option_pinned import entry as pinned_entry
