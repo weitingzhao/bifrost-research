@@ -17,6 +17,7 @@ from bifrost_research.engines.backtest.settlement import (
     aggregate_accuracy,
     settle_forecast,
 )
+from bifrost_research.engines.event_radar.placeholders import PLACEHOLDER_SQL
 from bifrost_research.engines.event_radar.pipeline import run_pipeline
 from bifrost_research.engines.forecast.llm import get_default_provider
 from bifrost_research.engines.forecast.terrain import compute_market_terrain
@@ -651,22 +652,38 @@ def list_event_radar(
             params.append(batch_id)
         if not include_dropped:
             clauses.append("(dropped IS NULL OR dropped = false)")
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        visible = [*clauses, f"NOT {PLACEHOLDER_SQL}"]
+        where_visible = f"WHERE {' AND '.join(visible)}"
+        where_placeholder = (
+            f"WHERE {' AND '.join([*clauses, PLACEHOLDER_SQL])}"
+            if clauses
+            else f"WHERE {PLACEHOLDER_SQL}"
+        )
         sql = f"""
             SELECT {', '.join(cols)}
             FROM features.event_signal_radar_daily
-            {where}
+            {where_visible}
             ORDER BY collected_at DESC NULLS LAST, importance DESC NULLS LAST
             LIMIT %s
+        """
+        count_sql = f"""
+            SELECT COUNT(*) FROM features.event_signal_radar_daily
+            {where_placeholder}
         """
         params.append(limit)
         with conn.cursor() as cur:
             cur.execute(sql, tuple(params))
             raw = cur.fetchall() or []
+            cur.execute(count_sql, tuple(params[:-1]))
+            excluded = int((cur.fetchone() or [0])[0] or 0)
         rows = [_row_dict(r, cols) for r in raw]
     finally:
         conn.close()
-    return {"rows": rows, "count": len(rows)}
+    return {
+        "rows": rows,
+        "count": len(rows),
+        "excluded_placeholder_rows": excluded,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -877,16 +894,31 @@ def event_calendar(
                 FROM features.event_signal_radar_daily
                 WHERE dropped IS DISTINCT FROM true
                   AND time_code = 2
+                  AND NOT {PLACEHOLDER_SQL}
                 ORDER BY event_date ASC NULLS LAST, importance DESC NULLS LAST
                 LIMIT %s
                 """,
                 (limit,),
             )
             raw = cur.fetchall() or []
+            cur.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM features.event_signal_radar_daily
+                WHERE dropped IS DISTINCT FROM true
+                  AND time_code = 2
+                  AND {PLACEHOLDER_SQL}
+                """
+            )
+            excluded = int((cur.fetchone() or [0])[0] or 0)
         rows = [_row_dict(r, cols) for r in raw]
     finally:
         conn.close()
-    return {"rows": rows, "count": len(rows)}
+    return {
+        "rows": rows,
+        "count": len(rows),
+        "excluded_placeholder_rows": excluded,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -100,13 +100,13 @@ def run_event_radar(
     sample_text: str | None = None,
     input_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Run Event Radar from Research-workspace input files (decision A).
+    """Run Event Radar from Research-workspace input files.
 
-    Prefer ``EVENT_RADAR_INPUT_DIR`` / Cron file ingest. ``sample_text`` remains
-    a fallback for Dagster dry materialization when the input directory is empty.
+    An empty input directory is idle: no pipeline, no upsert. ``sample_text`` is
+    only for an explicit dry-run and even then does not write.
     """
     from bifrost_research.engines.event_radar.ingest import ingest_directory
-    from bifrost_research.engines.event_radar.pipeline import run_pipeline, upsert_events
+    from bifrost_research.engines.event_radar.pipeline import run_pipeline
 
     summary = ingest_directory(input_dir, upsert=True, archive=None)
     if summary.files_processed or summary.files_seen:
@@ -116,31 +116,23 @@ def run_event_radar(
             **summary.to_dict(),
         }
 
-    payload = sample_text or (
-        "Fed officials signal rate pause. Tech mega-caps rally on AI spend. "
-        "Oil inventories draw unexpectedly."
-    )
-    result = run_pipeline(payload, source="dagster-fallback")
-    written = 0
-    try:
-        from bifrost_research.db.conn import connect
+    if sample_text is None:
+        return {
+            "engine": "event_radar",
+            "mode": "idle",
+            "files_seen": 0,
+        }
 
-        conn = connect()
-        try:
-            written = upsert_events(conn, result)
-        finally:
-            conn.close()
-    except Exception as exc:  # noqa: BLE001 — tolerate missing DB in local dry runs
-        logger.warning("event_radar upsert skipped: %s", exc)
+    result = run_pipeline(sample_text, source="dry-run")
     return {
         "engine": "event_radar",
-        "mode": "sample_fallback",
+        "mode": "dry_run",
         "batch_id": result.batch_id,
         "raw_count": result.raw_count,
         "kept": len(result.kept),
         "dropped": len(result.dropped),
         "self_check": result.self_check,
-        "rows_written": written,
+        "rows_written": 0,
         "advisory": "D10 BLOCKED — event radar is advisory only",
     }
 
