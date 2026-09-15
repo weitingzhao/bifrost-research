@@ -61,42 +61,54 @@ def _failed(exh: ExhibitResponse, what: str, exc: Exception, conn: Any) -> Exhib
 # ─── readers ────────────────────────────────────────────────────────────────
 
 
+def skew_fit_row(conn: Any, symbol: str, before: Any = None) -> tuple[Any, ...] | None:
+    """Nearest-30-DTE SVI fit on the symbol's latest fit date, or the latest date before ``before``."""
+    cut = "AND trade_date < %s::date" if before is not None else ""
+    params = (symbol, symbol) if before is None else (symbol, symbol, before)
+    return _fetch_one(
+        conn,
+        f"""
+        SELECT trade_date, expiry, dte, atm_vol, atm_slope, fit_rmse, n_points, computed_at
+        FROM {SURFACE_FIT}
+        WHERE symbol = %s
+          AND trade_date = (SELECT MAX(trade_date) FROM {SURFACE_FIT} WHERE symbol = %s {cut})
+        ORDER BY ABS(dte - 30) ASC, expiry ASC
+        LIMIT 1
+        """,
+        params,
+    )
+
+
+def skew_slope_pctile(conn: Any, symbol: str, trade_date: Any, abs_slope: float | None) -> tuple[Any, ...] | None:
+    """``(days, avg |slope|, percentile of ``abs_slope``)`` in the symbol's own preceding year."""
+    return _fetch_one(
+        conn,
+        f"""
+        SELECT COUNT(*)::bigint,
+               AVG(a),
+               100.0 * COUNT(*) FILTER (WHERE a < %s) / NULLIF(COUNT(*), 0)
+        FROM (
+            SELECT DISTINCT ON (trade_date) trade_date, ABS(atm_slope) AS a
+            FROM {SURFACE_FIT}
+            WHERE symbol = %s AND atm_slope IS NOT NULL
+              AND trade_date < %s
+              AND trade_date >= %s::date - INTERVAL '252 days'
+            ORDER BY trade_date, ABS(dte - 30) ASC, expiry ASC
+        ) s
+        """,
+        (abs_slope if abs_slope is not None else -1.0, symbol, trade_date, trade_date),
+    )
+
+
 def exhibit_skew(conn: Any, symbol: str) -> ExhibitResponse:
     exh = ExhibitResponse(lens="skew", symbol=symbol)
     try:
-        row = _fetch_one(
-            conn,
-            f"""
-            SELECT trade_date, expiry, dte, atm_vol, atm_slope, fit_rmse, n_points, computed_at
-            FROM {SURFACE_FIT}
-            WHERE symbol = %s
-              AND trade_date = (SELECT MAX(trade_date) FROM {SURFACE_FIT} WHERE symbol = %s)
-            ORDER BY ABS(dte - 30) ASC, expiry ASC
-            LIMIT 1
-            """,
-            (symbol, symbol),
-        )
+        row = skew_fit_row(conn, symbol)
         today_abs = abs(float(row[4])) if row and row[4] is not None else None
         # C2: the reading is judged against the symbol's own year, not a fixed
         # slope. The percentile is the share of history days whose |slope| sat
         # below today's — one near-30-DTE fit per day, today excluded.
-        hist = _fetch_one(
-            conn,
-            f"""
-            SELECT COUNT(*)::bigint,
-                   AVG(a),
-                   100.0 * COUNT(*) FILTER (WHERE a < %s) / NULLIF(COUNT(*), 0)
-            FROM (
-                SELECT DISTINCT ON (trade_date) trade_date, ABS(atm_slope) AS a
-                FROM {SURFACE_FIT}
-                WHERE symbol = %s AND atm_slope IS NOT NULL
-                  AND trade_date < %s
-                  AND trade_date >= %s::date - INTERVAL '252 days'
-                ORDER BY trade_date, ABS(dte - 30) ASC, expiry ASC
-            ) s
-            """,
-            (today_abs if today_abs is not None else -1.0, symbol, row[0] if row else None, row[0] if row else None),
-        ) if row else None
+        hist = skew_slope_pctile(conn, symbol, row[0], today_abs) if row else None
         if row:
             days = int(hist[0] or 0) if hist else 0
             pctile = float(hist[2]) if hist and hist[2] is not None else None
@@ -143,31 +155,51 @@ def term_structure_label(backwardation: float | None) -> str | None:
     return "flat"
 
 
+def term_fit_rows(conn: Any, symbol: str, before: Any = None) -> list[tuple[Any, ...]]:
+    """All fitted expiries on the symbol's latest fit date, or the latest date before ``before``."""
+    cut = "AND trade_date < %s::date" if before is not None else ""
+    params = (symbol, symbol) if before is None else (symbol, symbol, before)
+    return _fetch_all(
+        conn,
+        f"""
+        SELECT trade_date, expiry, dte, atm_vol, computed_at
+        FROM {SURFACE_FIT}
+        WHERE symbol = %s
+          AND trade_date = (SELECT MAX(trade_date) FROM {SURFACE_FIT} WHERE symbol = %s {cut})
+          AND dte IS NOT NULL AND atm_vol IS NOT NULL
+        ORDER BY dte ASC
+        """,
+        params,
+    )
+
+
+def near_far_fits(rows: list[tuple[Any, ...]]) -> tuple[tuple[Any, ...], tuple[Any, ...] | None]:
+    """The ≈30-DTE fit and, among the longer ones, the ≈90-DTE fit."""
+    near = min(rows, key=lambda r: abs(int(r[2]) - 30))
+    longer = [r for r in rows if int(r[2]) > int(near[2])]
+    far = min(longer, key=lambda r: abs(int(r[2]) - 90)) if longer else None
+    return near, far
+
+
+def backwardation_from(near: tuple[Any, ...], far: tuple[Any, ...] | None) -> float | None:
+    """Near − far ATM vol, so backwardation reads positive (C2)."""
+    if far is None:
+        return None
+    return float(near[3]) - float(far[3])
+
+
 def exhibit_term_slope(conn: Any, symbol: str) -> ExhibitResponse:
     exh = ExhibitResponse(lens="term_slope", symbol=symbol)
     try:
-        rows = _fetch_all(
-            conn,
-            f"""
-            SELECT trade_date, expiry, dte, atm_vol, computed_at
-            FROM {SURFACE_FIT}
-            WHERE symbol = %s
-              AND trade_date = (SELECT MAX(trade_date) FROM {SURFACE_FIT} WHERE symbol = %s)
-              AND dte IS NOT NULL AND atm_vol IS NOT NULL
-            ORDER BY dte ASC
-            """,
-            (symbol, symbol),
-        )
+        rows = term_fit_rows(conn, symbol)
         if not rows:
             exh.caveats.append("No SVI fit rows for symbol")
             return exh
-        near = min(rows, key=lambda r: abs(int(r[2]) - 30))
-        far_candidates = [r for r in rows if int(r[2]) > int(near[2])]
-        far = min(far_candidates, key=lambda r: abs(int(r[2]) - 90)) if far_candidates else None
+        near, far = near_far_fits(rows)
         exh.as_of = iso_date(near[0])
         exh.freshness = freshness_from(near[4], True)
-        term_slope = (float(far[3]) - float(near[3])) if far else None
-        backwardation = (-term_slope) if term_slope is not None else None
+        backwardation = backwardation_from(near, far)
+        term_slope = (-backwardation) if backwardation is not None else None
         exh.readings = {
             "near_dte": near[2],
             "near_vol": near[3],
@@ -186,30 +218,44 @@ def exhibit_term_slope(conn: Any, symbol: str) -> ExhibitResponse:
     return exh
 
 
+def gex_level_row(conn: Any, symbol: str, before: Any = None) -> tuple[Any, ...] | None:
+    """Nearest-30-DTE GEX levels on the symbol's latest date, or the latest date before ``before``."""
+    cut = "AND trade_date < %s::date" if before is not None else ""
+    params = (symbol, symbol) if before is None else (symbol, symbol, before)
+    return _fetch_one(
+        conn,
+        f"""
+        SELECT trade_date, expiry, spot, total_net_gex, zero_gamma,
+               major_call_wall, major_put_wall, computed_at
+        FROM {TABLE_OPTION_METRIC_GEX_LEVELS_DAILY}
+        WHERE symbol = %s
+          AND trade_date = (
+              SELECT MAX(trade_date) FROM {TABLE_OPTION_METRIC_GEX_LEVELS_DAILY} WHERE symbol = %s {cut}
+          )
+        ORDER BY ABS((expiry - trade_date) - 30) ASC, expiry ASC
+        LIMIT 1
+        """,
+        params,
+    )
+
+
+def gex_regime_label(net_gex: Any) -> str | None:
+    """``negative`` / ``positive`` from the sign of net gamma — the categorical reading."""
+    if net_gex is None:
+        return None
+    return "negative" if float(net_gex) < 0 else "positive"
+
+
 def exhibit_gex_regime(conn: Any, symbol: str) -> ExhibitResponse:
     exh = ExhibitResponse(lens="gex_regime", symbol=symbol)
     try:
-        row = _fetch_one(
-            conn,
-            f"""
-            SELECT trade_date, expiry, spot, total_net_gex, zero_gamma,
-                   major_call_wall, major_put_wall, computed_at
-            FROM {TABLE_OPTION_METRIC_GEX_LEVELS_DAILY}
-            WHERE symbol = %s
-              AND trade_date = (
-                  SELECT MAX(trade_date) FROM {TABLE_OPTION_METRIC_GEX_LEVELS_DAILY} WHERE symbol = %s
-              )
-            ORDER BY ABS((expiry - trade_date) - 30) ASC, expiry ASC
-            LIMIT 1
-            """,
-            (symbol, symbol),
-        )
+        row = gex_level_row(conn, symbol)
         if not row:
             exh.caveats.append("No GEX level rows for symbol")
             return exh
         net = row[3]
         spot, zero_gamma = row[2], row[4]
-        regime = None if net is None else ("negative" if float(net) < 0 else "positive")
+        regime = gex_regime_label(net)
         vs_zero = None
         if spot is not None and zero_gamma is not None:
             vs_zero = "above" if float(spot) >= float(zero_gamma) else "below"
@@ -278,38 +324,54 @@ def pin_history(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def max_pain_row(conn: Any, symbol: str, before: Any = None) -> tuple[Any, ...] | None:
+    """Nearest-30-DTE max pain on the symbol's latest date, or the latest date before ``before``."""
+    cut = "AND trade_date < %s::date" if before is not None else ""
+    params = (symbol, symbol) if before is None else (symbol, symbol, before)
+    return _fetch_one(
+        conn,
+        f"""
+        SELECT trade_date, expiry, max_pain_strike, total_oi, computed_at,
+               (expiry - trade_date) AS dte
+        FROM {TABLE_OPTION_METRIC_MAX_PAIN_DAILY}
+        WHERE symbol = %s
+          AND trade_date = (
+              SELECT MAX(trade_date) FROM {TABLE_OPTION_METRIC_MAX_PAIN_DAILY} WHERE symbol = %s {cut}
+          )
+        ORDER BY ABS((expiry - trade_date) - 30) ASC, expiry ASC
+        LIMIT 1
+        """,
+        params,
+    )
+
+
+def close_on(conn: Any, symbol: str, trade_date: Any) -> float | None:
+    row = _fetch_one(
+        conn,
+        f"SELECT close::float FROM {STOCK_DAILY} WHERE symbol = %s AND bar_date = %s",
+        (symbol, trade_date),
+    )
+    return float(row[0]) if row and row[0] is not None else None
+
+
+def pin_distance(close: float | None, max_pain: Any) -> float | None:
+    """Signed distance from max pain as a fraction of spot."""
+    if not close or max_pain is None:
+        return None
+    return (close - float(max_pain)) / close
+
+
 def exhibit_opex_pin(conn: Any, symbol: str) -> ExhibitResponse:
     exh = ExhibitResponse(lens="opex_pin", symbol=symbol)
     try:
-        row = _fetch_one(
-            conn,
-            f"""
-            SELECT trade_date, expiry, max_pain_strike, total_oi, computed_at,
-                   (expiry - trade_date) AS dte
-            FROM {TABLE_OPTION_METRIC_MAX_PAIN_DAILY}
-            WHERE symbol = %s
-              AND trade_date = (
-                  SELECT MAX(trade_date) FROM {TABLE_OPTION_METRIC_MAX_PAIN_DAILY} WHERE symbol = %s
-              )
-            ORDER BY ABS((expiry - trade_date) - 30) ASC, expiry ASC
-            LIMIT 1
-            """,
-            (symbol, symbol),
-        )
+        row = max_pain_row(conn, symbol)
         if not row:
             exh.caveats.append("No max-pain rows for symbol")
             return exh
-        close_row = _fetch_one(
-            conn,
-            f"SELECT close::float FROM {STOCK_DAILY} WHERE symbol = %s AND bar_date = %s",
-            (symbol, row[0]),
-        )
-        close = float(close_row[0]) if close_row and close_row[0] is not None else None
+        close = close_on(conn, symbol, row[0])
         max_pain = float(row[2]) if row[2] is not None else None
-        distance = None
-        if close and max_pain is not None:
-            distance = (close - max_pain) / close
-        else:
+        distance = pin_distance(close, max_pain)
+        if distance is None:
             exh.caveats.append("No close for the max-pain date — pin distance unknown")
         exh.as_of = iso_date(row[0])
         exh.freshness = freshness_from(row[4], True)

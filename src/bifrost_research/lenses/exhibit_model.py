@@ -30,6 +30,8 @@ class ExhibitResponse(BaseModel):
     verdict: dict[str, Any] | None = None
     track_record: dict[str, Any] | None = None
     similar: dict[str, Any] | None = None
+    # Wave R9 F2 — the same lens on the previous session: {as_of, value, band}.
+    prior: dict[str, Any] | None = None
 
 
 def age_hours(ts: Any) -> float | None:

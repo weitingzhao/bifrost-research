@@ -6,7 +6,7 @@ C3) the Daily Brief all read. It lives under ``lenses`` so engines can call it
 without importing the HTTP layer; ``api/exhibit.py`` is only the router.
 
 Contract: lens, symbol, as_of, freshness, readings, history_summary, caveats,
-lens_id, verdict, track_record, similar.
+lens_id, verdict, track_record, similar, prior.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from typing import Any
 
 from bifrost_research.lenses.exhibit_lenses import NEW_LENS_BUILDERS, VERDICT_INPUT, enrich_exhibit
 from bifrost_research.lenses.exhibit_model import ExhibitResponse, freshness_from, iso_date
+from bifrost_research.lenses.exhibit_prior import attach_prior
 from bifrost_research.lenses.registry import LENSES
 from bifrost_research.schema.schemas import (
     TABLE_OPTION_FLOW_SENTIMENT_DAILY,
@@ -324,10 +325,11 @@ def build_exhibit(conn: Any, lens: str, symbol: str) -> ExhibitResponse:
     exh = builder(conn, symbol.upper())
     exh.lens = lens  # answer with the name that was asked for
     reading_key, fractions = VERDICT_INPUT[lens_id]
-    return enrich_exhibit(
+    enrich_exhibit(
         conn,
         exh,
         lens_id=lens_id,
         value=exh.readings.get(reading_key),
         fractions_as_pct=fractions,
     )
+    return attach_prior(conn, exh, lens_id)
