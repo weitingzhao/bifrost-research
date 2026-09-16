@@ -31,6 +31,7 @@ HUSBANDRY_SCHEDULE_JOBS: tuple[tuple[str, str, str], ...] = (
     ("market_self_heal_schedule", "market_self_heal_job", "UTC"),
     ("market_treasury_schedule", "market_treasury_job", "UTC"),
     ("market_ticker_details_schedule", "market_ticker_details_job", "UTC"),
+    ("market_corporate_backfill_schedule", "market_corporate_backfill_job", "UTC"),
     ("market_intraday_chain_1030_schedule", "market_intraday_chain_job", "America/New_York"),
     ("market_intraday_chain_1300_schedule", "market_intraday_chain_job", "America/New_York"),
     ("market_intraday_chain_1530_schedule", "market_intraday_chain_job", "America/New_York"),
