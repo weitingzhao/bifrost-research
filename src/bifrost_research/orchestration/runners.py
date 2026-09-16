@@ -55,6 +55,17 @@ def run_terrain_backfill(*, force: bool = False) -> dict[str, Any]:
     return terrain_backfill.run(force=force)
 
 
+def run_event_radar_purge(*, force: bool = False) -> dict[str, Any]:
+    """Delete the canned Event Radar rows (Owner authorised 2026-09-15; R9 C1).
+
+    Default is a dry run that only reports counts per source; the Dagster asset
+    passes ``force`` from its config, so deleting is always an explicit ask.
+    """
+    from bifrost_research.engines.event_radar import purge
+
+    return purge.run(force=force)
+
+
 def run_option_pinned_contract() -> dict[str, Any]:
     """Refresh `research.option_pinned_contract`: held and recently traded option legs (R9 F5)."""
     from bifrost_research.engines.option_pinned import entry as pinned_entry

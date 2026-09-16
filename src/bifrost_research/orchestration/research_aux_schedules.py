@@ -11,6 +11,7 @@ from dagster import (
     AssetExecutionContext,
     AssetKey,
     AssetSelection,
+    Config,
     DefaultScheduleStatus,
     MaterializeResult,
     ScheduleDefinition,
@@ -285,6 +286,33 @@ maint_terrain_backfill = _run_asset(
     fn=runners.run_terrain_backfill,
 )
 
+
+class EventRadarPurgeConfig(Config):
+    """``force`` has to be typed in by hand before anything is deleted."""
+
+    force: bool = False
+
+
+# One-off, by hand, never on a schedule: it deletes the Event Radar rows that were
+# never data (Owner authorised 2026-09-15, R9 C1). Default is a dry run.
+@asset(
+    key=AssetKey(["maintenance", "event_radar_purge"]),
+    group_name=GROUP_MAINT,
+    description=(
+        "Delete the canned Event Radar rows (dagster-fallback, ws:*smoke*, ws:sample). "
+        "Default config is a dry run reporting counts per source; set force: true to "
+        "delete. The read endpoints keep excluding these sources afterwards."
+    ),
+)
+def maint_event_radar_purge(
+    context: AssetExecutionContext, config: EventRadarPurgeConfig
+) -> MaterializeResult:
+    context.log.info("run event_radar_purge force=%s", config.force)
+    result = runners.run_event_radar_purge(force=config.force)
+    context.log.info("event_radar_purge result=%s", result)
+    return MaterializeResult(metadata=meta(result))
+
+
 RESEARCH_AUX_ASSETS = [
     engines_opex,
     engines_vol_surface_svi,
@@ -302,6 +330,7 @@ RESEARCH_AUX_ASSETS = [
     maint_ensure_partitions,
     maint_vol_weekly_backfill,
     maint_terrain_backfill,
+    maint_event_radar_purge,
 ]
 
 
