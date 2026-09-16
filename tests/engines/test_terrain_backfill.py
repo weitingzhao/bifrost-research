@@ -233,8 +233,11 @@ def test_spot_that_cannot_be_found_is_a_skip_with_its_own_reason(monkeypatch) ->
 def test_input_floors_are_read_from_every_input(monkeypatch) -> None:
     conn = _Conn({})
     floors = tb.input_floors(conn)
-    assert set(floors) == {"gex", "momentum", "iv", "stock_daily"}
+    # option_open_interest is reported alongside: the GEX floor can be lifted by
+    # recomputing the slot, the OI floor cannot be lifted at all.
+    assert set(floors) == {"gex", "momentum", "iv", "option_open_interest", "stock_daily"}
     assert floors["gex"] == "2026-05-04"
+    assert floors["option_open_interest"] == "2026-05-04"
 
 
 def test_a_down_trade_api_skips_the_backfill(monkeypatch) -> None:

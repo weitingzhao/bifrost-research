@@ -54,6 +54,10 @@ SIGNAL_INPUTS: tuple[tuple[str, str], ...] = (
     ("iv", "features.option_metric_iv_percentile_daily"),
 )
 STOCK_DAILY = "raw_market.stock_daily"
+#: GEX is computed from open interest (the snapshot only adds gamma), so this table
+#: is the wall behind the GEX floor: a session with no OI can never have a regime,
+#: and the vendor has no historical OI endpoint to fill it in later.
+OPTION_OPEN_INTEREST = "raw_market.option_open_interest"
 #: An input row more than a week older than the session is not that session's reading.
 MAX_INPUT_STALENESS_DAYS = 7
 EXECUTIONS_LIMIT = 10000
@@ -124,13 +128,20 @@ def instance_targets(get: Any, base: str) -> tuple[list[tuple[str, date]], dict[
 
 
 def input_floors(conn: Any) -> dict[str, str | None]:
-    """The earliest ``trade_date`` in each terrain input — the wall the backfill stops at."""
+    """The earliest ``trade_date`` in each terrain input — the wall the backfill stops at.
+
+    ``option_open_interest`` is reported too: the GEX floor can be lifted by
+    recomputing the slot, the OI floor cannot be lifted at all.
+    """
     out: dict[str, str | None] = {}
     with conn.cursor() as cur:
         for name, table in SIGNAL_INPUTS:
             cur.execute(f"SELECT MIN(trade_date) FROM {table}")
             row = cur.fetchone()
             out[name] = row[0].isoformat() if row and row[0] else None
+        cur.execute(f"SELECT MIN(trade_date) FROM {OPTION_OPEN_INTEREST}")
+        row = cur.fetchone()
+        out["option_open_interest"] = row[0].isoformat() if row and row[0] else None
         cur.execute(f"SELECT MIN(bar_date) FROM {STOCK_DAILY}")
         row = cur.fetchone()
         out["stock_daily"] = row[0].isoformat() if row and row[0] else None

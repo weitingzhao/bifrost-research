@@ -287,6 +287,40 @@ maint_terrain_backfill = _run_asset(
 )
 
 
+#: Deep backfills are only offered for the two signal slots terrain waits on; a
+#: config typo must not start a 60-day run of something else.
+BACKFILLABLE_SLOTS = ("momentum", "gex")
+
+
+class SignalBackfillConfig(Config):
+    """Which signal slot to recompute, and how many trading days back."""
+
+    slot: str = "momentum"
+    lookback_days: int = 5
+
+
+# Manual: recompute a signal slot over a deep window so terrain has inputs on the
+# sessions the Owner traded (R9 C2). The nightly slots only walk two days.
+@asset(
+    key=AssetKey(["maintenance", "signal_backfill"]),
+    group_name=GROUP_MAINT,
+    description=(
+        "Recompute momentum or gex over a deep lookback (config: slot, lookback_days). "
+        "Manual run — the nightly slots walk 2 trading days, which is why terrain has "
+        "no inputs on older sessions. GEX cannot go earlier than option_open_interest."
+    ),
+)
+def maint_signal_backfill(
+    context: AssetExecutionContext, config: SignalBackfillConfig
+) -> MaterializeResult:
+    if config.slot not in BACKFILLABLE_SLOTS:
+        raise ValueError(f"slot must be one of {BACKFILLABLE_SLOTS}: {config.slot!r}")
+    context.log.info("run signal_backfill slot=%s lookback_days=%s", config.slot, config.lookback_days)
+    result = engine_sched.run_slot(config.slot, lookback_days=config.lookback_days)
+    context.log.info("signal_backfill result=%s", result)
+    return MaterializeResult(metadata=meta(result if isinstance(result, dict) else {}))
+
+
 class EventRadarPurgeConfig(Config):
     """``force`` has to be typed in by hand before anything is deleted."""
 
@@ -331,6 +365,7 @@ RESEARCH_AUX_ASSETS = [
     maint_vol_weekly_backfill,
     maint_terrain_backfill,
     maint_event_radar_purge,
+    maint_signal_backfill,
 ]
 
 
