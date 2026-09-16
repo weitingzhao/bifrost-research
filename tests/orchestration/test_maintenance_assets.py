@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import pytest
@@ -26,17 +27,27 @@ def test_the_purge_asset_passes_force_through_and_defaults_to_a_dry_run(monkeypa
     assert seen == [False, True]
 
 
-def test_the_signal_backfill_asset_runs_the_slot_with_its_lookback(monkeypatch) -> None:
-    calls: list[tuple[str, int]] = []
+def test_the_signal_backfill_asset_runs_the_slot_with_its_window(monkeypatch) -> None:
+    calls: list[tuple[str, int, Any]] = []
     monkeypatch.setattr(
         aux.engine_sched,
         "run_slot",
-        lambda slot, *, lookback_days: calls.append((slot, lookback_days)) or {"slot": slot},
+        lambda slot, *, lookback_days, as_of: calls.append((slot, lookback_days, as_of))
+        or {"slot": slot},
     )
     aux.maint_signal_backfill(
         build_asset_context(), aux.SignalBackfillConfig(slot="gex", lookback_days=60)
     )
-    assert calls == [("gex", 60)]
+    # Without as_of the window ends today, exactly as the nightly slot does.
+    assert calls == [("gex", 60, None)]
+    calls.clear()
+    # With it, a gap in the middle of the history can be filled on its own: a GEX
+    # day costs about 90 seconds, so recomputing months to reach one week is waste.
+    aux.maint_signal_backfill(
+        build_asset_context(),
+        aux.SignalBackfillConfig(slot="gex", lookback_days=8, as_of="2026-07-14"),
+    )
+    assert calls == [("gex", 8, date(2026, 7, 14))]
 
 
 def test_the_signal_backfill_asset_refuses_a_slot_it_was_not_meant_to_run(monkeypatch) -> None:

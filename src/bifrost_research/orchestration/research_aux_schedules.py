@@ -5,6 +5,7 @@ Groups excluded from ``research_trading_day``. D10 BLOCKED.
 Note: do not use ``from __future__ import annotations``.
 """
 
+from datetime import date
 from typing import Any, Callable
 
 from dagster import (
@@ -293,10 +294,17 @@ BACKFILLABLE_SLOTS = ("momentum", "gex")
 
 
 class SignalBackfillConfig(Config):
-    """Which signal slot to recompute, and how many trading days back."""
+    """Which signal slot to recompute, over which window.
+
+    ``as_of`` ends the window (``YYYY-MM-DD``, default today), so a gap in the
+    middle of the history can be filled without recomputing everything since:
+    measured 2026-09-16, five days of GEX takes seven minutes and writes 450k
+    rows, and rewriting rows the nightly slot already owns costs that for nothing.
+    """
 
     slot: str = "momentum"
     lookback_days: int = 5
+    as_of: str | None = None
 
 
 # Manual: recompute a signal slot over a deep window so terrain has inputs on the
@@ -315,8 +323,16 @@ def maint_signal_backfill(
 ) -> MaterializeResult:
     if config.slot not in BACKFILLABLE_SLOTS:
         raise ValueError(f"slot must be one of {BACKFILLABLE_SLOTS}: {config.slot!r}")
-    context.log.info("run signal_backfill slot=%s lookback_days=%s", config.slot, config.lookback_days)
-    result = engine_sched.run_slot(config.slot, lookback_days=config.lookback_days)
+    as_of = date.fromisoformat(config.as_of) if config.as_of else None
+    context.log.info(
+        "run signal_backfill slot=%s lookback_days=%s as_of=%s",
+        config.slot,
+        config.lookback_days,
+        as_of,
+    )
+    result = engine_sched.run_slot(
+        config.slot, lookback_days=config.lookback_days, as_of=as_of
+    )
     context.log.info("signal_backfill result=%s", result)
     return MaterializeResult(metadata=meta(result if isinstance(result, dict) else {}))
 
