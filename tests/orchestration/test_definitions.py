@@ -201,6 +201,17 @@ def test_market_schedules_cover_the_subscribed_slots_only() -> None:
     assert market_fundamentals_market.op.retry_policy is ENQUEUE_RETRY
 
 
+def test_the_corporate_backfill_schedule_is_monthly_and_out_of_the_collection_window() -> None:
+    """History is a monthly errand; the -7/+60 day window is the nightly one."""
+    from bifrost_research.orchestration.market_slot_schedules import MARKET_SCHEDULES
+
+    sched = {s.name: s for s in MARKET_SCHEDULES}["market_corporate_backfill_schedule"]
+    assert sched.cron_schedule == "0 7 1 * *"
+    assert sched.execution_timezone == "UTC"
+    hour = sched.cron_schedule.split()[1]
+    assert not (21 <= int(hour) <= 23), "must not land in the 21:05-23:15 UTC collection window"
+
+
 def test_definitions_include_the_failure_sensor() -> None:
     from bifrost_research.orchestration.definitions import build_definitions
 

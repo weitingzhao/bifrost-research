@@ -160,6 +160,18 @@ market_ticker_details = _make_slot_asset(
     ("ticker-details",),
     "UTC 03:30 — ticker overview fields (list_date / sector / market_cap), 200 a day",
 )
+# Monthly, not nightly. The daily `corporate` slot walks a -7/+60 day window of
+# the whole market, which is right about the ex-dates that are coming and reaches
+# nothing behind it — so a screen on dividend history read an empty column. This
+# fires the plugin's `corporate-backfill` slot (0.35.0), which asks for each
+# symbol's whole history with no date filter. Once a month is enough: history
+# only gains a row when the daily slot already saw it.
+market_corporate_backfill = _make_slot_asset(
+    "market_corporate_backfill",
+    ("corporate-backfill",),
+    "UTC 07:00 on the 1st — corporate-backfill (full dividend / split history per "
+    "symbol; the daily corporate slot only covers -7/+60 days)",
+)
 
 MARKET_SCHEDULE_ASSETS = [
     market_snapshot,
@@ -177,6 +189,7 @@ MARKET_SCHEDULE_ASSETS = [
     market_intraday_chain,
     market_treasury,
     market_ticker_details,
+    market_corporate_backfill,
 ]
 
 _MARKET_SPECS: list[tuple[str, str, Any, str, str]] = [
@@ -248,6 +261,15 @@ _MARKET_SPECS: list[tuple[str, str, Any, str, str]] = [
         market_treasury,
         "0 12,23 * * 1-5",
         "treasury yields",
+    ),
+    # 07:00 UTC on the 1st: outside the 21:05–23:15 collection window, and on a
+    # day of the month rather than a day of the week so it cannot drift into it.
+    (
+        "market_corporate_backfill_schedule",
+        "market_corporate_backfill_job",
+        market_corporate_backfill,
+        "0 7 1 * *",
+        "corporate-backfill (monthly full history)",
     ),
 ]
 

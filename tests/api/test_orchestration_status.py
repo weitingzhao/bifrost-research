@@ -2,6 +2,8 @@
 
 from datetime import datetime, timezone
 
+import pytest
+
 from bifrost_research.api.orchestration import compute_orchestration_status
 from bifrost_research.api.orchestration_schedules import (
     HUSBANDRY_SCHEDULE_JOBS,
@@ -95,6 +97,9 @@ def test_schedules_summary_counts_and_failures() -> None:
 
 
 def test_next_tick_at_running_cron_uses_schedule_timezone() -> None:
+    # croniter lives in the `copilot` extra; without it the helper fails soft to
+    # None by design, so asserting a time here would only test the extra.
+    pytest.importorskip("croniter")
     from bifrost_research.api.orchestration_schedules import next_tick_at
 
     now = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)  # Monday 08:00 ET
@@ -116,6 +121,7 @@ def test_next_tick_at_running_cron_uses_schedule_timezone() -> None:
 
 
 def test_schedules_summary_computes_next_tick() -> None:
+    pytest.importorskip("croniter")
     now = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
     summary = build_schedules_summary(
         schedule_meta={
