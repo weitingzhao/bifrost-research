@@ -76,6 +76,7 @@ class _Cur:
 
     def execute(self, sql: str, params: Any = None) -> None:
         self.owner.last = (sql, params)
+        self.owner.sql.append(sql)
 
     def executemany(self, sql: str, rows: Any) -> None:
         self.owner.written.extend(list(rows))
@@ -88,6 +89,8 @@ class _Cur:
             symbol, on = params
             table_key = next(k for k, t in tb.SIGNAL_INPUTS if t in sql)
             return (self.owner.coverage.get(table_key),)
+        if "stock_forecast_terrain_daily" in sql:
+            return (1,) if (params[0], params[1]) in self.owner.existing else None
         return None
 
     def fetchall(self) -> list[tuple[Any, ...]]:
@@ -101,9 +104,15 @@ class _Cur:
 
 
 class _Conn:
-    def __init__(self, coverage: dict[str, date | None]) -> None:
+    def __init__(
+        self,
+        coverage: dict[str, date | None],
+        existing: set[tuple[str, date]] | None = None,
+    ) -> None:
         self.coverage = coverage
+        self.existing = existing or set()
         self.last: tuple[str, Any] = ("", None)
+        self.sql: list[str] = []
         self.written: list[Any] = []
         self.commits = 0
 
@@ -127,7 +136,7 @@ def test_a_session_with_no_gex_is_reported_not_scored(monkeypatch) -> None:
         tb, "load_upstream_signals", lambda *a, **k: called.append("loaded") or (0.0, {}, {}, {})
     )
     result = tb.backfill(conn, [("NVDA", MARCH)])
-    assert result["covered"] == 0 and result["skipped"] == 1 and result["coverage"] == 0.0
+    assert result["inputs_reached"] == 0 and result["skipped"] == 1 and result["coverage"] == 0.0
     assert result["skip_reasons"] == {"missing:gex": 1}
     assert result["skipped_sample"][0] == {
         "symbol": "NVDA",
@@ -157,10 +166,61 @@ def test_a_session_whose_inputs_are_all_there_is_written(monkeypatch) -> None:
         tb, "upsert_market_terrain", lambda conn, rows: written.extend(rows) or len(rows)
     )
     result = tb.backfill(conn, [("NVDA", AUGUST)])
-    assert result["covered"] == 1 and result["rows_written"] == 1 and result["coverage"] == 1.0
+    assert result["inputs_reached"] == 1 and result["rows_written"] == 1 and result["coverage"] == 1.0
+    # No row existed, so this is a session gained, not one rewritten.
+    assert result["new_rows"] == 1 and result["rewritten_rows"] == 0
     assert result["covered_sample"][0]["regime"] in ("crash-risk", "range", "trending")
+    assert result["covered_sample"][0]["was"] == "new"
     assert written and written[0].symbol == "NVDA" and written[0].trade_date == AUGUST
     assert conn.commits == 1
+
+
+def _signals(monkeypatch) -> list[Any]:
+    """Upstream signals that support a regime, plus a spy on what gets written."""
+    monkeypatch.setattr(
+        tb,
+        "load_upstream_signals",
+        lambda *a, **k: (
+            230.0,
+            {"zero_gamma": 228.0, "major_call_wall": 240.0, "major_put_wall": 220.0,
+             "total_net_gex": -1.0e8, "spot": 230.0},
+            {"score": 71.0, "path": "EXT", "crash": False},
+            {"iv_percentile_1y": 55.0, "iv_rank_1y": 52.0},
+        ),
+    )
+    written: list[Any] = []
+    monkeypatch.setattr(
+        tb, "upsert_market_terrain", lambda conn, rows: written.extend(rows) or len(rows)
+    )
+    return written
+
+
+def test_a_session_the_nightly_slot_already_wrote_is_left_alone(monkeypatch) -> None:
+    # C0: the first run of this engine wrote 8 rows and every one of them was an
+    # existing row rewritten. Overwriting tonight's answer has to be asked for.
+    conn = _Conn({"gex": AUGUST, "momentum": AUGUST, "iv": AUGUST}, existing={("NVDA", AUGUST)})
+    written = _signals(monkeypatch)
+    result = tb.backfill(conn, [("NVDA", AUGUST)])
+    assert result["rows_written"] == 0 and result["new_rows"] == 0 and result["rewritten_rows"] == 0
+    assert result["skipped_existing"] == 1 and result["skipped_existing_sample"] == [
+        {"symbol": "NVDA", "trade_date": "2026-08-20"}
+    ]
+    # The inputs do reach the session, so it counts towards coverage — coverage is
+    # not a count of sessions gained, and the result says so.
+    assert result["inputs_reached"] == 1 and result["coverage"] == 1.0
+    assert "not sessions newly gained" in result["coverage_meaning"]
+    assert written == []
+
+
+def test_force_rewrites_an_existing_session_and_says_so(monkeypatch) -> None:
+    conn = _Conn({"gex": AUGUST, "momentum": AUGUST, "iv": AUGUST}, existing={("NVDA", AUGUST)})
+    written = _signals(monkeypatch)
+    result = tb.backfill(conn, [("NVDA", AUGUST)], force=True)
+    assert result["force"] is True and result["rows_written"] == 1
+    assert result["rewritten_rows"] == 1 and result["new_rows"] == 0
+    assert result["skipped_existing"] == 0
+    assert result["covered_sample"][0]["was"] == "rewritten"
+    assert len(written) == 1
 
 
 def test_spot_that_cannot_be_found_is_a_skip_with_its_own_reason(monkeypatch) -> None:

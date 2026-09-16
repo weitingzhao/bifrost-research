@@ -19,6 +19,13 @@ than a regime that is invented.
 Targets come from the Trade API over HTTP (executions plus the current position
 attribution): the opening date of every strategy instance that no longer holds a
 position, and the underlyings that instance traded. D10 BLOCKED — advisory only.
+
+A target whose row the nightly slot already wrote is left alone: recomputing it
+would overwrite tonight's answer with this run's, which has to be an explicit
+decision (``force=True``), not a side effect of asking how deep the inputs go.
+The result therefore separates ``new_rows`` from ``rewritten_rows`` — the first
+run of this engine reported eight rows written and every one of them was an
+existing row rewritten, which read like eight sessions gained.
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ from bifrost_research.engines.forecast.terrain import (
     upsert_market_terrain,
 )
 from bifrost_research.engines.option_pinned.entry import underlying_of
+from bifrost_research.schema.schemas import TABLE_STOCK_FORECAST_TERRAIN_DAILY
 
 logger = logging.getLogger(__name__)
 
@@ -154,13 +162,40 @@ def usable(dates: Mapping[str, date | None], on: date) -> list[str]:
     return missing
 
 
+def has_terrain(conn: Any, symbol: str, on: date) -> bool:
+    """Whether a terrain row for this session already exists — the nightly slot's work."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT 1 FROM {TABLE_STOCK_FORECAST_TERRAIN_DAILY} "
+            "WHERE symbol = %s AND trade_date = %s LIMIT 1",
+            (symbol, on),
+        )
+        return cur.fetchone() is not None
+
+
 # ── the fill ──────────────────────────────────────────────────────────────
 
 
-def backfill(conn: Any, targets: Iterable[tuple[str, date]]) -> dict[str, Any]:
-    """Write terrain for the targets whose inputs are really there; report the rest."""
-    written = 0
+#: What ``coverage`` counts, spelled out in the result so a reader cannot mistake
+#: it for sessions gained.
+COVERAGE_MEANING = (
+    "share of targets whose three signal inputs reach the session; "
+    "not sessions newly gained — see new_rows"
+)
+
+
+def backfill(
+    conn: Any, targets: Iterable[tuple[str, date]], *, force: bool = False
+) -> dict[str, Any]:
+    """Write terrain for the targets whose inputs are really there; report the rest.
+
+    ``force`` recomputes sessions that already have a row, overwriting whatever the
+    nightly slot wrote for them.
+    """
+    new_rows = 0
+    rewritten = 0
     covered: list[dict[str, Any]] = []
+    existing: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     reasons: Counter[str] = Counter()
     for symbol, on in targets:
@@ -170,6 +205,10 @@ def backfill(conn: Any, targets: Iterable[tuple[str, date]]) -> dict[str, Any]:
             reasons[f"missing:{'+'.join(missing)}"] += 1
             skipped.append({"symbol": symbol, "trade_date": on.isoformat(), "missing": missing})
             continue
+        had_row = has_terrain(conn, symbol, on)
+        if had_row and not force:
+            existing.append({"symbol": symbol, "trade_date": on.isoformat()})
+            continue
         spot, gex, momentum, iv = load_upstream_signals(conn, symbol, on)
         if spot <= 0:
             reasons["no_spot"] += 1
@@ -178,22 +217,40 @@ def backfill(conn: Any, targets: Iterable[tuple[str, date]]) -> dict[str, Any]:
         terrain = compute_market_terrain(
             symbol, on, spot=spot, gex=gex or None, momentum=momentum or None, iv=iv or None
         )
-        written += upsert_market_terrain(conn, [terrain])
-        covered.append({"symbol": symbol, "trade_date": on.isoformat(), "regime": terrain.regime})
+        upsert_market_terrain(conn, [terrain])
+        if had_row:
+            rewritten += 1
+        else:
+            new_rows += 1
+        covered.append(
+            {
+                "symbol": symbol,
+                "trade_date": on.isoformat(),
+                "regime": terrain.regime,
+                "was": "rewritten" if had_row else "new",
+            }
+        )
     conn.commit()
-    total = len(covered) + len(skipped)
+    reached = len(covered) + len(existing)
+    total = reached + len(skipped)
     return {
-        "rows_written": written,
-        "covered": len(covered),
+        "force": force,
+        "rows_written": new_rows + rewritten,
+        "new_rows": new_rows,
+        "rewritten_rows": rewritten,
+        "skipped_existing": len(existing),
+        "inputs_reached": reached,
         "skipped": len(skipped),
-        "coverage": round(len(covered) / total, 4) if total else None,
+        "coverage": round(reached / total, 4) if total else None,
+        "coverage_meaning": COVERAGE_MEANING,
         "skip_reasons": dict(reasons),
         "covered_sample": covered[:50],
+        "skipped_existing_sample": existing[:50],
         "skipped_sample": skipped[:50],
     }
 
 
-def run(*, as_of: date | None = None) -> dict[str, Any]:
+def run(*, as_of: date | None = None, force: bool = False) -> dict[str, Any]:
     from bifrost_research.mcp.tools._trade_api_client import base_trading, get
 
     day = as_of or _today()
@@ -211,7 +268,7 @@ def run(*, as_of: date | None = None) -> dict[str, Any]:
     conn = connect()
     try:
         floors = input_floors(conn)
-        result = backfill(conn, targets)
+        result = backfill(conn, targets, force=force)
     finally:
         conn.close()
     return {

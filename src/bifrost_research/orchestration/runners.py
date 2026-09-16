@@ -44,11 +44,15 @@ def run_option_universe() -> dict[str, Any]:
     return universe_entry.run()
 
 
-def run_terrain_backfill() -> dict[str, Any]:
-    """Fill terrain on the sessions closed instances were opened, where the inputs exist (R9 F3)."""
+def run_terrain_backfill(*, force: bool = False) -> dict[str, Any]:
+    """Fill terrain on the sessions closed instances were opened, where the inputs exist (R9 F3).
+
+    ``force`` also recomputes sessions the nightly slot already wrote; the Dagster
+    asset never passes it, so a maintenance run cannot overwrite tonight's answers.
+    """
     from bifrost_research.engines.forecast import terrain_backfill
 
-    return terrain_backfill.run()
+    return terrain_backfill.run(force=force)
 
 
 def run_option_pinned_contract() -> dict[str, Any]:

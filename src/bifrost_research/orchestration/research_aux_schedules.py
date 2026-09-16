@@ -278,7 +278,9 @@ maint_terrain_backfill = _run_asset(
     group=GROUP_MAINT,
     description=(
         "Terrain on closed instances' opening sessions, only where GEX / momentum / IV "
-        "really cover the date. Manual run; reports input floors and coverage."
+        "really cover the date. Manual run; reports input floors, new_rows vs "
+        "rewritten_rows, and coverage. Never overwrites a session the nightly slot "
+        "already wrote — that needs runners.run_terrain_backfill(force=True)."
     ),
     fn=runners.run_terrain_backfill,
 )
