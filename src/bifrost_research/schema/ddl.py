@@ -788,6 +788,37 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         """
     )
 
+    # --- 6A: research.saved_screen ---
+    # A screen is one object with one id: the authoring face (frontend
+    # /research/lab/screener) writes it, Trade's result face renders the same
+    # object read-only. The filter vocabulary lives in `definition` (jsonb),
+    # validated in Python against the condition catalog (repositories/
+    # saved_screen.py) rather than in CHECK constraints; `vocabulary` stamps
+    # which catalog version the definition speaks, so a dbt vocabulary change
+    # bumps the stamp instead of altering the table.
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.saved_screen (
+            id           text        PRIMARY KEY,
+            name         text        NOT NULL,
+            description  text,
+            definition   jsonb       NOT NULL,
+            vocabulary   text        NOT NULL DEFAULT 'sepa_screener_wide.v1',
+            is_active    boolean     NOT NULL DEFAULT true,
+            origin_page  text,
+            created_at   timestamptz NOT NULL DEFAULT now(),
+            updated_at   timestamptz NOT NULL DEFAULT now(),
+            retired_at   timestamptz
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS saved_screen_active
+        ON {SCHEMA_RESEARCH}.saved_screen (is_active, updated_at DESC)
+        """
+    )
+
 
 def apply_features_daily_ddl(conn: _Connection) -> None:
     """Legacy wrapper — partitioned option metrics + compat views."""

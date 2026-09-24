@@ -31,6 +31,7 @@ from bifrost_research.api.order_intents import router as order_intents_router
 from bifrost_research.api.playbook import router as playbook_router
 from bifrost_research.api.research_engines import router as research_engines_router
 from bifrost_research.api.risk_stats import router as risk_stats_router
+from bifrost_research.api.saved_screen import router as saved_screen_router
 from bifrost_research.api.scan import router as scan_router
 from bifrost_research.api.screen import router as screen_router
 from bifrost_research.api.candidate_outcome import router as candidate_outcome_router
@@ -75,6 +76,7 @@ def create_app() -> FastAPI:
     app.include_router(research_engines_router)
     app.include_router(wave4_router)
     app.include_router(hypothesis_router)
+    app.include_router(saved_screen_router)
     app.include_router(candidates_router)
     app.include_router(harness_router)
     app.include_router(policy_template_router)

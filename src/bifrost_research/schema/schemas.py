@@ -9,6 +9,7 @@ SCHEMA_FEATURES = "features"
 # Wave RS-A — Hypothesis + Research workflow objects (Golden Source, D-RS-a).
 SCHEMA_RESEARCH = "research"
 TABLE_RESEARCH_HYPOTHESIS = f"{SCHEMA_RESEARCH}.hypothesis"
+TABLE_RESEARCH_SAVED_SCREEN = f"{SCHEMA_RESEARCH}.saved_screen"
 
 # Wave RS-C4 — event-driven backtest runs (colocated with hypotheses).
 TABLE_RESEARCH_BACKTEST_RUN = f"{SCHEMA_RESEARCH}.backtest_run"
