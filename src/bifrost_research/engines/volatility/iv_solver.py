@@ -215,6 +215,22 @@ def upsert_reconstructed(conn: Any, rows: Sequence[tuple[Any, ...]]) -> int:
     )
 
 
+def _vendor_keys(conn: Any, symbol: str, start_date: date, end_date: date) -> set[tuple[str, date]]:
+    """(option_ticker, trade_date) already carrying vendor IV in [start, end]."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT option_ticker, trade_date
+            FROM {TABLE_OPTION_IV_RECONSTRUCTED_DAILY}
+            WHERE symbol = %s
+              AND trade_date BETWEEN %s AND %s
+              AND solver_status = 'vendor_snapshot'
+            """,
+            (symbol, start_date, end_date),
+        )
+        return {(str(r[0]), r[1]) for r in (cur.fetchall() or [])}
+
+
 def solve_symbol_window(
     conn: Any,
     symbol: str,
@@ -223,8 +239,13 @@ def solve_symbol_window(
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Brent-invert option_daily OHLCV for one symbol over [start, end]."""
+    """Brent-invert option_daily OHLCV for one symbol over [start, end].
+
+    A contract-day that already has vendor IV keeps it: the vendor reading is taken
+    at the close, while Brent inverts the day's last trade against the closing spot.
+    """
     sym = symbol.strip().upper()
+    vendor = _vendor_keys(conn, sym, start_date, end_date)
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -247,9 +268,13 @@ def solve_symbol_window(
     status_counts: dict[str, int] = {}
     samples: list[dict[str, Any]] = []
 
+    vendor_kept = 0
     for r in raw:
         ticker, und, bar_d, expiry, strike, right_raw = r[0], r[1], r[2], r[3], r[4], r[5]
         high, low, close, spot = r[7], r[8], r[9], r[10]
+        if (str(ticker), bar_d) in vendor:
+            vendor_kept += 1
+            continue
         right = _right_lit(right_raw)
         mid = _mid_from_ohlc(close, high, low)
         try:
@@ -306,6 +331,7 @@ def solve_symbol_window(
             "dry_run": True,
             "rows": len(out_rows),
             "by_status": status_counts,
+            "vendor_kept": vendor_kept,
             "sample": samples,
         }
     n = upsert_reconstructed(conn, out_rows)
@@ -314,6 +340,7 @@ def solve_symbol_window(
         "source": "option_daily",
         "rows_written": n,
         "by_status": status_counts,
+        "vendor_kept": vendor_kept,
     }
 
 

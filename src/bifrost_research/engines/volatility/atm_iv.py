@@ -7,6 +7,9 @@ Algorithm independently reimplemented from bifrost_api.research.iv_atm
 (no bifrost-core / trade-api pip dependency).
 
 Per (symbol, expiry): nearest strikes to spot; avg call+put IV when both exist; iv in (0, 10).
+A strike more than ``ATM_MAX_MONEYNESS`` from spot is not at the money: an expiry whose
+nearest priced strike is further out gets no row rather than a deep ITM/OTM contract's IV.
+Recomputing a day replaces that day's rows for every symbol the source has rows for.
 """
 
 from __future__ import annotations
@@ -31,6 +34,10 @@ _COLS = (
 IV_SOURCE_SNAPSHOT = "snapshot"
 IV_SOURCE_RECONSTRUCTED = "reconstructed"
 IV_SOURCE = IV_SOURCE_SNAPSHOT  # back-compat
+
+# 2026-09-23: June–July IV30 on DEV came from expiries whose only priced contract
+# sat at 15 or 310 against a spot of 107–134 (PLTR 0.074 / 2.256 / 0.040 / 2.647).
+ATM_MAX_MONEYNESS = 0.10
 
 
 def _row_to_dict(row: Any, columns: Sequence[str]) -> Dict[str, Any]:
@@ -99,7 +106,12 @@ def atm_iv_from_side_items(
 def build_expiry_side_items(
     rows: Sequence[Mapping[str, Any]],
     spot: float,
+    *,
+    max_moneyness: float | None = None,
 ) -> List[Tuple[float, Optional[float], Optional[float], float]]:
+    """(distance, iv_call, iv_put, strike) per priced strike; ``max_moneyness`` drops
+    strikes further than that fraction of spot."""
+    max_dist = max_moneyness * spot if max_moneyness is not None else None
     items: List[Tuple[float, Optional[float], Optional[float], float]] = []
     for r in rows:
         try:
@@ -113,6 +125,8 @@ def build_expiry_side_items(
             continue
         right = str(r.get("option_right") or "").strip().upper()
         dist = abs(strike - spot)
+        if max_dist is not None and dist > max_dist:
+            continue
         if right in ("C", "CALL"):
             items.append((dist, iv_f, None, strike))
         elif right in ("P", "PUT"):
@@ -281,7 +295,7 @@ def compute_atm_iv_for_date(
         spot = representative_spot(rows)
         if spot is None:
             continue
-        items = build_expiry_side_items(rows, spot)
+        items = build_expiry_side_items(rows, spot, max_moneyness=ATM_MAX_MONEYNESS)
         atm_iv, _iv_c, _iv_p, best_strike = atm_iv_from_side_items(items)
         if atm_iv is None or best_strike is None:
             continue
@@ -298,6 +312,18 @@ def compute_atm_iv_for_date(
             )
         )
 
+    # Replace, not merge: an expiry that no longer qualifies must not keep yesterday's row.
+    sourced = sorted({symbol for symbol, _expiry in groups})
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM features.option_metric_atm_iv_daily
+            WHERE trade_date = %s AND symbol = ANY(%s)
+            """,
+            (trade_date, sourced),
+        )
+    if not upsert_rows:
+        conn.commit()
     n = batch_upsert(
         conn,
         "features.option_metric_atm_iv_daily",

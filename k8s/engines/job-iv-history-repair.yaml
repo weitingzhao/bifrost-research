@@ -1,0 +1,71 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  annotations:
+    # One-off Job: run by hand (kubectl create), never applied by Argo CD.
+    # Dry run by default (counts only). To write, add "--apply" and pick --solve
+    # (none | cohort | universe | SYM,SYM) — see engines/volatility/iv_history_repair.py.
+    # Keep off the 22:30 NY trading-day chain and the Sunday 22:00 UTC vol backfill.
+    argocd.argoproj.io/hook: Skip
+  name: research-iv-history-repair
+  namespace: research
+  labels:
+    app.kubernetes.io/name: research-iv-history-repair
+    app.kubernetes.io/part-of: bifrost-research
+    bifrost.research/slot: iv-history-repair
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: research-iv-history-repair
+        bifrost.research/slot: iv-history-repair
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: wait-pg
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              for i in $(seq 1 60); do
+                if nc -z -w 2 bifrost-postgres-rw.data.svc.cluster.local 5432; then
+                  echo ready; exit 0
+                fi
+                echo "wait $i"; sleep 2
+              done
+              exit 1
+      containers:
+        - name: repair
+          image: 192.168.10.73:30500/bifrost-research:0.105.4
+          imagePullPolicy: Always
+          # No RESEARCH_WATCHLIST: the universe must be research.option_universe,
+          # the same one the daily ATM IV / IV percentile / VRP slots use.
+          args:
+            - python
+            - -m
+            - bifrost_research.engines.volatility.iv_history_repair
+            - --solve
+            - cohort
+          envFrom:
+            - secretRef:
+                name: bifrost-research-secrets
+                optional: true
+          env:
+            - name: ANALYTICS_PG_HOST
+              value: "bifrost-postgres-rw.data.svc.cluster.local"
+            - name: ANALYTICS_PG_PORT
+              value: "5432"
+            - name: ANALYTICS_PG_DATABASE
+              value: "bifrost_golden_source"
+            - name: ANALYTICS_PG_USER
+              value: "analytics_writer"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi

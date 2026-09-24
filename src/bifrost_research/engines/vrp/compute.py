@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import math
 from datetime import date, datetime, timedelta, timezone
-from statistics import median
 from typing import Any, Mapping, Sequence
 
 from bifrost_research.db.upsert import batch_upsert
@@ -177,6 +176,13 @@ def interpolate_iv_at_dte(points: Sequence[tuple[int, float]], *, target_dte: in
     return round(nearest[1], 8)
 
 
+# Expiries that can stand in for 30 days. Inside 7 DTE the ATM IV is pin and event
+# noise; past 90 it is a different tenor. The all-expiry median this replaces let a
+# lone LEAPS or a 2-day weekly become the day's IV30.
+IV30_MIN_DTE = 7
+IV30_MAX_DTE = 90
+
+
 def fetch_atm_iv_30d(
     conn: Any,
     symbol: str,
@@ -184,8 +190,8 @@ def fetch_atm_iv_30d(
     trade_date: date,
 ) -> float | None:
     """ATM IV at 30 DTE on ``trade_date``: interpolated between the expiries that
-    bracket 30 days inside the 15–60 day band, the nearest in-band expiry when only
-    one side exists, and the median over all expiries when none is in the band.
+    bracket 30 days, the nearest expiry when only one side exists, None when no
+    expiry lies within ``IV30_MIN_DTE``–``IV30_MAX_DTE`` days.
     """
     sym = symbol.strip().upper()
     with conn.cursor() as cur:
@@ -201,28 +207,22 @@ def fetch_atm_iv_30d(
         )
         raw = cur.fetchall() if hasattr(cur, "fetchall") else []
     cols = ("expiry", "atm_iv")
-    band: list[tuple[int, float]] = []
-    all_ivs: list[float] = []
+    points: list[tuple[int, float]] = []
     for r in raw or []:
         d = _row_to_dict(r, cols)
         exp = _as_date(d.get("expiry"))
+        if exp is None:
+            continue
         try:
             iv = float(d.get("atm_iv"))
         except (TypeError, ValueError):
             continue
         if not (0.0 < iv < 10.0):
             continue
-        all_ivs.append(iv)
-        if exp is None:
-            continue
         dte = (exp - trade_date).days
-        if 15 <= dte <= 60:
-            band.append((dte, iv))
-    if band:
-        return interpolate_iv_at_dte(band, target_dte=30)
-    if all_ivs:
-        return round(float(median(all_ivs)), 8)
-    return None
+        if IV30_MIN_DTE <= dte <= IV30_MAX_DTE:
+            points.append((dte, iv))
+    return interpolate_iv_at_dte(points, target_dte=30)
 
 
 def fetch_prior_vrp_history(

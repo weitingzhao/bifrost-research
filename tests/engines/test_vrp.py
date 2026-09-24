@@ -319,17 +319,32 @@ def test_interpolate_iv_between_bracketing_expiries() -> None:
     assert interpolate_iv_at_dte([], target_dte=30) is None
 
 
-def test_fetch_atm_iv_30d_interpolates_in_band_and_falls_back_to_the_median() -> None:
+def test_fetch_atm_iv_30d_interpolates_between_bracketing_expiries() -> None:
     td = date(2026, 9, 4)
     conn = _FakeConn()
     conn.atm_iv_rows = [
-        ("NVDA", td, td + timedelta(days=7), 0.45),   # outside the band
+        ("NVDA", td, td + timedelta(days=3), 0.45),    # inside 7 DTE: pin noise
         ("NVDA", td, td + timedelta(days=21), 0.30),
         ("NVDA", td, td + timedelta(days=49), 0.34),
-        ("NVDA", td, td + timedelta(days=105), 0.38),  # outside the band
+        ("NVDA", td, td + timedelta(days=105), 0.38),  # past 90 DTE: another tenor
     ]
     assert fetch_atm_iv_30d(conn, "NVDA", trade_date=td) == round(0.30 + 0.04 * 9 / 28, 8)
-    conn.atm_iv_rows = [("NVDA", td, td + timedelta(days=7), 0.45), ("NVDA", td, td + timedelta(days=105), 0.38)]
-    assert fetch_atm_iv_30d(conn, "NVDA", trade_date=td) == round((0.45 + 0.38) / 2, 8)
+    conn.atm_iv_rows = [("NVDA", td, td + timedelta(days=10), 0.40), ("NVDA", td, td + timedelta(days=45), 0.34)]
+    assert fetch_atm_iv_30d(conn, "NVDA", trade_date=td) == round(0.40 - 0.06 * 20 / 35, 8)
+
+
+def test_fetch_atm_iv_30d_takes_the_nearest_usable_expiry_when_one_sided() -> None:
+    td = date(2026, 9, 11)
+    conn = _FakeConn()
+    conn.atm_iv_rows = [("AVGO", td, td + timedelta(days=7), 0.52), ("AVGO", td, td + timedelta(days=462), 0.41)]
+    assert fetch_atm_iv_30d(conn, "AVGO", trade_date=td) == 0.52
+
+
+def test_fetch_atm_iv_30d_is_none_without_an_expiry_between_7_and_90_days() -> None:
+    """PLTR 2026-06-26 carried one expiry, 2027-12-17; the old all-expiry median made it IV30."""
+    td = date(2026, 6, 26)
+    conn = _FakeConn()
+    conn.atm_iv_rows = [("PLTR", td, date(2027, 12, 17), 0.553), ("PLTR", td, td + timedelta(days=2), 0.90)]
+    assert fetch_atm_iv_30d(conn, "PLTR", trade_date=td) is None
     conn.atm_iv_rows = []
-    assert fetch_atm_iv_30d(conn, "NVDA", trade_date=td) is None
+    assert fetch_atm_iv_30d(conn, "PLTR", trade_date=td) is None

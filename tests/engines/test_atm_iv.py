@@ -238,3 +238,60 @@ def test_multi_expiry_independent() -> None:
     by_exp = {u[2]: u[4] for u in conn.upserts}
     assert by_exp[e1] == 0.20
     assert by_exp[e2] == 0.30
+
+
+# ─── 2026-09-23: an expiry whose only priced strike is far from spot is not at the money ───
+
+
+def _row(td: date, ticker: str, und: str, strike: float, right: str, iv: float, spot: float, expiry: date) -> dict[str, Any]:
+    return {
+        "trade_date": td,
+        "option_ticker": ticker,
+        "underlying": und,
+        "iv": iv,
+        "underlying_price": spot,
+        "expiry": expiry,
+        "strike": strike,
+        "option_right": right,
+    }
+
+
+def test_moneyness_guard_drops_far_strikes() -> None:
+    items = build_expiry_side_items(
+        [
+            {"strike": 310.0, "option_right": "C", "iv": 2.256},
+            {"strike": 15.0, "option_right": "C", "iv": 0.074},
+        ],
+        107.27,
+        max_moneyness=0.10,
+    )
+    assert items == []
+
+
+def test_compute_skips_expiry_without_a_strike_near_spot() -> None:
+    """PLTR 2026-06-25 on DEV: spot 107.27, the only priced contracts sat at 280 and 310."""
+    td = date(2026, 6, 25)
+    far, near = date(2026, 8, 21), date(2026, 7, 24)
+    conn = _FakeConn(
+        [
+            _row(td, "O:PLTR260821C00310000", "PLTR", 310.0, "C", 2.256, 107.27, far),
+            _row(td, "O:PLTR260724C00105000", "PLTR", 105.0, "C", 0.52, 107.27, near),
+            _row(td, "O:PLTR260724P00110000", "PLTR", 110.0, "P", 0.50, 107.27, near),
+        ]
+    )
+    result = compute_atm_iv_for_date(conn, trade_date=td, underlyings=["PLTR"])
+    assert result["groups"] == 1
+    (row,) = conn.upserts
+    assert row[2] == near
+    assert row[4] == 0.51
+
+
+def test_compute_replaces_the_days_rows_for_sourced_symbols() -> None:
+    td = date(2026, 6, 25)
+    conn = _FakeConn([_row(td, "O:X1", "PLTR", 310.0, "C", 2.256, 107.27, date(2026, 8, 21))])
+    result = compute_atm_iv_for_date(conn, trade_date=td, underlyings=["PLTR"])
+    assert result["rows_written"] == 0
+    delete = next((q, p) for q, p in conn.statements if "DELETE FROM" in q)
+    assert "features.option_metric_atm_iv_daily" in delete[0]
+    assert delete[1] == (td, ["PLTR"])
+    assert conn.committed == 1  # the delete stands even when nothing qualifies
