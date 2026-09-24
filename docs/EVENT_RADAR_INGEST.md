@@ -71,3 +71,21 @@ Mac node hostPath alternative is documented as a comment in the CronJob YAML.
 Trade FE `EventRadarPage` shows the events table when API returns rows.
 "News source not configured" is replaced by a "No events yet" empty state that
 points at the Research-workspace input path once this ingest Cron exists.
+
+## Local watcher (2026-10-02)
+
+The Dagster schedule that owns the event-radar slot runs in a pod with no
+mount for `event-radar-input-pvc`, so cluster runs always idle; the Owner's
+drop zone is `Research-workspace/事件雷达工作流/input/` on the Mac. The drain
+therefore runs on the Mac, under bdev (a launchd job cannot reach the LAN
+database — macOS grants local network per executable and launchd does not
+inherit it):
+
+```bash
+bdev start event-radar-watch     # scripts/event_radar_watch.sh
+```
+
+The watcher checks the input directory every 10 minutes and runs the ingest
+only when supported files are present. Wiring the PVC into the Dagster
+daemon (mount + `EVENT_RADAR_INPUT_DIR`) plus a Mac→PVC sync remains the
+cluster-native alternative if the drop zone ever moves off this machine.
