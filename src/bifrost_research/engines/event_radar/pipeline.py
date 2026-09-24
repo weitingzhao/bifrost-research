@@ -343,6 +343,34 @@ def _extract_symbols(text: str) -> str:
     return " · ".join(uniq[:4])
 
 
+# Theme lines: the operational copy of the workspace registry
+# (Research-workspace/事件雷达工作流/schema/主线注册表.md). Names must match that
+# table character for character — the dashboard aggregates by exact string.
+# Only lines with >=3 supporting records get registered (the registry's own
+# rule); unmatched rows keep theme "" — blank is honest, a catch-all is not.
+# First match wins; a structured input's own theme_candidate beats the matcher.
+THEME_LINES: list[tuple[str, re.Pattern[str]]] = [
+    (
+        "利率路径重定价",
+        re.compile(
+            r"\bFOMC\b|CPI (release|report|print)|\bPCE\b|rate (decision|cut|hike)"
+            r"|议息|点阵图|加息|降息"
+        ),
+    ),
+    (
+        "比特币国库",
+        re.compile(r"[Bb]itcoin|\bBTC\b|比特币"),
+    ),
+]
+
+
+def _match_theme(text: str) -> str:
+    for name, rx in THEME_LINES:
+        if rx.search(text):
+            return name
+    return ""
+
+
 def step_tag(raw_events: Sequence[RawEvent]) -> list[TaggedEvent]:
     """03 tag — direction / certainty / sentiment / theme / importance."""
     tagged: list[TaggedEvent] = []
@@ -384,7 +412,7 @@ def step_tag(raw_events: Sequence[RawEvent]) -> list[TaggedEvent]:
                 time_code=time_code,
                 certainty=certainty,
                 sentiment=sentiment,
-                theme=ev.theme_candidate or "",
+                theme=ev.theme_candidate or _match_theme(ev.raw_text),
                 importance=importance,
             )
         )
