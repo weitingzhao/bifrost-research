@@ -1,19 +1,23 @@
 """IV Percentile / Rank daily: features.option_metric_atm_iv_daily → iv_percentile_daily.
 
-Current IV for a symbol+trade_date = **median** of ``atm_iv`` across expiries that day
-(documented choice: median is robust when near-term expiries are noisy or sparse).
+Current IV for a symbol+trade_date = IV30 (``atm_iv.iv30_from_expiries``), the same
+reading VRP stores as ``atm_iv_30d``. Until 0.108.0 it was the median across every
+expiry, which moved with chain depth: LEAPS-heavy chains pulled it up, a day with
+only weeklies pulled it toward pin noise.
 
 IV Percentile: fraction of historical daily IVs (inclusive lookback window) <= current × 100.
 IV Rank: (current − min) / (max − min) × 100; when max == min → 50.0.
+Both stay NULL until the window holds ``MIN_LOOKBACK_DAYS`` sessions (capped at the
+window): the ``_1y`` fields read 75 and 11 sessions for PLTR and AMD on 2026-09-23.
 """
 
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
-from statistics import median
 from typing import Any, Dict, Mapping, Sequence
 
 from bifrost_research.db.upsert import batch_upsert
+from bifrost_research.engines.volatility.atm_iv import IV30_MAX_DTE, IV30_MIN_DTE, iv30_from_expiries
 
 _COLS = (
     "symbol",
@@ -26,6 +30,7 @@ _COLS = (
 )
 
 DEFAULT_PERCENTILE_WINDOW = 252
+MIN_LOOKBACK_DAYS = 126
 
 
 def _row_to_dict(row: Any, columns: Sequence[str]) -> Dict[str, Any]:
@@ -45,14 +50,6 @@ def _as_date(value: Any) -> date | None:
     if not s:
         return None
     return date.fromisoformat(s)
-
-
-def daily_representative_iv(atm_ivs: Sequence[float]) -> float | None:
-    """Median of per-expiry ATM IVs for one symbol+trade_date."""
-    vals = [float(v) for v in atm_ivs if v is not None]
-    if not vals:
-        return None
-    return float(median(vals))
 
 
 def iv_percentile(current: float, history: Sequence[float]) -> float | None:
@@ -82,27 +79,29 @@ def fetch_atm_iv_rows(
     to_date: date,
     underlyings: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Load atm_iv_daily rows in [from_date, to_date]."""
+    """Load atm_iv_daily rows in [from_date, to_date] that IV30 can use (7–90 DTE)."""
     cols = ("symbol", "trade_date", "expiry", "atm_iv")
     syms = [str(s).strip().upper() for s in (underlyings or []) if str(s).strip()]
     with conn.cursor() as cur:
         if syms:
             cur.execute(
-                """
+                f"""
                 SELECT symbol, trade_date, expiry, atm_iv
                 FROM features.option_metric_atm_iv_daily
                 WHERE trade_date >= %s AND trade_date <= %s
                   AND symbol = ANY(%s)
+                  AND (expiry - trade_date) BETWEEN {IV30_MIN_DTE} AND {IV30_MAX_DTE}
                 ORDER BY symbol, trade_date, expiry
                 """,
                 (from_date, to_date, syms),
             )
         else:
             cur.execute(
-                """
+                f"""
                 SELECT symbol, trade_date, expiry, atm_iv
                 FROM features.option_metric_atm_iv_daily
                 WHERE trade_date >= %s AND trade_date <= %s
+                  AND (expiry - trade_date) BETWEEN {IV30_MIN_DTE} AND {IV30_MAX_DTE}
                 ORDER BY symbol, trade_date, expiry
                 """,
                 (from_date, to_date),
@@ -114,24 +113,20 @@ def fetch_atm_iv_rows(
 def rollup_daily_iv_by_symbol(
     rows: Sequence[Mapping[str, Any]],
 ) -> dict[str, dict[date, float]]:
-    """symbol → {trade_date → median atm_iv across expiries}."""
-    buckets: dict[str, dict[date, list[float]]] = {}
+    """symbol → {trade_date → IV30 from that day's expiries}."""
+    buckets: dict[str, dict[date, list[tuple[Any, Any]]]] = {}
     for r in rows:
         sym = str(r.get("symbol") or "").strip().upper()
         td = _as_date(r.get("trade_date"))
         if not sym or td is None:
             continue
-        try:
-            iv = float(r.get("atm_iv"))
-        except (TypeError, ValueError):
-            continue
-        buckets.setdefault(sym, {}).setdefault(td, []).append(iv)
+        buckets.setdefault(sym, {}).setdefault(td, []).append((r.get("expiry"), r.get("atm_iv")))
 
     out: dict[str, dict[date, float]] = {}
     for sym, by_day in buckets.items():
         day_map: dict[date, float] = {}
-        for td, ivs in by_day.items():
-            rep = daily_representative_iv(ivs)
+        for td, pairs in by_day.items():
+            rep = iv30_from_expiries(td, pairs)
             if rep is not None:
                 day_map[td] = rep
         if day_map:
@@ -153,6 +148,7 @@ def compute_iv_percentile_for_date(
     then use at most ``percentile_window`` prior daily IVs + current day).
     """
     window = max(1, int(percentile_window))
+    need = min(MIN_LOOKBACK_DAYS, window)
     # ~2 calendar days per trading day covers holidays; clamp floor
     from_date = trade_date - timedelta(days=window * 2 + 30)
     rows = fetch_atm_iv_rows(
@@ -184,17 +180,17 @@ def compute_iv_percentile_for_date(
         )
         hist_vals = [v for _d, v in hist_pairs[-window:]]
         lookback_used = len(hist_vals)
-        pct = iv_percentile(current, hist_vals)
-        rank = iv_rank(current, hist_vals)
-        if pct is None or rank is None:
-            continue
+        pct = rank = None
+        if lookback_used >= need:
+            pct = iv_percentile(current, hist_vals)
+            rank = iv_rank(current, hist_vals)
         upsert_rows.append(
             (
                 symbol,
                 trade_date,
                 float(current),
-                float(pct),
-                float(rank),
+                pct,
+                rank,
                 int(lookback_used),
                 now,
             )

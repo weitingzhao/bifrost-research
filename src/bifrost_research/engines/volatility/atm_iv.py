@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from statistics import median
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from bifrost_research.db.upsert import batch_upsert
 
@@ -69,6 +69,49 @@ def _valid_iv(value: Any) -> float | None:
     if not (0.0 < iv_f < 10.0):
         return None
     return iv_f
+
+
+# The one "current IV": VRP's atm_iv_30d and the IV percentile's iv_current both
+# read iv30_from_expiries. Inside 7 DTE the ATM IV is pin and event noise; past 90
+# it is a different tenor. (Until 0.108.0 the percentile used the median over every
+# expiry: PLTR 2026-09-22 read 0.564 there and 0.464 in VRP.)
+IV30_MIN_DTE = 7
+IV30_MAX_DTE = 90
+
+
+def interpolate_iv_at_dte(points: Sequence[tuple[int, float]], *, target_dte: int = 30) -> float | None:
+    """IV at ``target_dte`` from (dte, iv) points: linear between the two expiries
+    that bracket it, the nearest one when only one side exists, None when empty."""
+    clean = sorted((int(d), float(v)) for d, v in points)
+    if not clean:
+        return None
+    below = [pt for pt in clean if pt[0] <= target_dte]
+    above = [pt for pt in clean if pt[0] >= target_dte]
+    if below and above:
+        d0, v0 = below[-1]
+        d1, v1 = above[0]
+        if d1 == d0:
+            return round(v0, 8)
+        w = (target_dte - d0) / (d1 - d0)
+        return round(v0 + (v1 - v0) * w, 8)
+    nearest = min(clean, key=lambda pt: abs(pt[0] - target_dte))
+    return round(nearest[1], 8)
+
+
+def iv30_from_expiries(trade_date: date, expiry_ivs: Iterable[Tuple[Any, Any]]) -> float | None:
+    """ATM IV at 30 DTE from one day's (expiry, atm_iv) pairs: interpolated between
+    the expiries that bracket 30 days, the nearest when one-sided, None when no
+    expiry lies within ``IV30_MIN_DTE``–``IV30_MAX_DTE`` days."""
+    points: list[tuple[int, float]] = []
+    for expiry, iv in expiry_ivs:
+        exp = _as_date(expiry)
+        iv_f = _valid_iv(iv)
+        if exp is None or iv_f is None:
+            continue
+        dte = (exp - trade_date).days
+        if IV30_MIN_DTE <= dte <= IV30_MAX_DTE:
+            points.append((dte, iv_f))
+    return interpolate_iv_at_dte(points, target_dte=30)
 
 
 def atm_iv_from_side_items(

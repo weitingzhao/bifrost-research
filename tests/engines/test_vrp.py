@@ -309,7 +309,8 @@ def test_compute_fwd_ret_20d_needs_20_future_bars() -> None:
 
 # ─── research-loop-automation A4: IV at 30 DTE is interpolated, not the band median ───
 
-from bifrost_research.engines.vrp.compute import fetch_atm_iv_30d, interpolate_iv_at_dte  # noqa: E402
+from bifrost_research.engines.volatility.atm_iv import interpolate_iv_at_dte  # noqa: E402
+from bifrost_research.engines.vrp.compute import fetch_atm_iv_30d  # noqa: E402
 
 
 def test_interpolate_iv_between_bracketing_expiries() -> None:

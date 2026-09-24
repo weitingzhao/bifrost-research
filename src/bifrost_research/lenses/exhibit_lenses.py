@@ -510,7 +510,7 @@ def exhibit_iv_percentile(conn: Any, symbol: str) -> ExhibitResponse:
         row = _fetch_one(
             conn,
             f"""
-            SELECT trade_date, iv_percentile_1y, iv_rank_1y, iv_current, computed_at
+            SELECT trade_date, iv_percentile_1y, iv_rank_1y, iv_current, computed_at, lookback_days
             FROM {TABLE_OPTION_METRIC_IV_PERCENTILE_DAILY}
             WHERE symbol = %s
             ORDER BY trade_date DESC
@@ -524,6 +524,8 @@ def exhibit_iv_percentile(conn: Any, symbol: str) -> ExhibitResponse:
         exh.as_of = iso_date(row[0])
         exh.freshness = freshness_from(row[4], True)
         exh.readings = {"iv_percentile_1y": row[1], "iv_rank_1y": row[2], "iv_current": row[3]}
+        if row[1] is None and len(row) > 5:
+            exh.caveats.append(f"IV percentile withheld: {row[5]} sessions of IV30 history, needs 126")
     except Exception as exc:
         return _failed(exh, "IV percentile", exc, conn)
     return exh

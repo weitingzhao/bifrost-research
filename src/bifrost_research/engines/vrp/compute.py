@@ -20,6 +20,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 from bifrost_research.db.upsert import batch_upsert
+from bifrost_research.engines.volatility.atm_iv import iv30_from_expiries
 
 _TRADING_DAYS_PER_YEAR = 252
 
@@ -157,42 +158,13 @@ def fetch_stock_daily_closes(
     return out
 
 
-def interpolate_iv_at_dte(points: Sequence[tuple[int, float]], *, target_dte: int = 30) -> float | None:
-    """IV at ``target_dte`` from (dte, iv) points: linear between the two expiries
-    that bracket it, the nearest one when only one side exists, None when empty."""
-    clean = sorted((int(d), float(v)) for d, v in points)
-    if not clean:
-        return None
-    below = [pt for pt in clean if pt[0] <= target_dte]
-    above = [pt for pt in clean if pt[0] >= target_dte]
-    if below and above:
-        d0, v0 = below[-1]
-        d1, v1 = above[0]
-        if d1 == d0:
-            return round(v0, 8)
-        w = (target_dte - d0) / (d1 - d0)
-        return round(v0 + (v1 - v0) * w, 8)
-    nearest = min(clean, key=lambda pt: abs(pt[0] - target_dte))
-    return round(nearest[1], 8)
-
-
-# Expiries that can stand in for 30 days. Inside 7 DTE the ATM IV is pin and event
-# noise; past 90 it is a different tenor. The all-expiry median this replaces let a
-# lone LEAPS or a 2-day weekly become the day's IV30.
-IV30_MIN_DTE = 7
-IV30_MAX_DTE = 90
-
-
 def fetch_atm_iv_30d(
     conn: Any,
     symbol: str,
     *,
     trade_date: date,
 ) -> float | None:
-    """ATM IV at 30 DTE on ``trade_date``: interpolated between the expiries that
-    bracket 30 days, the nearest expiry when only one side exists, None when no
-    expiry lies within ``IV30_MIN_DTE``–``IV30_MAX_DTE`` days.
-    """
+    """ATM IV at 30 DTE on ``trade_date`` (``iv30_from_expiries``)."""
     sym = symbol.strip().upper()
     with conn.cursor() as cur:
         cur.execute(
@@ -207,22 +179,8 @@ def fetch_atm_iv_30d(
         )
         raw = cur.fetchall() if hasattr(cur, "fetchall") else []
     cols = ("expiry", "atm_iv")
-    points: list[tuple[int, float]] = []
-    for r in raw or []:
-        d = _row_to_dict(r, cols)
-        exp = _as_date(d.get("expiry"))
-        if exp is None:
-            continue
-        try:
-            iv = float(d.get("atm_iv"))
-        except (TypeError, ValueError):
-            continue
-        if not (0.0 < iv < 10.0):
-            continue
-        dte = (exp - trade_date).days
-        if IV30_MIN_DTE <= dte <= IV30_MAX_DTE:
-            points.append((dte, iv))
-    return interpolate_iv_at_dte(points, target_dte=30)
+    pairs = [(d.get("expiry"), d.get("atm_iv")) for d in (_row_to_dict(r, cols) for r in raw or [])]
+    return iv30_from_expiries(trade_date, pairs)
 
 
 def fetch_prior_vrp_history(
