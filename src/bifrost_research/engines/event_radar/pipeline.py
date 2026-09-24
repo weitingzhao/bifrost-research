@@ -326,7 +326,14 @@ def _direction_sentiment(text: str) -> tuple[int, int]:
 def _extract_symbols(text: str) -> str:
     found = re.findall(r"\$([A-Z]{1,5})\b", text)
     found += re.findall(r"\b([A-Z]{2,5})\b", text)
-    stop = {"USD", "GDP", "CPI", "FOMC", "IPO", "ETF", "CEO", "THE", "AND", "FOR"}
+    # Macro/structural tokens plus filing-text legalese (SEC, LLC, ITEM...)
+    # that the 8-K source surfaced in 2026-09. Only tokens with no active US
+    # listing belong here: ET / AM / PM / RSI / ASR are real tickers and stay out.
+    stop = {
+        "USD", "GDP", "CPI", "FOMC", "IPO", "ETF", "CEO", "CFO", "THE", "AND",
+        "FOR", "SEC", "EDGAR", "LLC", "LLP", "INC", "CORP", "LTD", "PLC",
+        "ITEM", "ITEMS", "OF", "US", "USA", "FD", "GAAP", "NYSE",
+    }
     uniq: list[str] = []
     for s in found:
         if s in stop:

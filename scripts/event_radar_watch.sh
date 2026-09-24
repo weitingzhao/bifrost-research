@@ -20,6 +20,9 @@ export EVENT_RADAR_INPUT_DIR="$INPUT_DIR"
 
 echo "event-radar watch: draining $INPUT_DIR every 600s"
 while true; do
+  # Pull any new SEC 8-K filings into input/ first (financial-text source;
+  # reads raw_market, which D13 allows research to read).
+  .venv/bin/python scripts/event_radar_sec_source.py || echo "$(date '+%F %T') sec source failed (will retry next tick)"
   # Anything supported and not a placeholder?
   if find "$INPUT_DIR" -maxdepth 1 -type f \
        \( -name '*.txt' -o -name '*.md' -o -name '*.json' -o -name '*.csv' -o -name '*.eml' \) \
