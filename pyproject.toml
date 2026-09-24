@@ -1,6 +1,6 @@
 [project]
 name = "bifrost-research"
-version = "0.109.0"
+version = "0.109.1"
 description = "Bifrost Research Engine — OLAP analytics, engines, and Research API"
 requires-python = ">=3.11"
 dependencies = [
@@ -20,6 +20,10 @@ orchestration = [
     "dagster-dbt>=0.28,<1.0",
     "dagster-webserver>=1.12,<2.0",
     "dagster-postgres>=0.28,<1.0",
+    # SQLAlchemy 2.1 maps postgresql:// to psycopg 3, which this image does not
+    # install; dagster-postgres then fails at instance start. 0.108.0-dagster and
+    # 0.109.0-dagster (2026-09-24) resolved 2.1.0 and crash-looped the daemon.
+    "SQLAlchemy>=2.0,<2.1",
 ]
 copilot = [
     "anthropic>=0.30",
