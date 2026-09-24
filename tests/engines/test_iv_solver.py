@@ -114,3 +114,22 @@ def test_brent_keeps_existing_vendor_rows():
     out = solve_symbol_window(conn, "PLTR", td, td)
     assert out["vendor_kept"] == 1
     assert [r[1] for r in conn.upserts] == ["O:PLTR260918C00175000"]
+
+
+
+def test_vendor_projection_requires_the_row_to_be_fetched_near_its_session():
+    from bifrost_research.engines.volatility.iv_solver import project_vendor_snapshot_window
+
+    seen: list[str] = []
+
+    class _C(_Cur):
+        def execute(self, sql, params=None):
+            seen.append(sql)
+            self._rows = []
+
+    class _K(_Conn):
+        def cursor(self):
+            return _C(self)
+
+    project_vendor_snapshot_window(_K(vendor=[], daily=[]), "PLTR", date(2026, 8, 5), date(2026, 8, 7), dry_run=True)
+    assert any("fetched_at" in q and "<= 3" in q for q in seen)

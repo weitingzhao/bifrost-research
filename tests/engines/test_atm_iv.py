@@ -43,6 +43,13 @@ class _FakeCursor:
                     )
                 )
             self.parent._fetchall = rows
+        elif "features.option_iv_reconstructed_daily" in q:
+            self.parent._fetchall = [
+                (r["option_ticker"], r["underlying"], r["iv"], r["underlying_price"], r["expiry"], r["strike"], r["option_right"])
+                for r in self.parent.recon_rows
+            ]
+        elif "raw_market.option_daily" in q:
+            self.parent._fetchall = list(self.parent.daily_rows)
         else:
             self.parent._fetchall = []
 
@@ -63,6 +70,8 @@ class _FakeCursor:
 class _FakeConn:
     def __init__(self, snap_rows: list[dict[str, Any]] | None = None) -> None:
         self.snap_rows = snap_rows or []
+        self.recon_rows: list[dict[str, Any]] = []
+        self.daily_rows: list[tuple[Any, ...]] = []
         self.statements: list[tuple[str, Any]] = []
         self.upserts: list[tuple[Any, ...]] = []
         self._fetchall: list[Any] = []
@@ -295,3 +304,46 @@ def test_compute_replaces_the_days_rows_for_sourced_symbols() -> None:
     assert "features.option_metric_atm_iv_daily" in delete[0]
     assert delete[1] == (td, ["PLTR"])
     assert conn.committed == 1  # the delete stands even when nothing qualifies
+
+
+
+# ─── ATM solves Brent from option_daily for contracts the reconstructed table lacks ───
+
+from bifrost_research.engines.backtest.canonical_pnl import bs_price  # noqa: E402
+
+
+def _bar(ticker: str, strike: float, right: str, iv: float, spot: float, td: date, expiry: date) -> tuple[Any, ...]:
+    px = bs_price(spot, strike, (expiry - td).days / 365.0, iv, right=right)
+    return (ticker, "PLTR", expiry, strike, right, px, px, px, spot)
+
+
+def test_atm_solves_option_daily_when_nothing_is_stored() -> None:
+    """PLTR 2026-06-25 after the purge: no stored rows, 93 near-ATM bars in option_daily."""
+    td, exp, spot = date(2026, 6, 25), date(2026, 7, 24), 107.27
+    conn = _FakeConn()
+    conn.daily_rows = [
+        _bar("O:PLTR260724C00105000", 105.0, "C", 0.52, spot, td, exp),
+        _bar("O:PLTR260724P00110000", 110.0, "P", 0.50, spot, td, exp),
+    ]
+    result = compute_atm_iv_for_date(conn, trade_date=td, underlyings=["PLTR"])
+    assert result["iv_source"] == "reconstructed"
+    (row,) = conn.upserts
+    assert row[2] == exp
+    assert abs(row[4] - 0.51) < 1e-3
+
+
+def test_stored_rows_win_over_the_bar_for_the_same_contract() -> None:
+    td, exp, spot = date(2026, 8, 12), date(2026, 9, 18), 171.04
+    conn = _FakeConn()
+    conn.recon_rows = [_row(td, "O:PLTR260918C00170000", "PLTR", 170.0, "C", 0.47, spot, exp)]
+    conn.daily_rows = [_bar("O:PLTR260918C00170000", 170.0, "C", 0.90, spot, td, exp)]
+    compute_atm_iv_for_date(conn, trade_date=td, underlyings=["PLTR"])
+    (row,) = conn.upserts
+    assert row[4] == 0.47
+
+
+def test_snapshot_fallback_requires_the_row_to_be_fetched_near_its_session() -> None:
+    conn = _FakeConn()
+    compute_atm_iv_for_date(conn, trade_date=date(2026, 6, 25), underlyings=["PLTR"])
+    sql = next(q for q, _ in conn.statements if "v_option_snapshot_with_stock" in q)
+    assert "fetched_at" in sql and "<= 3" in sql

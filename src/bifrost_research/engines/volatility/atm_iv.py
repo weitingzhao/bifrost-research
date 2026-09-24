@@ -1,7 +1,12 @@
-"""ATM IV daily compute: unified reconstructed IV + snapshot fallback → features.option_metric_atm_iv_daily.
+"""ATM IV daily compute → features.option_metric_atm_iv_daily.
 
-IDS-4: prefer ``features.option_iv_reconstructed_daily``,
-then fall back to ``raw_market.v_option_snapshot_with_stock`` (Polygon live path).
+Sources, per contract-day: ``features.option_iv_reconstructed_daily`` (vendor IV
+projected from snapshots, plus the daily Brent pass); for contracts it lacks, Brent
+solved here from the day's ``raw_market.option_daily`` bar, limited to strikes ATM
+can use. Only when both are empty, ``raw_market.v_option_snapshot_with_stock``.
+Solving in place rather than storing is what lets every symbol in the universe
+carry ATM IV back to the first option bar (2024-09): stored, the per-contract rows
+would be ~23M for two years, and ATM IV is their only reader.
 
 Algorithm independently reimplemented from bifrost_api.research.iv_atm
 (no bifrost-core / trade-api pip dependency).
@@ -19,6 +24,14 @@ from statistics import median
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from bifrost_research.db.upsert import batch_upsert
+from bifrost_research.engines.volatility.iv_solver import (
+    DTE_MAX,
+    DTE_MIN,
+    _mid_from_ohlc,
+    _right_lit,
+    observed_near_session,
+    solve_iv,
+)
 
 _COLS = (
     "symbol",
@@ -243,7 +256,7 @@ def fetch_snapshot_iv_rows_for_date(
         "option_right",
     )
     syms = [str(s).strip().upper() for s in (underlyings or []) if str(s).strip()]
-    base_sql = """
+    base_sql = f"""
         SELECT DISTINCT ON (v.option_ticker)
           v.option_ticker,
           v.underlying,
@@ -258,6 +271,7 @@ def fetch_snapshot_iv_rows_for_date(
         WHERE DATE(timezone('America/New_York', v.snapshot_ts)) = %s
           AND v.iv IS NOT NULL
           AND v.underlying_price IS NOT NULL
+          AND {observed_near_session("v")}
     """
     with conn.cursor() as cur:
         if syms:
@@ -281,24 +295,90 @@ def fetch_snapshot_iv_rows_for_date(
     return [_row_to_dict(r, cols) for r in (raw or [])]
 
 
-def fetch_unified_iv_rows_for_date(
+def fetch_option_daily_brent_rows_for_date(
     conn: Any,
     trade_date: date,
     *,
     underlyings: Sequence[str] | None = None,
-) -> tuple[list[dict[str, Any]], str]:
-    """Prefer reconstructed IV; fall back to live snapshot."""
-    try:
-        rows = fetch_reconstructed_iv_rows_for_date(
-            conn, trade_date, underlyings=underlyings
+    exclude: Iterable[str] = (),
+) -> list[dict[str, Any]]:
+    """Brent IV from the day's option_daily bars for contracts ATM can use (within
+    ``ATM_MAX_MONEYNESS`` of the close, ``DTE_MIN``–``DTE_MAX`` days) that are not in
+    ``exclude`` — the contracts the reconstructed table already prices."""
+    skip = {str(t) for t in exclude}
+    syms = [str(s).strip().upper() for s in (underlyings or []) if str(s).strip()]
+    sql = f"""
+        SELECT o.option_ticker, o.underlying, o.expiry, o.strike, o.option_right,
+               o.high, o.low, o.close, s.close AS spot
+        FROM raw_market.option_daily o
+        JOIN raw_market.stock_daily s ON s.symbol = o.underlying AND s.bar_date = o.bar_date
+        WHERE o.bar_date = %s
+          AND s.close > 0
+          AND (o.expiry - o.bar_date) BETWEEN {DTE_MIN} AND {DTE_MAX}
+          AND o.strike BETWEEN {1 - ATM_MAX_MONEYNESS} * s.close AND {1 + ATM_MAX_MONEYNESS} * s.close
+    """
+    with conn.cursor() as cur:
+        if syms:
+            cur.execute(sql + " AND o.underlying = ANY(%s)", (trade_date, syms))
+        else:
+            cur.execute(sql, (trade_date,))
+        raw = cur.fetchall() if hasattr(cur, "fetchall") else []
+    out: list[dict[str, Any]] = []
+    for ticker, und, expiry, strike, right_raw, high, low, close, spot in raw or []:
+        if str(ticker) in skip:
+            continue
+        right = _right_lit(right_raw)
+        mid = _mid_from_ohlc(close, high, low)
+        exp = _as_date(expiry)
+        try:
+            strike_f, spot_f = float(strike), float(spot)
+        except (TypeError, ValueError):
+            continue
+        if right is None or mid is None or exp is None:
+            continue
+        iv, _status = solve_iv(spot_f, strike_f, max((exp - trade_date).days, 1) / 365.0, mid, right)
+        if iv is None:
+            continue
+        out.append(
+            {
+                "option_ticker": str(ticker),
+                "underlying": str(und).strip().upper(),
+                "iv": iv,
+                "underlying_price": spot_f,
+                "expiry": exp,
+                "strike": strike_f,
+                "option_right": right,
+            }
         )
-        if rows:
-            return rows, IV_SOURCE_RECONSTRUCTED
+    return out
+
+
+def fetch_atm_source_rows(
+    conn: Any,
+    trade_date: date,
+    *,
+    underlyings: Sequence[str] | None = None,
+    solve_missing: bool = True,
+) -> tuple[list[dict[str, Any]], str]:
+    """Reconstructed rows plus, when ``solve_missing``, Brent for the contracts they
+    lack; the live snapshot only when neither has anything."""
+    try:
+        rows = fetch_reconstructed_iv_rows_for_date(conn, trade_date, underlyings=underlyings)
     except Exception:
         try:
             conn.rollback()
         except Exception:
             pass
+        rows = []
+    if solve_missing:
+        rows = rows + fetch_option_daily_brent_rows_for_date(
+            conn,
+            trade_date,
+            underlyings=underlyings,
+            exclude=(r.get("option_ticker") for r in rows),
+        )
+    if rows:
+        return rows, IV_SOURCE_RECONSTRUCTED
     return (
         fetch_snapshot_iv_rows_for_date(conn, trade_date, underlyings=underlyings),
         IV_SOURCE_SNAPSHOT,
@@ -310,10 +390,11 @@ def compute_atm_iv_for_date(
     *,
     trade_date: date,
     underlyings: Sequence[str] | None = None,
+    solve_missing: bool = True,
 ) -> dict[str, Any]:
     """Compute ATM IV for all (underlying, expiry) on ``trade_date`` and upsert."""
-    snap_rows, iv_source = fetch_unified_iv_rows_for_date(
-        conn, trade_date, underlyings=underlyings
+    snap_rows, iv_source = fetch_atm_source_rows(
+        conn, trade_date, underlyings=underlyings, solve_missing=solve_missing
     )
     if not snap_rows:
         return {

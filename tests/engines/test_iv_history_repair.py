@@ -1,4 +1,4 @@
-"""IV history repair: chunking, scope parsing, and the purge's two refusals."""
+"""IV history repair: chunking, and a purge that reads only the reconstructed table."""
 
 from __future__ import annotations
 
@@ -23,9 +23,10 @@ class _Cur:
         elif "MIN(trade_date)" in sql:
             self._one = (self.conn.oldest,)
         elif sql.lstrip().startswith("SELECT COUNT(*)"):
-            self._one = (self.conn.counts.pop(0) if self.conn.counts else 0,)
+            queue = self.conn.fresh if "computed_at >= %s" in sql else self.conn.unconfirmed
+            self._one = (queue.pop(0) if queue else 0,)
         elif sql.lstrip().startswith("DELETE"):
-            self.rowcount = self.conn.deleted
+            self.rowcount = self.conn.deleted.pop(0) if self.conn.deleted else 0
 
     def fetchone(self) -> Any:
         return self._one
@@ -38,8 +39,19 @@ class _Cur:
 
 
 class _Conn:
-    def __init__(self, *, raw_first: date | None, oldest: date | None, counts: list[int], deleted: int = 0) -> None:
-        self.raw_first, self.oldest, self.counts, self.deleted = raw_first, oldest, counts, deleted
+    def __init__(
+        self,
+        *,
+        raw_first: date | None,
+        oldest: date | None,
+        unconfirmed: list[int] | None = None,
+        fresh: list[int] | None = None,
+        deleted: list[int] | None = None,
+    ) -> None:
+        self.raw_first, self.oldest = raw_first, oldest
+        self.unconfirmed = unconfirmed or []
+        self.fresh = fresh or []
+        self.deleted = deleted or []
         self.sql: list[str] = []
         self.commits = self.rollbacks = 0
 
@@ -53,6 +65,10 @@ class _Conn:
         self.rollbacks += 1
 
 
+def _deletes(conn: _Conn) -> list[str]:
+    return [s for s in conn.sql if s.lstrip().startswith("DELETE")]
+
+
 def test_windows_cover_the_range_without_overlap() -> None:
     chunks = list(repair.windows(date(2026, 8, 1), date(2026, 8, 20), 7))
     assert chunks == [
@@ -62,28 +78,58 @@ def test_windows_cover_the_range_without_overlap() -> None:
     ]
 
 
-def test_solve_scope_lists() -> None:
-    assert repair.solve_scope(None, "none", ["SPY"]) == []
-    assert repair.solve_scope(None, "universe", ["SPY", "QQQ"]) == ["SPY", "QQQ"]
-    assert repair.solve_scope(None, " pltr,NVDA ,,", []) == ["NVDA", "PLTR"]
+T0 = repair.P3_CUTOVER_TS.replace(month=10)  # the reprojection's start in these tests
 
 
-def test_purge_refuses_once_raw_is_trimmed_past_the_first_observation() -> None:
-    conn = _Conn(raw_first=date(2026, 9, 1), oldest=date(2025, 6, 2), counts=[])
-    with pytest.raises(RuntimeError, match="refusing"):
-        repair.purge_fossils(conn, apply=True)
+def test_dry_run_counts_what_the_reprojection_will_leave() -> None:
+    conn = _Conn(raw_first=repair.FIRST_OBSERVATION, oldest=date(2026, 9, 1), unconfirmed=[5, 3])
+    out = repair.purge_unconfirmed(conn, apply=False)
+    assert out["rows"] == 8
+    assert all("NOT" in q and "v_option_snapshot_with_stock" in q for q in conn.sql if "COUNT(*)" in q)
+    assert _deletes(conn) == []
 
 
-def test_purge_rolls_back_when_the_delete_touches_a_different_count() -> None:
-    conn = _Conn(raw_first=repair.FIRST_OBSERVATION, oldest=date(2026, 9, 1), counts=[40], deleted=41)
+def test_apply_deletes_rows_no_post_p3_projection_confirmed() -> None:
+    conn = _Conn(raw_first=repair.FIRST_OBSERVATION, oldest=date(2026, 9, 1), unconfirmed=[40, 7], fresh=[900, 300], deleted=[40, 7])
+    out = repair.purge_unconfirmed(conn, apply=True, reprojected_at=T0)
+    assert out["rows"] == 47
+    assert all("computed_at < %s" in s for s in _deletes(conn))
+    assert conn.commits == 2
+
+
+def test_apply_still_works_after_raw_retention_trims_the_first_observation() -> None:
+    """The durable part: no raw lookup is needed to tell a fossil from a trimmed row."""
+    conn = _Conn(raw_first=date(2026, 12, 1), oldest=date(2026, 9, 1), unconfirmed=[12, 0], deleted=[12])
+    out = repair.purge_unconfirmed(conn, apply=True, reprojected_at=T0)
+    assert out["rows"] == 12
+    assert len(_deletes(conn)) == 1
+    assert not any("option_snapshot" in s for s in conn.sql if "COUNT(*)" in s)
+
+
+def test_apply_needs_a_reprojection_in_the_same_run() -> None:
+    conn = _Conn(raw_first=repair.FIRST_OBSERVATION, oldest=date(2026, 9, 1))
+    with pytest.raises(RuntimeError, match="needs a reprojection"):
+        repair.purge_unconfirmed(conn, apply=True)
+
+
+def test_apply_stops_when_an_observed_week_was_not_reprojected() -> None:
+    conn = _Conn(raw_first=repair.FIRST_OBSERVATION, oldest=date(2026, 9, 1), unconfirmed=[100], fresh=[0])
+    with pytest.raises(RuntimeError, match="nothing in it was reprojected"):
+        repair.purge_unconfirmed(conn, apply=True, reprojected_at=T0)
+    assert _deletes(conn) == []
+
+
+def test_weeks_before_the_first_observation_need_no_reprojection(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(repair, "P3_CUTOVER", date(2026, 6, 29))
+    conn = _Conn(raw_first=repair.FIRST_OBSERVATION, oldest=date(2026, 6, 22), unconfirmed=[3], deleted=[3])
+    out = repair.purge_unconfirmed(conn, apply=True, reprojected_at=T0)
+    assert out["rows"] == 3
+    assert not any("computed_at >= %s" in q for q in conn.sql)
+
+
+def test_apply_rolls_back_when_the_delete_touches_a_different_count() -> None:
+    conn = _Conn(raw_first=repair.FIRST_OBSERVATION, oldest=date(2026, 9, 1), unconfirmed=[40], fresh=[10], deleted=[41])
     with pytest.raises(RuntimeError, match="rolled back"):
-        repair.purge_fossils(conn, apply=True)
+        repair.purge_unconfirmed(conn, apply=True, reprojected_at=T0)
     assert conn.rollbacks == 1
     assert conn.commits == 0
-
-
-def test_purge_dry_run_only_counts() -> None:
-    conn = _Conn(raw_first=repair.FIRST_OBSERVATION, oldest=date(2026, 9, 1), counts=[5, 3, 0])
-    out = repair.purge_fossils(conn, apply=False)
-    assert out["rows"] == 5 + 3
-    assert not any(s.lstrip().startswith("DELETE") for s in conn.sql)

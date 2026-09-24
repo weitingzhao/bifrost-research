@@ -22,7 +22,14 @@ class _FakeCursor:
     def execute(self, query: str, params: Any = None) -> None:
         self.parent.statements.append((query, params))
         q = query.lower()
-        if "from features.option_metric_atm_iv_daily" in q:
+        if "select symbol, trade_date, iv_current" in q:
+            from_d, before, syms = params
+            self.parent._fetchall = sorted(
+                (r["symbol"], r["trade_date"], r["iv_current"])
+                for r in self.parent.prior_rows
+                if from_d <= r["trade_date"] < before and r["symbol"] in set(syms)
+            )
+        elif "from features.option_metric_atm_iv_daily" in q:
             from_d = params[0] if params else None
             to_d = params[1] if params and len(params) > 1 else None
             underlyings = set(params[2]) if params and len(params) > 2 else None
@@ -55,8 +62,13 @@ class _FakeCursor:
 
 
 class _FakeConn:
-    def __init__(self, atm_rows: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        atm_rows: list[dict[str, Any]] | None = None,
+        prior_rows: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.atm_rows = atm_rows or []
+        self.prior_rows = prior_rows or []
         self.statements: list[tuple[str, Any]] = []
         self.upserts: list[tuple[Any, ...]] = []
         self._fetchall: list[Any] = []
@@ -105,22 +117,16 @@ def test_rollup_is_iv30_not_the_median_across_expiries() -> None:
 
 
 def test_compute_iv_percentile_upsert() -> None:
-    """Five days of synthetic ATM IV → known percentile/rank on last day."""
+    """Four stored days + today's ATM IV → known percentile/rank on the last day."""
     base = date(2024, 6, 14)
     expiry = base + timedelta(days=34)
-    # daily IV: 0.10, 0.20, 0.30, 0.40, 0.50 on consecutive weekdays
-    atm_rows = []
-    for i, iv in enumerate([0.10, 0.20, 0.30, 0.40, 0.50]):
-        atm_rows.append(
-            {
-                "symbol": "AAPL",
-                "trade_date": base + timedelta(days=i),
-                "expiry": expiry,
-                "atm_iv": iv,
-            }
-        )
+    prior = [
+        {"symbol": "AAPL", "trade_date": base + timedelta(days=i), "iv_current": iv}
+        for i, iv in enumerate([0.10, 0.20, 0.30, 0.40])
+    ]
     td = base + timedelta(days=4)  # 0.50 current
-    conn = _FakeConn(atm_rows)
+    atm_rows = [{"symbol": "AAPL", "trade_date": td, "expiry": expiry, "atm_iv": 0.50}]
+    conn = _FakeConn(atm_rows, prior)
     result = compute_iv_percentile_for_date(
         conn,
         trade_date=td,
@@ -149,12 +155,9 @@ def test_compute_iv_percentile_empty() -> None:
 def test_percentile_and_rank_stay_null_until_the_window_holds_126_sessions() -> None:
     """AMD had 11 sessions on 2026-09-23 and still reported iv_rank_1y."""
     base = date(2026, 9, 8)
-    rows = [
-        {"symbol": "AMD", "trade_date": base + timedelta(days=i), "expiry": base + timedelta(days=40), "atm_iv": 0.5 + i / 100}
-        for i in range(11)
-    ]
+    prior = [{"symbol": "AMD", "trade_date": base + timedelta(days=i), "iv_current": 0.5 + i / 100} for i in range(10)]
     td = base + timedelta(days=10)
-    conn = _FakeConn(rows)
+    conn = _FakeConn([{"symbol": "AMD", "trade_date": td, "expiry": base + timedelta(days=40), "atm_iv": 0.60}], prior)
     result = compute_iv_percentile_for_date(conn, trade_date=td, underlyings=["AMD"])
     assert result["rows_written"] == 1
     (row,) = conn.upserts
@@ -168,3 +171,18 @@ def test_history_query_keeps_only_expiries_iv30_can_use() -> None:
     compute_iv_percentile_for_date(conn, trade_date=date(2026, 9, 22), underlyings=["PLTR"])
     sql = next(q for q, _ in conn.statements if "option_metric_atm_iv_daily" in q)
     assert "BETWEEN 7 AND 90" in sql
+
+
+def test_history_is_the_stored_iv_current_not_a_year_of_atm_rows() -> None:
+    td = date(2026, 9, 22)
+    conn = _FakeConn(
+        [{"symbol": "PLTR", "trade_date": td, "expiry": td + timedelta(days=30), "atm_iv": 0.4605}],
+        [{"symbol": "PLTR", "trade_date": td - timedelta(days=i + 1), "iv_current": 0.40 + i / 1000} for i in range(300)],
+    )
+    compute_iv_percentile_for_date(conn, trade_date=td, underlyings=["PLTR"])
+    atm_q = next(p for q, p in conn.statements if "option_metric_atm_iv_daily" in q)
+    assert atm_q[0] == td and atm_q[1] == td  # one day of ATM rows
+    (row,) = conn.upserts
+    assert row[5] == 252  # the latest 251 stored sessions + today
+    # kept: sessions 1..251 back (0.400 … 0.650); 61 of them (0.400 … 0.460) plus today are <= 0.4605
+    assert row[3] == round(100.0 * 62 / 252, 4)

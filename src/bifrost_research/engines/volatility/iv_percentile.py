@@ -9,6 +9,10 @@ IV Percentile: fraction of historical daily IVs (inclusive lookback window) <= c
 IV Rank: (current − min) / (max − min) × 100; when max == min → 50.0.
 Both stay NULL until the window holds ``MIN_LOOKBACK_DAYS`` sessions (capped at the
 window): the ``_1y`` fields read 75 and 11 sessions for PLTR and AMD on 2026-09-23.
+
+History is this table's own ``iv_current`` for the prior sessions (as VRP ranks its
+stored ``vrp_60d``), so each day reads one day of ATM rows, not a year of them for
+the whole universe; recompute a range oldest first.
 """
 
 from __future__ import annotations
@@ -134,6 +138,39 @@ def rollup_daily_iv_by_symbol(
     return out
 
 
+def fetch_prior_iv_current(
+    conn: Any,
+    symbols: Sequence[str],
+    *,
+    from_date: date,
+    before: date,
+) -> dict[str, list[float]]:
+    """symbol → stored ``iv_current`` for sessions in [from_date, before), oldest first."""
+    if not symbols:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT symbol, trade_date, iv_current
+            FROM features.option_metric_iv_percentile_daily
+            WHERE trade_date >= %s AND trade_date < %s
+              AND iv_current IS NOT NULL
+              AND symbol = ANY(%s)
+            ORDER BY symbol, trade_date
+            """,
+            (from_date, before, list(symbols)),
+        )
+        raw = cur.fetchall() if hasattr(cur, "fetchall") else []
+    out: dict[str, list[float]] = {}
+    for r in raw or []:
+        d = _row_to_dict(r, ("symbol", "trade_date", "iv_current"))
+        try:
+            out.setdefault(str(d["symbol"]).upper(), []).append(float(d["iv_current"]))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def compute_iv_percentile_for_date(
     conn: Any,
     *,
@@ -144,16 +181,15 @@ def compute_iv_percentile_for_date(
     """Compute IV percentile/rank for symbols with ATM IV on ``trade_date`` and upsert.
 
     History window: calendar days covering ~``percentile_window`` trading days
-    (fetch from ``trade_date - percentile_window * 2`` to include weekends/holidays,
-    then use at most ``percentile_window`` prior daily IVs + current day).
+    (``trade_date - percentile_window * 2 - 30`` covers weekends/holidays), then at
+    most ``percentile_window - 1`` prior stored IVs + the current day.
     """
     window = max(1, int(percentile_window))
     need = min(MIN_LOOKBACK_DAYS, window)
-    # ~2 calendar days per trading day covers holidays; clamp floor
     from_date = trade_date - timedelta(days=window * 2 + 30)
     rows = fetch_atm_iv_rows(
         conn,
-        from_date=from_date,
+        from_date=trade_date,
         to_date=trade_date,
         underlyings=underlyings,
     )
@@ -167,18 +203,15 @@ def compute_iv_percentile_for_date(
             "percentile_window": window,
         }
 
+    prior = fetch_prior_iv_current(conn, sorted(by_sym), from_date=from_date, before=trade_date)
     now = datetime.now(timezone.utc)
     upsert_rows: list[tuple[Any, ...]] = []
     for symbol, day_map in sorted(by_sym.items()):
         current = day_map.get(trade_date)
         if current is None:
             continue
-        # Prior days + current (inclusive), oldest first; take last `window` points ending at trade_date
-        hist_pairs = sorted(
-            ((d, v) for d, v in day_map.items() if d <= trade_date),
-            key=lambda x: x[0],
-        )
-        hist_vals = [v for _d, v in hist_pairs[-window:]]
+        hist_vals = prior.get(symbol, [])[-(window - 1):] if window > 1 else []
+        hist_vals = [*hist_vals, current]
         lookback_used = len(hist_vals)
         pct = rank = None
         if lookback_used >= need:

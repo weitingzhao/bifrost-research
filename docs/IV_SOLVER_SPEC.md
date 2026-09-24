@@ -82,6 +82,29 @@ Python helper `fetch_unified_iv_rows_for_date` (and optional SQL view `features.
 | IDS-4 | `canonical_pnl.insufficient_pct` &lt; 0.15 |
 | IDS-5 | Signal Health exposes `iv_reconstruction` block; package `0.35.0` |
 
+## 2026-09 correction (research 0.106.0 – 0.109.0)
+
+**The depth path above was fossil data.** Until plugin P3 (2026-09-08) `option_snapshot.snapshot_ts`
+was a contract's *last trade*, so the "~290 dates" in the recon table were contracts fetched in
+August stamped with the day they last traded. Their `vendor_snapshot` projections carried August IV
+against the stamped day's spot; the ATM picker took the nearest priced strike however far out
+(PLTR 2026-06-25: strikes 280/310 at spot 107.27 → IV30 2.256). IDS-3's coverage gate was met by
+these rows. Raw observation time starts 2026-08-05; 145,096 projected rows before P3 had no raw
+observation behind them.
+
+What replaced it:
+
+| Piece | Now |
+|-------|-----|
+| ATM strike | within ±10% of spot, else the expiry gets no row |
+| ATM source | reconstructed rows, plus Brent solved in place from `option_daily` for contracts they lack (±10%, DTE 5–90). Not stored: ATM is the only reader, and storing the universe's two years would be ~23M rows |
+| Vendor vs Brent | a contract-day with vendor IV keeps it |
+| Projection | a snapshot row must be fetched within 3 days of its session (`SNAPSHOT_MAX_FETCH_LAG_DAYS`) |
+| IV30 | `atm_iv.iv30_from_expiries`: interpolated within 7–90 DTE; VRP and the IV percentile share it |
+| IV percentile | ranks stored `iv_current` (IV30); NULL until 126 sessions |
+| Repair | `engines/volatility/iv_history_repair.py` / `k8s/engines/job-iv-history-repair.yaml`: reproject vendor rows from raw, purge pre-P3 rows no post-P3 projection confirmed (reads only this table, so it holds after raw retention), rebuild ATM → percentile → VRP oldest first |
+| Retired | `iv_solver_entry.py` and `job-iv-solver-backfill.yaml` (a 252-day, whole-window-in-memory cohort solve that would also have overwritten vendor rows) |
+
 ## Out of scope
 
 - Plugin / Polygon API changes (no historical greeks endpoint)

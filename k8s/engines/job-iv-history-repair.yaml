@@ -3,9 +3,11 @@ kind: Job
 metadata:
   annotations:
     # One-off Job: run by hand (kubectl create), never applied by Argo CD.
-    # Dry run by default (counts only). To write, add "--apply" and pick --solve
-    # (none | cohort | universe | SYM,SYM) — see engines/volatility/iv_history_repair.py.
-    # Keep off the 22:30 NY trading-day chain and the Sunday 22:00 UTC vol backfill.
+    # Dry run by default (counts only); add "--apply" to write — see
+    # engines/volatility/iv_history_repair.py. Safe to re-run: the purge reads only
+    # the reconstructed table, and a table already repaired has nothing to purge.
+    # Keep off the 22:30 NY trading-day chain, the 23:25 UTC iv_solver and the
+    # Sunday 22:00 UTC vol backfill. Replaces job-iv-solver-backfill (retired 0.109.0).
     argocd.argoproj.io/hook: Skip
   name: research-iv-history-repair
   namespace: research
@@ -47,8 +49,6 @@ spec:
             - python
             - -m
             - bifrost_research.engines.volatility.iv_history_repair
-            - --solve
-            - cohort
           envFrom:
             - secretRef:
                 name: bifrost-research-secrets

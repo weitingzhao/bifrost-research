@@ -53,6 +53,21 @@ IV_HI = 5.0
 BRENT_TOL = 1e-4
 BRENT_MAXITER = 100
 
+# A snapshot row stands for the session it is stamped with only if it was fetched
+# then (Friday sessions are re-fetched over the weekend: lag 0–2 days on DEV). Before
+# plugin P3 (2026-09-08) snapshot_ts was the last trade, so an August fetch of a
+# contract that last traded in June was stamped June; those rows were fetched weeks
+# after their stamp. Research checks the invariant instead of trusting it.
+SNAPSHOT_MAX_FETCH_LAG_DAYS = 3
+
+
+def observed_near_session(alias: str) -> str:
+    """SQL predicate: ``alias`` (a snapshot row) was fetched within the lag of its session."""
+    return (
+        f"DATE(timezone('America/New_York', {alias}.fetched_at))"
+        f" - DATE(timezone('America/New_York', {alias}.snapshot_ts)) <= {SNAPSHOT_MAX_FETCH_LAG_DAYS}"
+    )
+
 
 def bs_gamma(
     spot: float,
@@ -356,7 +371,7 @@ def project_vendor_snapshot_window(
     sym = symbol.strip().upper()
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT DISTINCT ON (v.option_ticker, DATE(timezone('America/New_York', v.snapshot_ts)))
               v.option_ticker,
               UPPER(TRIM(v.underlying)),
@@ -375,6 +390,7 @@ def project_vendor_snapshot_window(
               AND DATE(timezone('America/New_York', v.snapshot_ts)) BETWEEN %s AND %s
               AND v.iv IS NOT NULL AND v.iv > 0
               AND v.underlying_price IS NOT NULL AND v.underlying_price > 0
+              AND {observed_near_session("v")}
             ORDER BY v.option_ticker,
                      DATE(timezone('America/New_York', v.snapshot_ts)),
                      v.snapshot_ts DESC

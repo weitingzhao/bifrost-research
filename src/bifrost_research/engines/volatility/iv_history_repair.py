@@ -1,4 +1,4 @@
-"""One-shot repair of the IV history the pre-P3 snapshot model left behind (2026-09-23).
+"""Repair of the IV history the pre-P3 snapshot model left behind (2026-09-23).
 
 Until plugin 0.14 (P3, 2026-09-08) ``raw_market.option_snapshot.snapshot_ts`` was the
 contract's last trade. A contract quoted in August that last traded in June was
@@ -10,18 +10,26 @@ them are the June–July readings of 0.04–2.9 (PLTR 06-25: strikes 280/310 at 
 
 Steps, each dry-run (counts only) unless ``--apply``:
 
-1. purge     — vendor rows dated before P3 with no raw observation that NY day
-2. reproject — vendor rows from raw for [first observation, end]: pre-P3 fetches
+1. reproject — every vendor row raw still observes, re-read from raw: pre-P3 fetches
                overwrote some in place with later values, and until 0.106.0 the
                daily Brent pass overwrote vendor rows with last-trade inversions
-3. solve     — Brent over ``raw_market.option_daily`` for ``--solve`` symbols
-4. derive    — session by session, oldest first: ATM IV (replacing the day),
-               IV percentile, VRP; then fwd_ret_20d on the VRP rows it wrote
+2. purge     — vendor rows dated before P3 that no projection has confirmed since P3
+               (``computed_at`` before the cutover). Step 1 re-stamps every row raw
+               backs, so what is left was never observed on its session; the test
+               reads only this table and stays true after raw retention trims the
+               days it was run on. Later runs find nothing to delete.
+3. derive    — session by session, oldest first: ATM IV (replacing the day; Brent
+               from ``option_daily`` for what the table lacks, so every symbol in the
+               universe back to the first option bar), IV percentile; then VRP, then
+               fwd_ret_20d on the VRP rows written
+
+New fossils cannot arise: the projection now requires a snapshot row to have been
+fetched within ``SNAPSHOT_MAX_FETCH_LAG_DAYS`` of its session.
 
 Usage::
 
     python -m bifrost_research.engines.volatility.iv_history_repair
-    python -m bifrost_research.engines.volatility.iv_history_repair --solve cohort --apply
+    python -m bifrost_research.engines.volatility.iv_history_repair --apply
 """
 
 from __future__ import annotations
@@ -38,14 +46,7 @@ from bifrost_research.db.calendar import load_symbols_from_env_or_query, union_i
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.volatility.atm_iv import compute_atm_iv_for_date
 from bifrost_research.engines.volatility.iv_percentile import compute_iv_percentile_for_date
-from bifrost_research.engines.volatility.iv_solver import (
-    DTE_MAX,
-    DTE_MIN,
-    STRIKE_HI,
-    STRIKE_LO,
-    project_vendor_snapshot_window,
-    solve_symbol_window,
-)
+from bifrost_research.engines.volatility.iv_solver import observed_near_session, project_vendor_snapshot_window
 from bifrost_research.engines.vrp.compute import compute_vrp_for_date
 from bifrost_research.engines.vrp.entry import backfill_fwd_ret_20d
 from bifrost_research.schema.schemas import TABLE_OPTION_IV_RECONSTRUCTED_DAILY as RECON
@@ -53,16 +54,36 @@ from bifrost_research.schema.schemas import TABLE_OPTION_IV_RECONSTRUCTED_DAILY 
 logger = logging.getLogger(__name__)
 
 FIRST_OBSERVATION = date(2026, 8, 5)  # min(snapshot_ts) in raw once P3 re-stamped it
-P3_CUTOVER = date(2026, 9, 9)  # projections from here on read observation-time rows
+P3_CUTOVER = date(2026, 9, 9)  # sessions from here on were only ever projected post-P3
+P3_CUTOVER_TS = datetime(2026, 9, 9, tzinfo=timezone.utc)  # projections after this read observation time
 
-_NO_SOURCE = """
+_UNCONFIRMED = """
     r.solver_status = 'vendor_snapshot'
     AND r.trade_date >= %s AND r.trade_date < %s
-    AND NOT EXISTS (
+    AND r.computed_at < %s
+"""
+# Dry-run counts, while raw still holds the first observation. After a reprojection
+# the unconfirmed rows are exactly these two: never observed on their session, or
+# observed but rejected by today's projection (IV missing or out of range, no stock
+# close, no contract row) — 9,219 of the latter in the week of 2026-09-06 on DEV.
+_OBSERVED = f"""
+    EXISTS (
         SELECT 1 FROM raw_market.option_snapshot os
         WHERE os.option_ticker = r.option_ticker
           AND os.snapshot_ts >= (r.trade_date::timestamp AT TIME ZONE 'America/New_York')
-          AND os.snapshot_ts < ((r.trade_date + 1)::timestamp AT TIME ZONE 'America/New_York'))
+          AND os.snapshot_ts < ((r.trade_date + 1)::timestamp AT TIME ZONE 'America/New_York')
+          AND {observed_near_session("os")})
+"""
+_REJECTED = f"""
+    EXISTS (
+        SELECT 1 FROM raw_market.v_option_snapshot_with_stock os
+        LEFT JOIN raw_market.option_contract oc ON oc.option_ticker = os.option_ticker
+        WHERE os.option_ticker = r.option_ticker
+          AND os.snapshot_ts >= (r.trade_date::timestamp AT TIME ZONE 'America/New_York')
+          AND os.snapshot_ts < ((r.trade_date + 1)::timestamp AT TIME ZONE 'America/New_York')
+          AND {observed_near_session("os")}
+          AND (os.iv IS NULL OR os.iv <= 0 OR os.underlying_price IS NULL OR oc.option_ticker IS NULL
+               OR (CASE WHEN os.iv > 3 THEN os.iv / 100 ELSE os.iv END) NOT BETWEEN 0.01 AND 5.0))
 """
 
 
@@ -82,42 +103,12 @@ def _scalar(conn: Any, sql: str, params: Sequence[Any] = ()) -> Any:
     return row[0] if row else None
 
 
-def purge_fossils(conn: Any, *, apply: bool) -> dict[str, Any]:
-    """Delete vendor rows before P3 that no raw observation backs, week by week.
-
-    Only valid while raw still holds its first observation day: once retention trims
-    past it, "no raw row" stops meaning "never observed", so this refuses.
-    """
-    raw_first = _scalar(
+def _raw_covers_first_observation(conn: Any) -> bool:
+    first = _scalar(
         conn,
         "SELECT MIN(DATE(timezone('America/New_York', snapshot_ts))) FROM raw_market.option_snapshot",
     )
-    if raw_first is None or raw_first > FIRST_OBSERVATION:
-        raise RuntimeError(f"raw_market.option_snapshot starts {raw_first}, after {FIRST_OBSERVATION}: refusing")
-    oldest = _scalar(conn, f"SELECT MIN(trade_date) FROM {RECON} WHERE solver_status = 'vendor_snapshot'")
-    if oldest is None:
-        return {"step": "purge", "rows": 0, "chunks": []}
-    chunks = []
-    total = 0
-    for lo, hi in windows(oldest, P3_CUTOVER - timedelta(days=1), 7):
-        params = (lo, hi + timedelta(days=1))
-        n = int(_scalar(conn, f"SELECT COUNT(*) FROM {RECON} r WHERE {_NO_SOURCE}", params) or 0)
-        if n and apply:
-            with conn.cursor() as cur:
-                cur.execute(f"DELETE FROM {RECON} r WHERE {_NO_SOURCE}", params)
-                deleted = cur.rowcount
-            if deleted != n:
-                conn.rollback()
-                raise RuntimeError(f"purge {lo}..{hi}: counted {n}, delete touched {deleted}; rolled back")
-            conn.commit()
-        if n:
-            chunks.append({"from": lo.isoformat(), "to": hi.isoformat(), "rows": n})
-        total += n
-    after = int(
-        _scalar(conn, f"SELECT COUNT(*) FROM {RECON} r WHERE {_NO_SOURCE}", (P3_CUTOVER, date.today() + timedelta(days=1)))
-        or 0
-    )
-    return {"step": "purge", "rows": total, "applied": apply, "chunks": chunks, "unbacked_after_p3": after}
+    return first is not None and first <= FIRST_OBSERVATION
 
 
 def reproject_vendor(conn: Any, symbols: Sequence[str], end: date, *, apply: bool) -> dict[str, Any]:
@@ -141,57 +132,54 @@ def reproject_vendor(conn: Any, symbols: Sequence[str], end: date, *, apply: boo
     return {"step": "reproject", "rows_written": written, "symbols": len(symbols), "applied": True}
 
 
-def solve_scope(conn: Any, scope: str, universe: Sequence[str]) -> list[str]:
-    """``none`` · ``cohort`` (symbols that had IV30 before the first observation) ·
-    ``universe`` · or a comma-separated list."""
-    if scope == "none":
-        return []
-    if scope == "universe":
-        return list(universe)
-    if scope == "cohort":
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT DISTINCT symbol FROM features.stock_signal_vrp_daily
-                WHERE trade_date < %s AND atm_iv_30d IS NOT NULL ORDER BY 1
-                """,
-                (FIRST_OBSERVATION,),
-            )
-            return [str(r[0]) for r in cur.fetchall()]
-    return sorted({s.strip().upper() for s in scope.split(",") if s.strip()})
+def purge_unconfirmed(conn: Any, *, apply: bool, reprojected_at: datetime | None = None) -> dict[str, Any]:
+    """Delete vendor rows dated before P3 that no post-P3 projection has confirmed.
 
-
-def solve_history(conn: Any, symbols: Sequence[str], start: date, end: date, *, apply: bool) -> dict[str, Any]:
-    """Brent over option_daily month by month; dry run counts the contracts it would solve."""
-    if not symbols:
-        return {"step": "solve", "symbols": 0}
-    if not apply:
-        n = 0
-        for lo, hi in windows(start, end, 31):
-            n += int(
-                _scalar(
-                    conn,
-                    """
-                    SELECT COUNT(*) FROM raw_market.option_daily o
-                    JOIN raw_market.stock_daily s ON s.symbol = o.underlying AND s.bar_date = o.bar_date
-                    WHERE o.underlying = ANY(%s) AND o.bar_date BETWEEN %s AND %s
-                      AND (o.expiry - o.bar_date) BETWEEN %s AND %s
-                      AND o.strike BETWEEN %s * s.close AND %s * s.close
-                    """,
-                    (list(symbols), lo, hi, DTE_MIN, DTE_MAX, STRIKE_LO, STRIKE_HI),
-                )
+    Applying needs ``reprojected_at``, the start of a reprojection that finished in the
+    same run: a week raw observes must then hold rows stamped after it, or the purge
+    stops. A dry run (no reprojection yet) counts what the reprojection will leave.
+    """
+    if apply and reprojected_at is None:
+        raise RuntimeError("purge needs a reprojection in the same run")
+    covers = _raw_covers_first_observation(conn)
+    oldest = _scalar(conn, f"SELECT MIN(trade_date) FROM {RECON} WHERE solver_status = 'vendor_snapshot'")
+    if oldest is None or oldest >= P3_CUTOVER:
+        return {"step": "purge", "rows": 0, "applied": apply}
+    if not apply and not covers:
+        return {"step": "purge", "rows": None, "applied": False, "note": "raw no longer holds the first observation; only an applied run can count"}
+    chunks = []
+    total = 0
+    for lo, hi in windows(oldest, P3_CUTOVER - timedelta(days=1), 7):
+        params = (lo, hi + timedelta(days=1), P3_CUTOVER_TS)
+        if not apply:
+            n = int(
+                _scalar(conn, f"SELECT COUNT(*) FROM {RECON} r WHERE {_UNCONFIRMED} AND (NOT {_OBSERVED} OR {_REJECTED})", params)
                 or 0
             )
-        return {"step": "solve", "symbols": len(symbols), "contract_days": n, "applied": False}
-    by_status: dict[str, int] = {}
-    kept = 0
-    for sym in symbols:
-        for lo, hi in windows(start, end, 31):
-            out = solve_symbol_window(conn, sym, lo, hi)
-            kept += int(out.get("vendor_kept") or 0)
-            for k, v in (out.get("by_status") or {}).items():
-                by_status[k] = by_status.get(k, 0) + int(v)
-    return {"step": "solve", "symbols": len(symbols), "by_status": by_status, "vendor_kept": kept, "applied": True}
+        else:
+            n = int(_scalar(conn, f"SELECT COUNT(*) FROM {RECON} r WHERE {_UNCONFIRMED}", params) or 0)
+            if n and covers and hi >= FIRST_OBSERVATION:
+                fresh = _scalar(
+                    conn,
+                    f"""SELECT COUNT(*) FROM {RECON}
+                        WHERE solver_status = 'vendor_snapshot' AND trade_date >= %s AND trade_date < %s
+                          AND computed_at >= %s""",
+                    (lo, hi + timedelta(days=1), reprojected_at),
+                )
+                if not fresh:
+                    raise RuntimeError(f"purge {lo}..{hi}: raw observes this week but nothing in it was reprojected")
+            if n:
+                with conn.cursor() as cur:
+                    cur.execute(f"DELETE FROM {RECON} r WHERE {_UNCONFIRMED}", params)
+                    deleted = cur.rowcount
+                if deleted != n:
+                    conn.rollback()
+                    raise RuntimeError(f"purge {lo}..{hi}: counted {n}, delete touched {deleted}; rolled back")
+                conn.commit()
+        if n:
+            chunks.append({"from": lo.isoformat(), "to": hi.isoformat(), "rows": n})
+        total += n
+    return {"step": "purge", "rows": total, "applied": apply, "chunks": chunks}
 
 
 def sessions(conn: Any, start: date, end: date) -> list[date]:
@@ -239,41 +227,46 @@ def derive(
     return {"step": "derive", "sessions": len(days), "atm_rows": atm, "pct_rows": pct, "vrp_rows": vrp, "applied": True}
 
 
-def run(*, solve: str, start: date | None, end: date, apply: bool) -> dict[str, Any]:
+def run(*, start: date | None, end: date, apply: bool) -> dict[str, Any]:
     conn = connect()
     try:
         universe = union_iv_radar_benchmarks(load_symbols_from_env_or_query(conn))
-        solve_syms = solve_scope(conn, solve, universe)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT DISTINCT symbol FROM {RECON} WHERE solver_status = 'vendor_snapshot' AND trade_date < %s",
+                (P3_CUTOVER,),
+            )
+            projected = sorted({*universe, *(str(r[0]) for r in cur.fetchall())})
         if start is None:
-            atm_first = _scalar(conn, "SELECT MIN(trade_date) FROM features.option_metric_atm_iv_daily")
-            od_first = _scalar(conn, "SELECT MIN(bar_date) FROM raw_market.option_daily") if solve_syms else None
-            start = min(d for d in (atm_first, od_first, FIRST_OBSERVATION) if d is not None)
-        steps = [
-            purge_fossils(conn, apply=apply),
-            reproject_vendor(conn, universe, end, apply=apply),
-            solve_history(conn, solve_syms, start, end, apply=apply),
-        ]
+            firsts = (
+                _scalar(conn, "SELECT MIN(trade_date) FROM features.option_metric_atm_iv_daily"),
+                _scalar(conn, "SELECT MIN(bar_date) FROM raw_market.option_daily"),
+                FIRST_OBSERVATION,
+            )
+            start = min(d for d in firsts if d is not None)
+        reprojected_at = datetime.now(timezone.utc)
+        steps = [reproject_vendor(conn, projected, end, apply=apply)]
+        steps.append(purge_unconfirmed(conn, apply=apply, reprojected_at=reprojected_at if apply else None))
         days = sessions(conn, start, end)
         steps.append(derive(conn, days, universe, apply=apply, progress=lambda d: logger.info("derived %s", d)))
         if apply:
             steps.append({"step": "fwd_ret_20d", **backfill_fwd_ret_20d(lookback_days=(end - start).days + 1, as_of=end)})
-        return {"start": start.isoformat(), "end": end.isoformat(), "solve": solve, "universe": len(universe), "steps": steps}
+        return {"start": start.isoformat(), "end": end.isoformat(), "universe": len(universe), "steps": steps}
     finally:
         conn.close()
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Repair IV history left by the pre-P3 snapshot model")
-    parser.add_argument("--solve", default="none", help="none | cohort | universe | SYM,SYM")
     parser.add_argument("--start", default=None, help="YYYY-MM-DD (default: oldest ATM row / option_daily bar)")
     parser.add_argument("--end", default=None, help="YYYY-MM-DD (default: today in New York)")
     parser.add_argument("--apply", action="store_true", help="write; without it every step only counts")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    today_ny = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
     result = run(
-        solve=args.solve,
         start=date.fromisoformat(args.start) if args.start else None,
-        end=date.fromisoformat(args.end) if args.end else datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date(),
+        end=date.fromisoformat(args.end) if args.end else today_ny,
         apply=args.apply,
     )
     print(json.dumps(result, default=str, indent=2))
