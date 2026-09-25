@@ -11,9 +11,10 @@ from bifrost_research.api import signal_health as sh
 
 
 class _Cursor:
-    def __init__(self, script: list[Any]) -> None:
+    def __init__(self, script: list[Any], sql: list[str]) -> None:
         self._script = script
         self._last: Any = None
+        self.sql = sql
 
     def __enter__(self) -> Self:
         return self
@@ -22,6 +23,7 @@ class _Cursor:
         return None
 
     def execute(self, sql: str, params: Any = None) -> None:
+        self.sql.append(sql)
         step = self._script.pop(0)
         if isinstance(step, Exception):
             raise step
@@ -35,9 +37,10 @@ class _Conn:
     def __init__(self, script: list[Any]) -> None:
         self.script = script
         self.rollbacks = 0
+        self.sql: list[str] = []
 
     def cursor(self) -> _Cursor:
-        return _Cursor(self.script)
+        return _Cursor(self.script, self.sql)
 
     def rollback(self) -> None:
         self.rollbacks += 1
@@ -67,6 +70,16 @@ def test_an_answered_probe_reads_its_age_and_estimates_its_rows() -> None:
     assert out["row_count"] == 2_311_020
     assert out["row_count_estimated"] is True
     assert conn.script == []  # three catalogue/index reads, no COUNT(*)
+    assert not any("COUNT(*)::bigint FROM" in q for q in conn.sql)
+
+
+def test_the_estimate_reads_a_plain_table_itself() -> None:
+    """0.115.0 summed pg_partition_tree() only, which is empty for a plain table: every count read 0."""
+    conn = _Conn([(True, True), (10_038, 0), (datetime.now(UTC),)])
+    sh._table_freshness(conn, "scan", "features.t")
+    estimate_sql = " ".join(conn.sql[1].split())
+    assert "c.relkind <> 'p'" in estimate_sql
+    assert "pg_partition_tree" in estimate_sql
 
 
 def test_a_leaf_never_analysed_is_counted_exactly() -> None:

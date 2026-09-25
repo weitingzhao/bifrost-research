@@ -127,16 +127,18 @@ def _table_freshness(conn: Any, label: str, table: str) -> dict[str, Any]:
             # exact COUNT(*) is the full scan the 2s timeout cancels, and
             # freshness asks how old, not exactly how many (0.115.0). A leaf
             # that holds data but was never analysed has no estimate, and only
-            # then is the table counted.
+            # then is the table counted. pg_partition_tree() returns nothing for
+            # a plain table, so the table itself is the leaf unless it is a
+            # partitioned parent (0.115.1 — 0.115.0 read every plain table as 0).
             cur.execute(
                 """
                 SELECT COALESCE(SUM(c.reltuples) FILTER (WHERE c.reltuples >= 0), 0)::bigint,
                        COUNT(*) FILTER (WHERE c.reltuples < 0 AND pg_relation_size(c.oid) > 0)
-                FROM pg_partition_tree(to_regclass(%s)) p
-                JOIN pg_class c ON c.oid = p.relid
-                WHERE p.isleaf
+                FROM pg_class c
+                WHERE (c.oid = to_regclass(%s) AND c.relkind <> 'p')
+                   OR c.oid IN (SELECT relid FROM pg_partition_tree(to_regclass(%s)) WHERE isleaf)
                 """,
-                (table,),
+                (table, table),
             )
             estimate, unanalysed = cur.fetchone() or (0, 0)
             if unanalysed:
