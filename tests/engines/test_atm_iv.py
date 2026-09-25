@@ -335,11 +335,14 @@ def test_atm_solves_option_daily_when_nothing_is_stored() -> None:
 def test_stored_rows_win_over_the_bar_for_the_same_contract() -> None:
     td, exp, spot = date(2026, 8, 12), date(2026, 9, 18), 171.04
     conn = _FakeConn()
-    conn.recon_rows = [_row(td, "O:PLTR260918C00170000", "PLTR", 170.0, "C", 0.47, spot, exp)]
+    conn.recon_rows = [
+        _row(td, "O:PLTR260918C00170000", "PLTR", 170.0, "C", 0.47, spot, exp),
+        _row(td, "O:PLTR260918P00170000", "PLTR", 170.0, "P", 0.49, spot, exp),
+    ]
     conn.daily_rows = [_bar("O:PLTR260918C00170000", 170.0, "C", 0.90, spot, td, exp)]
     compute_atm_iv_for_date(conn, trade_date=td, underlyings=["PLTR"])
     (row,) = conn.upserts
-    assert row[4] == 0.47
+    assert row[4] == 0.48
 
 
 def test_snapshot_fallback_requires_the_row_to_be_fetched_near_its_session() -> None:
@@ -347,3 +350,29 @@ def test_snapshot_fallback_requires_the_row_to_be_fetched_near_its_session() -> 
     compute_atm_iv_for_date(conn, trade_date=date(2026, 6, 25), underlyings=["PLTR"])
     sql = next(q for q, _ in conn.statements if "v_option_snapshot_with_stock" in q)
     assert "fetched_at" in sql and "<= 3" in sql
+
+
+
+# ─── 2026-09-25: one stale trade is not a reading ───
+
+
+def test_an_expiry_with_one_priced_contract_gets_no_row() -> None:
+    """B 2025-01-02: one near-ATM bar, 4 lots, IV30 0.023."""
+    td, exp, spot = date(2025, 1, 2), date(2025, 1, 31), 20.0
+    conn = _FakeConn()
+    conn.daily_rows = [_bar("O:B250131C00020000", 20.0, "C", 0.30, spot, td, exp)]
+    result = compute_atm_iv_for_date(conn, trade_date=td, underlyings=["PLTR"])
+    assert result["rows_written"] == 0
+
+
+def test_ivs_below_five_vol_do_not_count() -> None:
+    td, exp, spot = date(2026, 1, 30), date(2026, 2, 27), 300.0
+    conn = _FakeConn()
+    conn.recon_rows = [
+        _row(td, "O:X1", "PLTR", 300.0, "C", 0.037, spot, exp),
+        _row(td, "O:X2", "PLTR", 300.0, "P", 0.60, spot, exp),
+        _row(td, "O:X3", "PLTR", 310.0, "C", 0.58, spot, exp),
+    ]
+    compute_atm_iv_for_date(conn, trade_date=td, underlyings=["PLTR"])
+    (row,) = conn.upserts
+    assert row[4] == 0.59  # 310C and 300P; the 0.037 call is not a price

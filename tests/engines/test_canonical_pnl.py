@@ -127,3 +127,56 @@ def test_all_structures_build():
         assert legs
         assert default_params(s).structure == s
         assert sp.params_hash()
+
+
+# ─── 0.111.0: canonical PnL prices on IV30, the reading VRP and the percentile use ───
+
+from datetime import date as _date, timedelta as _td  # noqa: E402
+
+from bifrost_research.engines.canonical_pnl.compute import fetch_atm_iv_series  # noqa: E402
+
+
+class _IvCur:
+    def __init__(self, atm: list, vrp: list) -> None:
+        self.atm, self.vrp, self._rows = atm, vrp, []
+
+    def execute(self, sql: str, params=None) -> None:
+        self._rows = self.atm if "option_metric_atm_iv_daily" in sql else self.vrp
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a) -> None:
+        return None
+
+
+class _IvConn:
+    def __init__(self, atm: list, vrp: list) -> None:
+        self.cur = _IvCur(atm, vrp)
+
+    def cursor(self):
+        return self.cur
+
+    def rollback(self) -> None:
+        raise AssertionError("the IV30 query must not fail into the fallback")
+
+
+def test_iv_series_is_iv30_not_the_expiry_nearest_30_days() -> None:
+    d1, d2 = _date(2026, 6, 25), _date(2026, 6, 26)
+    atm = [
+        (d1, d1 + _td(days=21), 0.50),
+        (d1, d1 + _td(days=49), 0.57),
+        (d2, d2 + _td(days=30), 0.52),
+    ]
+    out = fetch_atm_iv_series(_IvConn(atm, []), "PLTR", d1, d2)
+    assert abs(out[d1] - (0.50 + 0.07 * 9 / 28)) < 1e-9
+    assert out[d2] == 0.52
+
+
+def test_iv_series_falls_back_to_vrp_when_the_atm_table_is_empty() -> None:
+    d1 = _date(2026, 6, 25)
+    out = fetch_atm_iv_series(_IvConn([], [(d1, 0.51)]), "PLTR", d1, d1)
+    assert out == {d1: 0.51}

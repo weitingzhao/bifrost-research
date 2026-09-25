@@ -6,6 +6,8 @@ metadata:
     # Dry run by default (counts only); add "--apply" to write — see
     # engines/volatility/iv_history_repair.py. Safe to re-run: the purge reads only
     # the reconstructed table, and a table already repaired has nothing to purge.
+    # After the first purge, add "--derive-only" to rebuild ATM → percentile → VRP →
+    # canonical PnL without rewriting every vendor row again.
     # Keep off the 22:30 NY trading-day chain, the 23:25 UTC iv_solver and the
     # Sunday 22:00 UTC vol backfill. Replaces job-iv-solver-backfill (retired 0.109.0).
     argocd.argoproj.io/hook: Skip

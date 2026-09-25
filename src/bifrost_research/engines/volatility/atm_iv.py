@@ -51,6 +51,14 @@ IV_SOURCE = IV_SOURCE_SNAPSHOT  # back-compat
 # 2026-09-23: June–July IV30 on DEV came from expiries whose only priced contract
 # sat at 15 or 310 against a spot of 107–134 (PLTR 0.074 / 2.256 / 0.040 / 2.647).
 ATM_MAX_MONEYNESS = 0.10
+# 2026-09-25: after the repair, 280 of 259,462 IV30 readings still broke the History
+# page's rule, nearly all on days with 1–5 near-ATM bars trading a handful of lots —
+# one stale last trade inverted into the day's IV (B 2025-01-02: one bar, 4 lots,
+# IV30 0.023). An expiry needs two priced contracts near spot, and no equity option
+# prices below 5 vol (SPY's floor is ~8). On 20 symbols this took suspects 140 → 15
+# for 6.6% of days, all on thin names; PLTR / NVDA / SPY lost none.
+ATM_MIN_IV = 0.05
+ATM_MIN_CONTRACTS = 2
 
 
 def _row_to_dict(row: Any, columns: Sequence[str]) -> Dict[str, Any]:
@@ -164,9 +172,10 @@ def build_expiry_side_items(
     spot: float,
     *,
     max_moneyness: float | None = None,
+    min_iv: float | None = None,
 ) -> List[Tuple[float, Optional[float], Optional[float], float]]:
-    """(distance, iv_call, iv_put, strike) per priced strike; ``max_moneyness`` drops
-    strikes further than that fraction of spot."""
+    """(distance, iv_call, iv_put, strike) per priced contract; ``max_moneyness`` drops
+    strikes further than that fraction of spot, ``min_iv`` IVs below it."""
     max_dist = max_moneyness * spot if max_moneyness is not None else None
     items: List[Tuple[float, Optional[float], Optional[float], float]] = []
     for r in rows:
@@ -177,7 +186,7 @@ def build_expiry_side_items(
         if strike <= 0:
             continue
         iv_f = _valid_iv(r.get("iv"))
-        if iv_f is None:
+        if iv_f is None or (min_iv is not None and iv_f < min_iv):
             continue
         right = str(r.get("option_right") or "").strip().upper()
         dist = abs(strike - spot)
@@ -419,7 +428,9 @@ def compute_atm_iv_for_date(
         spot = representative_spot(rows)
         if spot is None:
             continue
-        items = build_expiry_side_items(rows, spot, max_moneyness=ATM_MAX_MONEYNESS)
+        items = build_expiry_side_items(rows, spot, max_moneyness=ATM_MAX_MONEYNESS, min_iv=ATM_MIN_IV)
+        if len(items) < ATM_MIN_CONTRACTS:
+            continue
         atm_iv, _iv_c, _iv_p, best_strike = atm_iv_from_side_items(items)
         if atm_iv is None or best_strike is None:
             continue

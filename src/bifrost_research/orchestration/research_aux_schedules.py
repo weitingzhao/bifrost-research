@@ -81,7 +81,13 @@ engines_vol_surface_svi = _run_asset(
 
 
 def _run_iv_solver() -> dict[str, Any]:
-    """Daily dual-source IV reconstruction → features.option_iv_reconstructed_daily.
+    """Daily vendor IV projection → features.option_iv_reconstructed_daily.
+
+    Snapshot only since 0.111.0. The table's one reader, ATM IV, solves Brent from
+    option_daily in place for whatever the vendor rows lack (Trade's greeks route
+    does the same on demand), so the stored Brent rows (~1.5k a day once vendor rows
+    took precedence) were a second path to the same number — one that ATM read for
+    the last five sessions and not before, and that could drift from it.
 
     SVI surface fit does **not** write this table; Console used to map
     ``iv_reconstructed`` freshness to research_vol_surface_svi by mistake, so the
@@ -108,7 +114,7 @@ def _run_iv_solver() -> dict[str, Any]:
             symbols=universe,
             lookback_days=5,
             as_of=as_of,
-            source="all",
+            source="snapshot",
             dry_run=False,
         )
         # Compact for Dagster metadata (run_cohort returns a large per-symbol list).
@@ -131,7 +137,7 @@ def _run_iv_solver() -> dict[str, Any]:
 engines_iv_solver = _run_asset(
     key_path=["engines", "iv_solver"],
     group=GROUP_SIGNALS,
-    description="Historical IV solver → features.option_iv_reconstructed_daily (IDS)",
+    description="Vendor snapshot IV projection → features.option_iv_reconstructed_daily (IDS)",
     fn=_run_iv_solver,
 )
 engines_alert_scan = _run_asset(

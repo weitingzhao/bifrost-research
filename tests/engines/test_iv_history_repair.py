@@ -133,3 +133,36 @@ def test_apply_rolls_back_when_the_delete_touches_a_different_count() -> None:
         repair.purge_unconfirmed(conn, apply=True, reprojected_at=T0)
     assert conn.rollbacks == 1
     assert conn.commits == 0
+
+
+# ─── canonical PnL is rebuilt symbol by symbol over the daily window ───
+
+
+class _CanonConn(_Conn):
+    def __init__(self) -> None:
+        super().__init__(raw_first=None, oldest=None)
+        self.calls: list[tuple[str, Any]] = []
+
+
+def test_canonical_rebuild_deletes_then_recomputes_each_symbol(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _CanonConn()
+
+    def fake_cohort(c: Any, **kw: Any) -> dict[str, Any]:
+        c.calls.append(("cohort", (tuple(kw["symbols"]), kw["lookback_months"], kw["coverage"])))
+        return {"rows_written": 10}
+
+    monkeypatch.setattr(repair, "run_canonical_cohort", fake_cohort)
+    out = repair.rebuild_canonical_pnl(conn, ["NVDA", "PLTR"], date(2026, 9, 24), apply=True)
+    deletes = [s for s in conn.sql if s.lstrip().startswith("DELETE")]
+    assert len(deletes) == 2 and all("stock_signal_canonical_pnl_daily" in s for s in deletes)
+    assert conn.calls == [("cohort", (("NVDA",), 6, False)), ("cohort", (("PLTR",), 6, False))]
+    assert conn.commits == 2
+    assert out["rows_written"] == 20
+
+
+def test_canonical_dry_run_only_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _CanonConn()
+    monkeypatch.setattr(repair, "run_canonical_cohort", lambda *a, **k: pytest.fail("dry run must not compute"))
+    out = repair.rebuild_canonical_pnl(conn, ["NVDA"], date(2026, 9, 24), apply=False)
+    assert out["applied"] is False
+    assert not any(s.lstrip().startswith("DELETE") for s in conn.sql)

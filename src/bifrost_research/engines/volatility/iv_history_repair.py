@@ -22,6 +22,10 @@ Steps, each dry-run (counts only) unless ``--apply``:
                from ``option_daily`` for what the table lacks, so every symbol in the
                universe back to the first option bar), IV percentile; then VRP, then
                fwd_ret_20d on the VRP rows written
+4. canonical — canonical structure PnL, symbol by symbol, over the daily job's window
+
+``--derive-only`` skips 1–2: they are done once the purge has run, and re-running
+the reprojection rewrites every vendor row for nothing.
 
 New fossils cannot arise: the projection now requires a snapshot row to have been
 fetched within ``SNAPSHOT_MAX_FETCH_LAG_DAYS`` of its session.
@@ -30,6 +34,7 @@ Usage::
 
     python -m bifrost_research.engines.volatility.iv_history_repair
     python -m bifrost_research.engines.volatility.iv_history_repair --apply
+    python -m bifrost_research.engines.volatility.iv_history_repair --derive-only --apply
 """
 
 from __future__ import annotations
@@ -44,18 +49,21 @@ from zoneinfo import ZoneInfo
 
 from bifrost_research.db.calendar import load_symbols_from_env_or_query, union_iv_radar_benchmarks
 from bifrost_research.db.conn import connect
+from bifrost_research.engines.canonical_pnl import run_cohort as run_canonical_cohort
 from bifrost_research.engines.volatility.atm_iv import compute_atm_iv_for_date
 from bifrost_research.engines.volatility.iv_percentile import compute_iv_percentile_for_date
 from bifrost_research.engines.volatility.iv_solver import observed_near_session, project_vendor_snapshot_window
 from bifrost_research.engines.vrp.compute import compute_vrp_for_date
 from bifrost_research.engines.vrp.entry import backfill_fwd_ret_20d
 from bifrost_research.schema.schemas import TABLE_OPTION_IV_RECONSTRUCTED_DAILY as RECON
+from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_CANONICAL_PNL_DAILY as CANONICAL
 
 logger = logging.getLogger(__name__)
 
 FIRST_OBSERVATION = date(2026, 8, 5)  # min(snapshot_ts) in raw once P3 re-stamped it
 P3_CUTOVER = date(2026, 9, 9)  # sessions from here on were only ever projected post-P3
 P3_CUTOVER_TS = datetime(2026, 9, 9, tzinfo=timezone.utc)  # projections after this read observation time
+CANONICAL_WINDOW_MONTHS = 6  # runners.run_canonical_pnl: the window the daily job maintains
 
 _UNCONFIRMED = """
     r.solver_status = 'vendor_snapshot'
@@ -227,7 +235,28 @@ def derive(
     return {"step": "derive", "sessions": len(days), "atm_rows": atm, "pct_rows": pct, "vrp_rows": vrp, "applied": True}
 
 
-def run(*, start: date | None, end: date, apply: bool) -> dict[str, Any]:
+def rebuild_canonical_pnl(conn: Any, symbols: Sequence[str], end: date, *, apply: bool) -> dict[str, Any]:
+    """Canonical structure PnL over the daily job's window, one symbol at a time: its
+    rows are deleted and recomputed in one pass, so a reader sees at most one symbol
+    missing. Rows priced on the old IV go with them, including entries older than the
+    window that no run maintained (2025-09 → 2026-03 on DEV; no reader goes back
+    that far — hypotheses start 2026-08-29)."""
+    if not apply:
+        n = _scalar(conn, f"SELECT COUNT(*) FROM {CANONICAL}")
+        return {"step": "canonical_pnl", "rows_now": int(n or 0), "symbols": len(symbols), "applied": False}
+    written = 0
+    for sym in symbols:
+        with conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {CANONICAL} WHERE symbol = %s", (sym,))
+        out = run_canonical_cohort(
+            conn, symbols=[sym], lookback_months=CANONICAL_WINDOW_MONTHS, as_of=end, coverage=False
+        )
+        conn.commit()  # a symbol with no marks still owes its delete
+        written += int(out.get("rows_written") or 0)
+    return {"step": "canonical_pnl", "rows_written": written, "symbols": len(symbols), "applied": True}
+
+
+def run(*, start: date | None, end: date, apply: bool, derive_only: bool = False) -> dict[str, Any]:
     conn = connect()
     try:
         universe = union_iv_radar_benchmarks(load_symbols_from_env_or_query(conn))
@@ -244,13 +273,19 @@ def run(*, start: date | None, end: date, apply: bool) -> dict[str, Any]:
                 FIRST_OBSERVATION,
             )
             start = min(d for d in firsts if d is not None)
-        reprojected_at = datetime.now(timezone.utc)
-        steps = [reproject_vendor(conn, projected, end, apply=apply)]
-        steps.append(purge_unconfirmed(conn, apply=apply, reprojected_at=reprojected_at if apply else None))
+        steps: list[dict[str, Any]] = []
+        if not derive_only:
+            reprojected_at = datetime.now(timezone.utc)
+            steps.append(reproject_vendor(conn, projected, end, apply=apply))
+            steps.append(purge_unconfirmed(conn, apply=apply, reprojected_at=reprojected_at if apply else None))
         days = sessions(conn, start, end)
         steps.append(derive(conn, days, universe, apply=apply, progress=lambda d: logger.info("derived %s", d)))
         if apply:
             steps.append({"step": "fwd_ret_20d", **backfill_fwd_ret_20d(lookback_days=(end - start).days + 1, as_of=end)})
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT DISTINCT symbol FROM {CANONICAL}")
+            canonical_syms = sorted({*universe, *(str(r[0]) for r in cur.fetchall())})
+        steps.append(rebuild_canonical_pnl(conn, canonical_syms, end, apply=apply))
         return {"start": start.isoformat(), "end": end.isoformat(), "universe": len(universe), "steps": steps}
     finally:
         conn.close()
@@ -261,6 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start", default=None, help="YYYY-MM-DD (default: oldest ATM row / option_daily bar)")
     parser.add_argument("--end", default=None, help="YYYY-MM-DD (default: today in New York)")
     parser.add_argument("--apply", action="store_true", help="write; without it every step only counts")
+    parser.add_argument("--derive-only", action="store_true", help="skip reproject and purge (done once already)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     today_ny = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
@@ -268,6 +304,7 @@ def main(argv: list[str] | None = None) -> int:
         start=date.fromisoformat(args.start) if args.start else None,
         end=date.fromisoformat(args.end) if args.end else today_ny,
         apply=args.apply,
+        derive_only=args.derive_only,
     )
     print(json.dumps(result, default=str, indent=2))
     return 0

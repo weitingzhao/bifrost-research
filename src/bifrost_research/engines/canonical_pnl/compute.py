@@ -7,6 +7,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any, Mapping, Sequence
 
+from bifrost_research.engines.volatility.atm_iv import IV30_MAX_DTE, IV30_MIN_DTE, iv30_from_expiries
 from bifrost_research.engines.backtest.canonical_pnl import (
     STRUCTURES,
     StructureName,
@@ -106,27 +107,33 @@ def fetch_atm_iv_series(
     start: date,
     end: date,
 ) -> dict[date, float]:
-    """Prefer ~30 DTE ATM IV from features; fall back to VRP atm_iv_30d."""
+    """IV30 per session (``atm_iv.iv30_from_expiries``, the reading VRP and the IV
+    percentile use); VRP's stored atm_iv_30d when the ATM table has nothing.
+
+    Until 0.111.0 this took the single expiry nearest 30 days — a third "current IV"
+    beside the other two, and on fossil days a deep ITM/OTM contract's.
+    """
     out: dict[date, float] = {}
     with conn.cursor() as cur:
         try:
-            # One IV per trade_date: expiry nearest 30 calendar days.
             cur.execute(
-                """
-                SELECT DISTINCT ON (trade_date)
-                  trade_date, atm_iv::float
+                f"""
+                SELECT trade_date, expiry, atm_iv::float
                 FROM features.option_metric_atm_iv_daily
                 WHERE symbol = %s AND trade_date BETWEEN %s AND %s
                   AND atm_iv IS NOT NULL AND atm_iv > 0
-                  AND expiry IS NOT NULL
-                ORDER BY trade_date,
-                  ABS((expiry - trade_date) - 30) ASC,
-                  expiry ASC
+                  AND (expiry - trade_date) BETWEEN {IV30_MIN_DTE} AND {IV30_MAX_DTE}
+                ORDER BY trade_date
                 """,
                 (symbol.upper(), start, end),
             )
-            for d, iv in cur.fetchall():
-                out[d] = _normalize_iv(float(iv))
+            by_day: dict[date, list[tuple[Any, Any]]] = {}
+            for d, expiry, iv in cur.fetchall():
+                by_day.setdefault(d, []).append((expiry, iv))
+            for d, pairs in by_day.items():
+                iv30 = iv30_from_expiries(d, pairs)
+                if iv30 is not None:
+                    out[d] = _normalize_iv(iv30)
         except Exception:
             conn.rollback()
         if not out:
@@ -276,6 +283,7 @@ def run_cohort(
     entry_stride_days: int = 5,
     dry_run: bool = False,
     reset: bool = False,
+    coverage: bool = True,
 ) -> dict[str, Any]:
     end = as_of or date.today()
     start = end - timedelta(days=int(lookback_months * 30.5))
@@ -300,7 +308,7 @@ def run_cohort(
         )
         results.append(one)
         total += int(one.get("rows_written") or one.get("rows") or 0)
-    cov = None if dry_run else coverage_report(conn)
+    cov = coverage_report(conn) if coverage and not dry_run else None
     return {
         "mode": "cohort",
         "lookback_months": lookback_months,
