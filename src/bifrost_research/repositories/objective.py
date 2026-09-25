@@ -1,4 +1,4 @@
-"""SQL layer for ``research.objective`` + ``objective_run`` — Wave A Harness."""
+"""SQL layer for ``research.objective`` — Wave A Harness. Runs live in ``objective_run.py``."""
 
 from __future__ import annotations
 
@@ -6,13 +6,29 @@ import json
 import secrets
 import time
 from collections.abc import Mapping, Sequence
-from datetime import datetime
-from typing import Any, Protocol
+from typing import Any
 
+from bifrost_research.repositories.objective_common import Connection as _Connection
+from bifrost_research.repositories.objective_common import _iso, _serialize_json
+from bifrost_research.repositories.objective_run import (  # noqa: F401 — re-exported: callers use obj_repo.<run fn>
+    _ALLOWED_RUN_STATUSES,
+    _RUN_COLS,
+    _run_row,
+    append_run_trace_event,
+    count_candidates_for_run,
+    create_run,
+    delete_run,
+    finish_run,
+    force_delete_run,
+    generate_run_id,
+    get_run,
+    list_runs,
+    patch_run_outputs,
+    patch_run_trace,
+    replace_run_plan,
+    update_run_status,
+)
 from bifrost_research.schema.schemas import (
-    TABLE_RESEARCH_AI_DRAFT,
-    TABLE_RESEARCH_CANDIDATE_OUTCOME,
-    TABLE_RESEARCH_CANDIDATE_POOL,
     TABLE_RESEARCH_OBJECTIVE,
     TABLE_RESEARCH_OBJECTIVE_RUN,
 )
@@ -25,9 +41,10 @@ _ALLOWED_SCHEDULES = frozenset({"daily_open", "daily_eod", "weekly", "adhoc"})
 # Enforced below, because an unrecognised status is invisible twice over: gone
 # from the console's active list and absent from `?status=archived`.
 OBJECTIVE_STATUSES = frozenset({"active", "archived"})
-_ALLOWED_RUN_STATUSES = frozenset(
-    {"running", "awaiting_approval", "completed", "failed", "cancelled"}
-)
+# Who produces the candidates (Trade design Rev .55): the operator by hand, the
+# loop with the operator deciding, or the loop with the leash deciding. The
+# database CHECK holds the same three words.
+OBJECTIVE_MODES = frozenset({"hand", "assisted", "auto"})
 
 _OBJ_COLS: tuple[str, ...] = (
     "id",
@@ -39,53 +56,29 @@ _OBJ_COLS: tuple[str, ...] = (
     "status",
     "owner_id",
     "created_at",
-)
-
-_RUN_COLS: tuple[str, ...] = (
-    "id",
-    "objective_id",
-    "started_at",
-    "finished_at",
-    "plan_json",
-    "trace_json",
-    "outputs",
-    "status",
+    "mode",
+    "subject",
 )
 
 
-class _Connection(Protocol):
-    def cursor(self) -> Any: ...
 
-    def commit(self) -> None: ...
+def _mode(value: str) -> str:
+    mode = (value or "").strip().lower()
+    if mode not in OBJECTIVE_MODES:
+        raise ValueError(f"invalid mode: {value!r} (one of {', '.join(sorted(OBJECTIVE_MODES))})")
+    return mode
 
-    def rollback(self) -> None: ...
+
+def _subject(value: str | None) -> str | None:
+    """A ticker as the rest of the system stores it; blank means none."""
+    sym = (value or "").strip().upper()
+    return sym or None
 
 
 def generate_objective_id(title: str) -> str:
     base = "".join(c if c.isalnum() else "-" for c in (title or "obj").lower())[:32].strip("-")
     ts = int(time.time() * 1000) & 0xFFFFFF
     return f"obj-{base or 'obj'}-{ts:06x}{secrets.token_hex(2)}"
-
-
-def generate_run_id() -> str:
-    ts = int(time.time() * 1000)
-    return f"run_{ts:x}{secrets.token_hex(3)}"
-
-
-def _serialize_json(value: Any) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    return json.dumps(value)
-
-
-def _iso(dt: Any) -> str | None:
-    if dt is None:
-        return None
-    if isinstance(dt, datetime):
-        return dt.isoformat()
-    return str(dt)
 
 
 def _obj_row(row: Sequence[Any] | None) -> dict[str, Any] | None:
@@ -108,26 +101,6 @@ def _obj_row(row: Sequence[Any] | None) -> dict[str, Any] | None:
     return out
 
 
-def _run_row(row: Sequence[Any] | None) -> dict[str, Any] | None:
-    if row is None:
-        return None
-    out: dict[str, Any] = {}
-    for i, col in enumerate(_RUN_COLS):
-        val = row[i]
-        if col in {"plan_json", "trace_json", "outputs"}:
-            if isinstance(val, str):
-                try:
-                    val = json.loads(val)
-                except json.JSONDecodeError:
-                    val = {}
-            elif val is None:
-                val = {}
-        elif col in {"started_at", "finished_at"}:
-            val = _iso(val)
-        out[col] = val
-    return out
-
-
 def create_objective(
     conn: _Connection,
     *,
@@ -138,15 +111,18 @@ def create_objective(
     persona: str = "loop_curator",
     owner_id: str = "owner",
     objective_id: str | None = None,
+    mode: str = "assisted",
+    subject: str | None = None,
 ) -> dict[str, Any]:
     sched = (schedule or "adhoc").strip().lower()
     if sched not in _ALLOWED_SCHEDULES:
         raise ValueError(f"invalid schedule: {schedule!r}")
+    obj_mode = _mode(mode)
     oid = objective_id or generate_objective_id(title)
     sql = f"""
         INSERT INTO {TABLE_RESEARCH_OBJECTIVE} (
-            id, title, description, schedule, policy_json, persona, status, owner_id
-        ) VALUES (%s, %s, %s, %s, %s::jsonb, %s, 'active', %s)
+            id, title, description, schedule, policy_json, persona, status, owner_id, mode, subject
+        ) VALUES (%s, %s, %s, %s, %s::jsonb, %s, 'active', %s, %s, %s)
         RETURNING {", ".join(_OBJ_COLS)}
     """
     with conn.cursor() as cur:
@@ -160,6 +136,8 @@ def create_objective(
                 _serialize_json(dict(policy_json or {})),
                 persona,
                 owner_id,
+                obj_mode,
+                _subject(subject),
             ),
         )
         row = cur.fetchone()
@@ -333,12 +311,16 @@ def update_objective(
     description: str | None = None,
     schedule: str | None = None,
     persona: str | None = None,
+    mode: str | None = None,
+    subject: str | None = None,
 ) -> dict[str, Any] | None:
-    """Change what an objective is called, says, and when it runs.
+    """Change what an objective is called, says, when it runs, and who works it.
 
     The policy is deliberately not here: it moves through a draft so the
     change carries a rationale and lands in the same ledger a model's would.
-    These four fields carry no strategy, so they are edited in place.
+    These fields carry no strategy, so they are edited in place. `mode` is
+    declared intent — `auto` still accepts nothing the leash's gate refuses.
+    An empty `subject` clears it.
     """
     sets: list[str] = []
     params: list[Any] = []
@@ -357,6 +339,12 @@ def update_objective(
     if persona is not None and persona.strip():
         sets.append("persona = %s")
         params.append(persona.strip())
+    if mode is not None:
+        sets.append("mode = %s")
+        params.append(_mode(mode))
+    if subject is not None:
+        sets.append("subject = %s")
+        params.append(_subject(subject))
     if not sets:
         return get_objective(conn, objective_id)
     params.append(objective_id)
@@ -422,347 +410,3 @@ def delete_objective(conn: _Connection, objective_id: str) -> bool:
         deleted = cur.rowcount
     conn.commit()
     return bool(deleted)
-
-
-def create_run(
-    conn: _Connection,
-    *,
-    objective_id: str,
-    plan_json: Mapping[str, Any] | None = None,
-    run_id: str | None = None,
-) -> dict[str, Any]:
-    rid = run_id or generate_run_id()
-    sql = f"""
-        INSERT INTO {TABLE_RESEARCH_OBJECTIVE_RUN} (
-            id, objective_id, plan_json, status
-        ) VALUES (%s, %s, %s::jsonb, 'running')
-        RETURNING {", ".join(_RUN_COLS)}
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql, (rid, objective_id, _serialize_json(dict(plan_json or {}))))
-        row = cur.fetchone()
-    conn.commit()
-    result = _run_row(row)
-    assert result is not None
-    return result
-
-
-def get_run(conn: _Connection, run_id: str) -> dict[str, Any] | None:
-    sql = f"SELECT {', '.join(_RUN_COLS)} FROM {TABLE_RESEARCH_OBJECTIVE_RUN} WHERE id = %s"
-    with conn.cursor() as cur:
-        cur.execute(sql, (run_id,))
-        return _run_row(cur.fetchone())
-
-
-def list_runs(
-    conn: _Connection,
-    *,
-    status: str | None = None,
-    objective_id: str | None = None,
-    limit: int = 50,
-) -> list[dict[str, Any]]:
-    clauses: list[str] = []
-    params: list[Any] = []
-    if status:
-        if status not in _ALLOWED_RUN_STATUSES:
-            raise ValueError(f"invalid run status: {status!r}")
-        clauses.append("status = %s")
-        params.append(status)
-    if objective_id:
-        clauses.append("objective_id = %s")
-        params.append(objective_id)
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    sql = f"""
-        SELECT {", ".join(_RUN_COLS)}
-        FROM {TABLE_RESEARCH_OBJECTIVE_RUN}
-        {where}
-        ORDER BY started_at DESC
-        LIMIT %s
-    """
-    params.append(limit)
-    with conn.cursor() as cur:
-        cur.execute(sql, params)
-        return [_run_row(r) for r in cur.fetchall() if r]  # type: ignore[misc]
-
-
-def count_candidates_for_run(conn: _Connection, run_id: str) -> int:
-    """Candidates whose lineage points at this run.
-
-    Nothing in the schema protects a run: no foreign key targets objective_run,
-    and candidates reference it through `source_ref->>'run_id'`, a jsonb field
-    the database will not defend. Deleting a referenced run would leave the
-    Inbox card and the outcome ledger pointing at a run that no longer exists,
-    silently — so the check has to live here.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT count(*) FROM {TABLE_RESEARCH_CANDIDATE_POOL}
-            WHERE source_ref ->> 'run_id' = %s
-            """,
-            (run_id,),
-        )
-        row = cur.fetchone()
-    return int(row[0]) if row and row[0] is not None else 0
-
-
-def delete_run(conn: _Connection, run_id: str) -> bool:
-    """Remove one run. Caller must have checked its lineage first."""
-    with conn.cursor() as cur:
-        cur.execute(f"DELETE FROM {TABLE_RESEARCH_OBJECTIVE_RUN} WHERE id = %s", (run_id,))
-        deleted = cur.rowcount
-    conn.commit()
-    return bool(deleted)
-
-
-def force_delete_run(conn: _Connection, run_id: str) -> dict[str, Any]:
-    """Cascade-clear lineage then delete the run (hypotheses and evidence kept).
-
-    Removes candidates whose ``source_ref.run_id`` matches, dismisses drafts
-    that reference the run (``outputs.draft_ids`` / ``decision_draft_ids`` /
-    ``payload.run_id``), then deletes the run row. Promoted hypotheses are not
-    touched.
-
-    A candidate that already has a settled ``candidate_outcome`` row is kept.
-    Deleting a run is housekeeping about the record of a process; a settled
-    outcome is a measurement of what the market did after a pick, and it is the
-    only evidence the leash, the weekly policy review and the Autopilot's track
-    record have. The outcome table cascades on ``candidate_id``, so removing
-    those candidates destroyed the measurements with them — silently, and
-    permanently. The observed cost: after a round of run cleanup the ledger held
-    three rows, the leash's source-record gate could not open on any candidate,
-    and an armed Autopilot would have held everything it proposed.
-
-    A candidate the Owner declined is kept for the same reason. The loop reads
-    the pool to know what it may propose again; deleting the run that carried a
-    refusal would un-refuse the name, and it would return the next morning.
-
-    The kept candidates keep a ``source_ref.run_id`` pointing at a run that no
-    longer exists. That is the intended trade: the drill-down from a number to
-    the run behind it is lost, the number itself survives.
-    """
-    run = get_run(conn, run_id)
-    if run is None:
-        raise ValueError("run not found")
-
-    outputs = run.get("outputs") if isinstance(run.get("outputs"), dict) else {}
-    draft_ids_raw = [
-        str(x)
-        for x in (
-            list(outputs.get("draft_ids") or [])
-            + list(outputs.get("decision_draft_ids") or [])
-        )
-        if x
-    ]
-    draft_ids: list[str] = []
-    seen: set[str] = set()
-    for d in draft_ids_raw:
-        if d not in seen:
-            seen.add(d)
-            draft_ids.append(d)
-
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT count(*) FROM {TABLE_RESEARCH_CANDIDATE_POOL} c
-            WHERE c.source_ref ->> 'run_id' = %s
-              AND (
-                  c.status = 'dismissed'
-                  OR EXISTS (
-                      SELECT 1 FROM {TABLE_RESEARCH_CANDIDATE_OUTCOME} o
-                      WHERE o.candidate_id = c.id
-                  )
-              )
-            """,
-            (run_id,),
-        )
-        row = cur.fetchone()
-        candidates_kept = int(row[0]) if row else 0
-
-        cur.execute(
-            f"""
-            DELETE FROM {TABLE_RESEARCH_CANDIDATE_POOL} c
-            WHERE c.source_ref ->> 'run_id' = %s
-              AND c.status <> 'dismissed'
-              AND NOT EXISTS (
-                  SELECT 1 FROM {TABLE_RESEARCH_CANDIDATE_OUTCOME} o
-                  WHERE o.candidate_id = c.id
-              )
-            """,
-            (run_id,),
-        )
-        candidates_removed = int(cur.rowcount or 0)
-
-        # Dismiss open Inbox cards for this run (pending only — approved stay).
-        if draft_ids:
-            cur.execute(
-                f"""
-                UPDATE {TABLE_RESEARCH_AI_DRAFT}
-                SET status = 'dismissed'
-                WHERE status = 'pending'
-                  AND (id = ANY(%s) OR payload ->> 'run_id' = %s)
-                """,
-                (draft_ids, run_id),
-            )
-        else:
-            cur.execute(
-                f"""
-                UPDATE {TABLE_RESEARCH_AI_DRAFT}
-                SET status = 'dismissed'
-                WHERE status = 'pending' AND payload ->> 'run_id' = %s
-                """,
-                (run_id,),
-            )
-        drafts_dismissed = int(cur.rowcount or 0)
-
-        cur.execute(
-            f"DELETE FROM {TABLE_RESEARCH_OBJECTIVE_RUN} WHERE id = %s",
-            (run_id,),
-        )
-        deleted = bool(cur.rowcount)
-
-    conn.commit()
-    return {
-        "id": run_id,
-        "deleted": deleted,
-        "force": True,
-        "candidates_removed": candidates_removed,
-        "candidates_kept": candidates_kept,
-        "drafts_dismissed": drafts_dismissed,
-    }
-
-
-def patch_run_trace(
-    conn: _Connection,
-    run_id: str,
-    trace_json: Mapping[str, Any],
-) -> dict[str, Any] | None:
-    """Replace ``trace_json`` while the run is still ``running`` (live progress)."""
-    sql = f"""
-        UPDATE {TABLE_RESEARCH_OBJECTIVE_RUN}
-        SET trace_json = %s::jsonb
-        WHERE id = %s AND status = 'running'
-        RETURNING {", ".join(_RUN_COLS)}
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql, (_serialize_json(dict(trace_json)), run_id))
-        row = cur.fetchone()
-    conn.commit()
-    return _run_row(row)
-
-
-def append_run_trace_event(
-    conn: _Connection,
-    run_id: str,
-    event: Mapping[str, Any],
-    *,
-    progress: Mapping[str, Any] | None = None,
-) -> dict[str, Any] | None:
-    """Append one event to ``trace_json`` (any status) and optional progress."""
-    run = get_run(conn, run_id)
-    if run is None:
-        return None
-    trace = run.get("trace_json") if isinstance(run.get("trace_json"), dict) else {}
-    events = list(trace.get("events") or [])
-    events.append(dict(event))
-    new_trace: dict[str, Any] = {
-        "events": events,
-        "error": trace.get("error"),
-    }
-    if progress is not None:
-        new_trace["progress"] = dict(progress)
-    elif isinstance(trace.get("progress"), dict):
-        new_trace["progress"] = trace["progress"]
-    sql = f"""
-        UPDATE {TABLE_RESEARCH_OBJECTIVE_RUN}
-        SET trace_json = %s::jsonb
-        WHERE id = %s
-        RETURNING {", ".join(_RUN_COLS)}
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql, (_serialize_json(new_trace), run_id))
-        row = cur.fetchone()
-    conn.commit()
-    return _run_row(row)
-
-
-def finish_run(
-    conn: _Connection,
-    run_id: str,
-    *,
-    status: str,
-    trace_json: Mapping[str, Any] | None = None,
-    outputs: Mapping[str, Any] | None = None,
-) -> dict[str, Any] | None:
-    if status not in _ALLOWED_RUN_STATUSES:
-        raise ValueError(f"invalid run status: {status!r}")
-    sql = f"""
-        UPDATE {TABLE_RESEARCH_OBJECTIVE_RUN}
-        SET status = %s,
-            finished_at = now(),
-            trace_json = COALESCE(%s::jsonb, trace_json),
-            outputs = COALESCE(%s::jsonb, outputs)
-        WHERE id = %s
-        RETURNING {", ".join(_RUN_COLS)}
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            sql,
-            (
-                status,
-                _serialize_json(dict(trace_json) if trace_json is not None else None),
-                _serialize_json(dict(outputs) if outputs is not None else None),
-                run_id,
-            ),
-        )
-        row = cur.fetchone()
-    conn.commit()
-    return _run_row(row)
-
-
-def update_run_status(conn: _Connection, run_id: str, *, status: str) -> dict[str, Any] | None:
-    return finish_run(conn, run_id, status=status)
-
-
-def replace_run_plan(
-    conn: _Connection,
-    run_id: str,
-    plan: Mapping[str, Any],
-) -> dict[str, Any] | None:
-    """Overwrite ``objective_run.plan_json``.
-
-    A replace, not a jsonb merge: the row was created with a provisional plan
-    so the caller could return immediately, and the real plan supersedes it.
-    Merging would leave the placeholder's keys — including ``provisional`` —
-    on a plan that is no longer provisional.
-    """
-    sql = f"""
-        UPDATE {TABLE_RESEARCH_OBJECTIVE_RUN}
-        SET plan_json = %s::jsonb
-        WHERE id = %s
-        RETURNING {", ".join(_RUN_COLS)}
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql, (_serialize_json(dict(plan)), run_id))
-        row = cur.fetchone()
-    conn.commit()
-    return _run_row(row)
-
-
-def patch_run_outputs(
-    conn: _Connection,
-    run_id: str,
-    patch: Mapping[str, Any],
-) -> dict[str, Any] | None:
-    """Merge ``patch`` into ``objective_run.outputs`` (jsonb ||)."""
-    sql = f"""
-        UPDATE {TABLE_RESEARCH_OBJECTIVE_RUN}
-        SET outputs = COALESCE(outputs, '{{}}'::jsonb) || %s::jsonb
-        WHERE id = %s
-        RETURNING {", ".join(_RUN_COLS)}
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql, (_serialize_json(dict(patch)), run_id))
-        row = cur.fetchone()
-    conn.commit()
-    return _run_row(row)

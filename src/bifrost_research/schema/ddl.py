@@ -699,6 +699,24 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         )
         """
     )
+    # Who produces an objective's candidates (Trade design Rev .55, Owner
+    # 2026-09-25): hand — the operator, on one subject; assisted — the loop
+    # proposes and the operator decides; auto — the leash accepts within its
+    # gate. Declared intent, edited in place like the title. `subject` is the
+    # symbol a hand objective works on (optional for the other two).
+    cur.execute(
+        f"""
+        ALTER TABLE {SCHEMA_RESEARCH}.objective
+        ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT 'assisted'
+            CHECK (mode IN ('hand', 'assisted', 'auto'))
+        """
+    )
+    cur.execute(
+        f"""
+        ALTER TABLE {SCHEMA_RESEARCH}.objective
+        ADD COLUMN IF NOT EXISTS subject text
+        """
+    )
     cur.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.objective_run (

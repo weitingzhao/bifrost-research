@@ -59,6 +59,10 @@ class ObjectiveStatusPatch(BaseModel):
     description: str | None = Field(default=None, max_length=2000)
     schedule: str | None = Field(default=None, min_length=1, max_length=32)
     persona: str | None = Field(default=None, min_length=1, max_length=64)
+    # Who works it (hand · assisted · auto) and, for a hand objective, on what.
+    # An empty subject clears it.
+    mode: str | None = Field(default=None, min_length=1, max_length=16)
+    subject: str | None = Field(default=None, max_length=16)
 
 
 class ObjectiveCreate(BaseModel):
@@ -70,6 +74,8 @@ class ObjectiveCreate(BaseModel):
     policy_json: dict[str, Any] = Field(default_factory=dict)
     persona: str = Field(default="loop_curator")
     owner_id: str = Field(default="owner")
+    mode: str = Field(default="assisted", max_length=16)
+    subject: str | None = Field(default=None, max_length=16)
 
 
 class BatchRunBody(BaseModel):
@@ -124,6 +130,8 @@ def create_objective(body: ObjectiveCreate) -> dict[str, Any]:
                 policy_json=body.policy_json,
                 persona=body.persona,
                 owner_id=body.owner_id,
+                mode=body.mode,
+                subject=body.subject,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -134,7 +142,7 @@ def create_objective(body: ObjectiveCreate) -> dict[str, Any]:
 
 @router.patch("/objectives/{objective_id}")
 def patch_objective(objective_id: str, body: ObjectiveStatusPatch) -> dict[str, Any]:
-    """Edit an objective in place: status, title, description, schedule, persona.
+    """Edit an objective in place: status, title, description, schedule, persona, mode, subject.
 
     Archiving is the retirement path: the console lists active objectives, so
     setting the status removes it from view while its runs, funnels and
@@ -143,7 +151,8 @@ def patch_objective(objective_id: str, body: ObjectiveStatusPatch) -> dict[str, 
     conn = _connect_or_503()
     try:
         row = None
-        if any(v is not None for v in (body.title, body.description, body.schedule, body.persona)):
+        edits = (body.title, body.description, body.schedule, body.persona, body.mode, body.subject)
+        if any(v is not None for v in edits):
             try:
                 row = obj_repo.update_objective(
                     conn,
@@ -152,6 +161,8 @@ def patch_objective(objective_id: str, body: ObjectiveStatusPatch) -> dict[str, 
                     description=body.description,
                     schedule=body.schedule,
                     persona=body.persona,
+                    mode=body.mode,
+                    subject=body.subject,
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc

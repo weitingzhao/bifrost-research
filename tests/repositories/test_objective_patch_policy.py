@@ -32,6 +32,8 @@ def _sample_obj_row(policy_json: dict[str, Any]) -> tuple[Any, ...]:
         "active",
         "owner",
         None,
+        "assisted",
+        None,
     )
 
 

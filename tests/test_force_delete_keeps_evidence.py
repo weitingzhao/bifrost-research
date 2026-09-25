@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Self
 
 from bifrost_research.repositories import objective as obj_repo
+from bifrost_research.repositories import objective_run as run_repo
 
 RUN = {"id": "run-1", "outputs": {"draft_ids": ["drf-1"]}}
 
@@ -58,7 +59,9 @@ class _Conn:
 
 def _force(monkeypatch) -> tuple[dict[str, Any], _Conn]:
     conn = _Conn()
-    monkeypatch.setattr(obj_repo, "get_run", lambda _c, _r: RUN)
+    # force_delete_run reads the run through its own module since the 0.113.0
+    # split; obj_repo re-exports it, so the call below is the callers' path.
+    monkeypatch.setattr(run_repo, "get_run", lambda _c, _r: RUN)
     return obj_repo.force_delete_run(conn, "run-1"), conn
 
 
