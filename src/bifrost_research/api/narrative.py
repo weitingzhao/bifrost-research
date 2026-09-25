@@ -26,6 +26,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from bifrost_research.db.conn import connect
 from bifrost_research.lenses.narrative import sec_item_tags, vendor_tag
+from bifrost_research.repositories.earnings_filings import fetch_item_202, split_releases
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +233,9 @@ def narrative(
 @router.get("/earnings")
 def earnings_dates(symbol: str = Query(..., min_length=1, max_length=16)) -> dict[str, Any]:
     """Dates this name filed an 8-K carrying Item 2.02 (results of operations) —
-    the earnings dates the feed can vouch for, all of them.
+    the earnings dates the feed can vouch for, all of them — less the 2.02 filings
+    that are not results releases (``repositories.earnings_filings``: Tesla's
+    delivery reports and the like), which come back as ``set_aside`` (0.123.0).
 
     The History page reads these so an IV30 spike on an earnings print is called an
     event rather than a store fault (research 0.119.0). The feed carries the
@@ -253,16 +256,8 @@ def earnings_dates(symbol: str = Query(..., min_length=1, max_length=16)) -> dic
                 (sym,),
             )
             n, first_filed, last_filed = cur.fetchone()
-            cur.execute(
-                """
-                SELECT DISTINCT filing_date
-                FROM raw_market.sec_8k_filing
-                WHERE symbol = %s AND '2.02' = ANY(items)
-                ORDER BY filing_date
-                """,
-                (sym,),
-            )
-            dates = [_iso(r[0]) for r in cur.fetchall()]
+        kept, set_aside = split_releases(fetch_item_202(conn, sym)) if n else ([], [])
+        dates = [_iso(d) for d in kept]
     except Exception as exc:
         logger.exception("narrative/earnings failed")
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -272,6 +267,7 @@ def earnings_dates(symbol: str = Query(..., min_length=1, max_length=16)) -> dic
         {
             "symbol": sym,
             "dates": dates,
+            "set_aside": set_aside,
             "filings": int(n or 0),
             "first_filed": _iso(first_filed),
             "last_filed": _iso(last_filed),

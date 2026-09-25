@@ -84,3 +84,51 @@ def test_the_route_answers_in_the_envelope(monkeypatch) -> None:
     body = TestClient(create_app()).get("/analytics/vol/earnings-moves?symbol=qqqq&limit=4").json()
     assert body["ok"] is True and body["data"]["filing_days"] == 0
     assert seen == {"symbol": "qqqq", "limit": 4}
+
+
+class _MovesCur:
+    """Answers the three reads earnings_moves makes. Invented rows."""
+
+    def __init__(self) -> None:
+        self._rows: list[tuple[Any, ...]] = []
+
+    def __enter__(self) -> "_MovesCur":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
+        flat = " ".join(sql.split())
+        head = "Item 2.02 Results of Operations and Financial Condition. "
+        if flat.startswith("SELECT COUNT(DISTINCT filing_date)"):
+            self._rows = [(2,)]
+        elif flat.startswith("SELECT filing_date, items_text"):
+            self._rows = [
+                (date(2031, 4, 2), head + "Zeta Motors published the press release attached as Exhibit 99.1."),
+                (date(2031, 4, 22), head + "Zeta Motors released its results for the quarter ended March 31, 2031."),
+            ]
+        elif "raw_market.stock_daily" in flat:
+            self._rows = [(date(2031, 4, d), 100.0 + d) for d in (1, 3, 21, 23)]
+        else:
+            self._rows = []
+
+    def fetchone(self) -> tuple[Any, ...]:
+        return self._rows[0]
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        return list(self._rows)
+
+
+class _MovesConn:
+    def cursor(self) -> _MovesCur:
+        return _MovesCur()
+
+
+def test_a_delivery_report_is_set_aside_not_read_as_a_print() -> None:
+    from bifrost_research.engines.volatility.earnings_moves import earnings_moves
+
+    out = earnings_moves(_MovesConn(), "zzz", as_of=date(2031, 5, 1))
+    assert [p["filed"] for p in out["prints"]] == ["2031-04-22"]
+    assert [a["filed"] for a in out["set_aside"]] == ["2031-04-02"]
+    assert out["filing_days"] == 2

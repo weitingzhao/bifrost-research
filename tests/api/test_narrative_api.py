@@ -23,9 +23,15 @@ FILING = (
 class _Cur:
     """Answers each statement by what it reads, and keeps what it was asked."""
 
-    def __init__(self, calls: list[tuple[str, tuple[Any, ...]]], coverage: tuple[Any, ...]) -> None:
+    def __init__(
+        self,
+        calls: list[tuple[str, tuple[Any, ...]]],
+        coverage: tuple[Any, ...],
+        item_202: list[tuple[Any, ...]] | None = None,
+    ) -> None:
         self.calls = calls
         self.coverage = coverage
+        self.item_202 = item_202 or []
         self._rows: list[tuple[Any, ...]] = []
 
     def __enter__(self) -> Self:
@@ -45,8 +51,8 @@ class _Cur:
             self._rows = []
         elif flat.startswith("SELECT COUNT(*), MIN(filing_date), MAX(filing_date)"):
             self._rows = [self.coverage]
-        elif flat.startswith("SELECT DISTINCT filing_date"):
-            self._rows = [(FILING[2],)] if FILING[1] in params else []
+        elif flat.startswith("SELECT filing_date, items_text"):
+            self._rows = [(FILING[2], FILING[4]), *self.item_202] if FILING[1] in params else []
         elif "FROM raw_market.sec_8k_filing" in flat and "items_text" in flat:
             # The filing is ZZZ's: a read narrowed to another name does not see it.
             self._rows = [FILING] if "symbol = %s" not in flat or FILING[1] in params else []
@@ -61,12 +67,13 @@ class _Cur:
 
 
 class _Conn:
-    def __init__(self, coverage: tuple[Any, ...] = (0, None, None)) -> None:
+    def __init__(self, coverage: tuple[Any, ...] = (0, None, None), item_202: list[tuple[Any, ...]] | None = None) -> None:
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.coverage = coverage
+        self.item_202 = item_202 or []
 
     def cursor(self) -> _Cur:
-        return _Cur(self.calls, self.coverage)
+        return _Cur(self.calls, self.coverage, self.item_202)
 
     def close(self) -> None:
         return None
@@ -117,6 +124,17 @@ def test_earnings_dates_are_the_names_item_202_filings(monkeypatch) -> None:
     assert body["dates"] == ["2031-03-11"]
     assert body["filings"] == 14
     assert any("'2.02' = ANY(items)" in sql for sql, _ in conn.calls)
+
+
+def test_a_202_filing_that_is_not_a_results_release_is_set_aside(monkeypatch) -> None:
+    # Invented: a delivery report under Item 2.02, a week before the name's results release.
+    head = "Item 2.02 Results of Operations and Financial Condition. "
+    deliveries = (date(2031, 2, 18), head + "Zeta Corp published the press release attached as Exhibit 99.1.")
+    release = (date(2031, 2, 25), head + "Zeta Corp released its results for the quarter ended December 31, 2030.")
+    conn = _Conn(coverage=(14, date(2029, 9, 3), date(2031, 3, 11)), item_202=[deliveries, release])
+    body = _client(monkeypatch, conn).get("/research/narrative/earnings?symbol=ZZZ").json()["data"]
+    assert body["dates"] == ["2031-02-25", "2031-03-11"]
+    assert [(a["filed"], a["release"]) for a in body["set_aside"]] == [("2031-02-18", "2031-02-25")]
 
 
 def test_earnings_for_a_name_the_feed_never_carried_says_so(monkeypatch) -> None:

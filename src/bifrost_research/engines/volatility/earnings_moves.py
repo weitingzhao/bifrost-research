@@ -1,7 +1,9 @@
 """Earnings moves: what the straddle priced before each print, and what came.
 
 Print dates are the name's 8-K filings carrying Item 2.02 (results of operations),
-from ``raw_market.sec_8k_filing``. A filing carries a date, not a time, so the
+from ``raw_market.sec_8k_filing``, less the ones that are not results releases
+(``repositories.earnings_filings``: Tesla's delivery reports and the like, which
+come back as ``set_aside``). A filing carries a date, not a time, so the
 release came before the open (the filing day's session is the print) or after the
 close (the next session is). The window runs from the last session before the
 filing date to the first session after it, and the print is whichever of its
@@ -29,6 +31,7 @@ from statistics import median
 from typing import Any, Sequence
 
 from bifrost_research.engines.backtest.canonical_pnl import bs_price
+from bifrost_research.repositories.earnings_filings import fetch_item_202, split_releases
 
 # 8-K/A amendments and follow-up filings land within days of the release.
 SAME_PRINT_DAYS = 7
@@ -122,18 +125,16 @@ def earnings_moves(conn: Any, symbol: str, *, limit: int = 8, as_of: date | None
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT filing_date,
-                   bool_or('2.02' = ANY(items))
+            SELECT COUNT(DISTINCT filing_date)
             FROM raw_market.sec_8k_filing
             WHERE symbol = %s AND filing_date <= %s
-            GROUP BY filing_date
             """,
             (sym, today),
         )
-        filed = cur.fetchall() or []
-    filings = len(filed)
-    prints = print_dates([d for d, is_print in filed if is_print], limit=limit)
-    out: dict[str, Any] = {"symbol": sym, "filing_days": filings, "prints": []}
+        filings = int((cur.fetchone() or (0,))[0] or 0)
+    dates, set_aside = split_releases(fetch_item_202(conn, sym, as_of=today)) if filings else ([], [])
+    prints = print_dates(dates, limit=limit)
+    out: dict[str, Any] = {"symbol": sym, "filing_days": filings, "prints": [], "set_aside": set_aside}
     if not prints:
         return {**out, **summarize([])}
 
