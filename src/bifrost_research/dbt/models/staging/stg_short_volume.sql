@@ -1,4 +1,9 @@
-{{ config(materialized='table') }}
+{{ config(materialized='view') }}
+
+-- A view since 0.120.0. As a table it rewrote all 7.2M rows (650 MB) every run for
+-- its one reader, mart_sepa_tier_sentiment, which keeps each symbol's last 20
+-- sessions. Owned by analytics_writer like the rest of dw_stock, and nothing else
+-- depends on the relation, so dbt's drop-and-recreate is safe (2026-09-25).
 
 /*
   Daily short volume, full market by date (raw_market.short_volume).
