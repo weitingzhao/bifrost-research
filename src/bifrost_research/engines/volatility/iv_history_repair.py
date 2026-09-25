@@ -25,7 +25,8 @@ Steps, each dry-run (counts only) unless ``--apply``:
 4. canonical — canonical structure PnL, symbol by symbol, over the daily job's window
 
 ``--derive-only`` skips 1–2: they are done once the purge has run, and re-running
-the reprojection rewrites every vendor row for nothing.
+the reprojection rewrites every vendor row for nothing. ``--canonical-only`` runs 4
+alone (after a change to canonical PnL itself, such as the 0.117.0 entry phase).
 
 New fossils cannot arise: the projection now requires a snapshot row to have been
 fetched within ``SNAPSHOT_MAX_FETCH_LAG_DAYS`` of its session.
@@ -256,7 +257,9 @@ def rebuild_canonical_pnl(conn: Any, symbols: Sequence[str], end: date, *, apply
     return {"step": "canonical_pnl", "rows_written": written, "symbols": len(symbols), "applied": True}
 
 
-def run(*, start: date | None, end: date, apply: bool, derive_only: bool = False) -> dict[str, Any]:
+def run(
+    *, start: date | None, end: date, apply: bool, derive_only: bool = False, canonical_only: bool = False
+) -> dict[str, Any]:
     conn = connect()
     try:
         universe = union_iv_radar_benchmarks(load_symbols_from_env_or_query(conn))
@@ -274,6 +277,12 @@ def run(*, start: date | None, end: date, apply: bool, derive_only: bool = False
             )
             start = min(d for d in firsts if d is not None)
         steps: list[dict[str, Any]] = []
+        if canonical_only:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT DISTINCT symbol FROM {CANONICAL}")
+                canonical_syms = sorted({*universe, *(str(r[0]) for r in cur.fetchall())})
+            steps.append(rebuild_canonical_pnl(conn, canonical_syms, end, apply=apply))
+            return {"start": start.isoformat(), "end": end.isoformat(), "universe": len(universe), "steps": steps}
         if not derive_only:
             reprojected_at = datetime.now(timezone.utc)
             steps.append(reproject_vendor(conn, projected, end, apply=apply))
@@ -297,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--end", default=None, help="YYYY-MM-DD (default: today in New York)")
     parser.add_argument("--apply", action="store_true", help="write; without it every step only counts")
     parser.add_argument("--derive-only", action="store_true", help="skip reproject and purge (done once already)")
+    parser.add_argument("--canonical-only", action="store_true", help="rebuild canonical PnL only")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     today_ny = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
@@ -305,6 +315,7 @@ def main(argv: list[str] | None = None) -> int:
         end=date.fromisoformat(args.end) if args.end else today_ny,
         apply=args.apply,
         derive_only=args.derive_only,
+        canonical_only=args.canonical_only,
     )
     print(json.dumps(result, default=str, indent=2))
     return 0

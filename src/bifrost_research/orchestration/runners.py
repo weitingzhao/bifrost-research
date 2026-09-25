@@ -201,16 +201,20 @@ def run_canonical_pnl(
     )
     from bifrost_research.db.conn import connect
     from bifrost_research.engines.canonical_pnl import run_cohort
+    from bifrost_research.engines.canonical_pnl.compute import MARK_HORIZON_DAYS
 
     conn = connect()
     try:
         underlyings = load_symbols_from_env_or_query(conn)
         universe = union_iv_radar_benchmarks(underlyings)
+        # Entries older than the mark horizon are final; recomputing the whole window
+        # nightly rewrote ~2.3M rows once every symbol had six months of IV (0.117.0).
         result = run_cohort(
             conn,
             symbols=universe,
             lookback_months=lookback_months,
             dry_run=dry_run,
+            refresh_days=MARK_HORIZON_DAYS,
         )
         result["engine"] = "canonical_pnl"
         result["advisory"] = "D10 BLOCKED"

@@ -22,6 +22,16 @@ from bifrost_research.schema.schemas import (
 
 logger = logging.getLogger(__name__)
 
+# Entry dates are the first session with IV in each 7-day block counted from this
+# Monday (a 5-session stride = one entry per ISO week). Until 0.117.0 they were every
+# 5th IV day from the window's first day, which slides a day each night: 09-24 and
+# 09-25 shared none of PLTR's 26 entries, and with rows never pruned every night wrote
+# a fresh 2.3M-row phase once the IV repair gave the universe six months of history.
+ENTRY_ANCHOR = date(2024, 1, 1)
+# run_symbol_window marks an entry for this many calendar days; after that its rows
+# are final and a nightly run need not recompute them.
+MARK_HORIZON_DAYS = 60
+
 _UPSERT_SQL = """
 INSERT INTO {table} (
   as_of_date, entry_date, symbol, structure, params_hash, structure_params,
@@ -253,6 +263,68 @@ def coverage_report(conn: Any, *, fast: bool = False) -> dict[str, Any]:
     }
 
 
+def phase_entries(iv_days: Sequence[date], *, start: date, stride: int = 5) -> list[date]:
+    """First IV day in each block of ``stride`` sessions (7 calendar days per 5) counted
+    from ``ENTRY_ANCHOR``. A block that begins before ``start`` is left out: its first
+    day may sit outside the window, and taking the first day inside would move with it."""
+    block = max(1, round(max(1, int(stride)) * 7 / 5))
+    out: list[date] = []
+    seen: set[int] = set()
+    for d in sorted(iv_days):
+        b = (d - ENTRY_ANCHOR).days // block
+        if b in seen:
+            continue
+        seen.add(b)
+        if ENTRY_ANCHOR + timedelta(days=b * block) >= start:
+            out.append(d)
+    return out
+
+
+def compute_marks(
+    conn: Any,
+    *,
+    symbol: str,
+    entry_dates: Sequence[date],
+    as_of_end: date,
+    structures: Sequence[StructureName] = STRUCTURES,
+    iv_max_gap_days: int = 14,
+) -> dict[str, Any]:
+    """Marks for ``entry_dates`` through ``as_of_end`` (each entry for at most
+    ``MARK_HORIZON_DAYS``); nothing is written."""
+    start = min(entry_dates)
+    spots = fetch_spot_series(conn, symbol, start, as_of_end)
+    observed_ivs = fetch_atm_iv_series(conn, symbol, start, as_of_end)
+    # Carry sparse reconstructed / vendor IV onto the spot calendar (IDS-4).
+    ivs = locf_fill_iv(observed_ivs, sorted(spots.keys()), max_gap_days=iv_max_gap_days)
+    rows: list[dict[str, Any]] = []
+    skipped = 0
+    for entry in entry_dates:
+        if entry not in ivs or entry not in spots:
+            skipped += 1
+            continue
+        mark_end = min(as_of_end, entry + timedelta(days=MARK_HORIZON_DAYS))
+        as_ofs = sorted(d for d in spots if entry <= d <= mark_end and d in ivs)
+        if not as_ofs:
+            skipped += 1
+            continue
+        for structure in structures:
+            marks = simulate_trajectory(
+                structure,
+                entry_date=entry,
+                as_of_dates=as_ofs,
+                spots=spots,
+                atm_ivs=ivs,
+            )
+            # Drop pure insufficient rows (no PnL) so coverage reflects usable marks.
+            rows.extend(m.to_row(symbol) for m in marks if m.data_quality != "insufficient_chain")
+    return {
+        "rows": rows,
+        "skipped": skipped,
+        "iv_observed_days": len(observed_ivs),
+        "iv_filled_days": len(ivs),
+    }
+
+
 def run_symbol_window(
     conn: Any,
     *,
@@ -265,39 +337,21 @@ def run_symbol_window(
 ) -> dict[str, Any]:
     if not entry_dates:
         return {"symbol": symbol, "rows_written": 0, "skipped": True}
-    start = min(entry_dates)
-    spots = fetch_spot_series(conn, symbol, start, as_of_end)
-    observed_ivs = fetch_atm_iv_series(conn, symbol, start, as_of_end)
-    # Carry sparse reconstructed / vendor IV onto the spot calendar (IDS-4).
-    ivs = locf_fill_iv(observed_ivs, sorted(spots.keys()), max_gap_days=iv_max_gap_days)
-    all_rows: list[dict[str, Any]] = []
-    skipped_entries = 0
-    for entry in entry_dates:
-        if entry not in ivs or entry not in spots:
-            skipped_entries += 1
-            continue
-        mark_end = min(as_of_end, entry + timedelta(days=60))
-        as_ofs = sorted(d for d in spots if entry <= d <= mark_end and d in ivs)
-        if not as_ofs:
-            skipped_entries += 1
-            continue
-        for structure in structures:
-            marks = simulate_trajectory(
-                structure,
-                entry_date=entry,
-                as_of_dates=as_ofs,
-                spots=spots,
-                atm_ivs=ivs,
-            )
-            # Drop pure insufficient rows (no PnL) so coverage reflects usable marks.
-            usable = [m for m in marks if m.data_quality != "insufficient_chain"]
-            all_rows.extend(m.to_row(symbol) for m in usable)
+    out = compute_marks(
+        conn,
+        symbol=symbol,
+        entry_dates=entry_dates,
+        as_of_end=as_of_end,
+        structures=structures,
+        iv_max_gap_days=iv_max_gap_days,
+    )
+    all_rows = out["rows"]
     if dry_run:
         return {
             "symbol": symbol,
             "dry_run": True,
             "rows": len(all_rows),
-            "skipped_entries": skipped_entries,
+            "skipped_entries": out["skipped"],
             "sample": all_rows[:3],
         }
     n = upsert_marks(conn, all_rows)
@@ -305,10 +359,53 @@ def run_symbol_window(
         "symbol": symbol,
         "rows_written": n,
         "rows_computed": len(all_rows),
-        "skipped_entries": skipped_entries,
-        "iv_observed_days": len(observed_ivs),
-        "iv_filled_days": len(ivs),
+        "skipped_entries": out["skipped"],
+        "iv_observed_days": out["iv_observed_days"],
+        "iv_filled_days": out["iv_filled_days"],
     }
+
+
+def simulate_entry(
+    conn: Any,
+    *,
+    symbol: str,
+    entry_date: date,
+    structure: StructureName,
+    as_of_end: date,
+) -> dict[str, Any]:
+    """One entry's trajectory computed on request, from the series and simulator the
+    nightly run uses. ``entry_date`` moves to the first session on or after it, so a
+    hypothesis opened on a weekend still has an entry. Stored rows exist only on the
+    weekly phase: 2 of 72 hypotheses found theirs on 2026-09-25."""
+    sym = symbol.strip().upper()
+    sessions = sorted(fetch_spot_series(conn, sym, entry_date, entry_date + timedelta(days=10)))
+    entry = next((d for d in sessions if d >= entry_date), None)
+    if entry is None or entry > as_of_end:
+        return {"entry_date": None, "rows": []}
+    out = compute_marks(conn, symbol=sym, entry_dates=[entry], as_of_end=as_of_end, structures=[structure])
+    return {"entry_date": entry, "rows": out["rows"]}
+
+
+def mark_row_json(row: Mapping[str, Any]) -> dict[str, Any]:
+    """A stored or simulated mark row as the trajectory routes return it."""
+    item = dict(row)
+    for k in ("as_of_date", "entry_date"):
+        if isinstance(item.get(k), date):
+            item[k] = item[k].isoformat()
+    return item
+
+
+def prune_symbol(conn: Any, symbol: str, *, start: date, entries: Sequence[date]) -> int:
+    """Drop a symbol's rows outside the window or off the entry phase."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            DELETE FROM {TABLE_STOCK_SIGNAL_CANONICAL_PNL_DAILY}
+            WHERE symbol = %s AND (entry_date < %s OR NOT (entry_date = ANY(%s)))
+            """,
+            (symbol.upper(), start, list(entries)),
+        )
+        return int(cur.rowcount or 0)
 
 
 def run_cohort(
@@ -321,36 +418,52 @@ def run_cohort(
     dry_run: bool = False,
     reset: bool = False,
     coverage: bool = True,
+    refresh_days: int | None = None,
 ) -> dict[str, Any]:
+    """Canonical marks per symbol over the window, on the fixed entry phase.
+
+    ``refresh_days`` recomputes only entries that young — the nightly run passes
+    ``MARK_HORIZON_DAYS``, past which an entry's marks are final; None recomputes every
+    entry (a rebuild). Unless dry, each symbol's rows outside the window or off the
+    phase go first, so the table holds exactly the window.
+    """
     end = as_of or date.today()
     start = end - timedelta(days=int(lookback_months * 30.5))
     if reset and not dry_run:
         clear_canonical_pnl_tables(conn)
     results = []
     total = 0
+    pruned = 0
     for sym in symbols:
         spots = fetch_spot_series(conn, sym, start, end)
-        days = sorted(spots.keys())
-        # Prefer entry dates that already have observed ATM IV (before LOCF).
         observed = fetch_atm_iv_series(conn, sym, start, end)
-        iv_days = sorted(d for d in days if d in observed)
-        base = iv_days if iv_days else days
-        entries = base[:: max(1, entry_stride_days)]
+        iv_days = sorted(d for d in spots if d in observed)
+        entries = phase_entries(iv_days, start=start, stride=entry_stride_days)
+        if refresh_days is None:
+            todo = entries
+        else:
+            todo = [e for e in entries if e >= end - timedelta(days=refresh_days)]
+        if not dry_run:
+            pruned += prune_symbol(conn, sym, start=start, entries=entries)
         one = run_symbol_window(
             conn,
             symbol=sym,
-            entry_dates=entries,
+            entry_dates=todo,
             as_of_end=end,
             dry_run=dry_run,
         )
+        if not dry_run:
+            conn.commit()  # the prune stands even when no entry needed marks
         results.append(one)
         total += int(one.get("rows_written") or one.get("rows") or 0)
     cov = coverage_report(conn) if coverage and not dry_run else None
     return {
         "mode": "cohort",
         "lookback_months": lookback_months,
+        "refresh_days": refresh_days,
         "symbols": len(symbols),
         "rows_written": total,
+        "rows_pruned": pruned,
         "per_symbol": results,
         "coverage": cov,
         "dry_run": dry_run,

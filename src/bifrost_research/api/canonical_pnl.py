@@ -9,14 +9,16 @@ Routes:
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query
 
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.canonical_pnl import STRUCTURES
-from bifrost_research.engines.canonical_pnl import coverage_report
+from bifrost_research.engines.canonical_pnl import coverage_report, simulate_entry
+from bifrost_research.engines.canonical_pnl.compute import mark_row_json
 from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_CANONICAL_PNL_DAILY
 
 logger = logging.getLogger(__name__)
@@ -81,17 +83,21 @@ def trajectory(
             sql += " ORDER BY as_of_date ASC"
             cur.execute(sql, args)
             cols = [d[0] for d in cur.description]
-            rows = []
-            for r in cur.fetchall():
-                item = dict(zip(cols, r))
-                for k in ("as_of_date", "entry_date"):
-                    if item.get(k) is not None:
-                        item[k] = item[k].isoformat()
-                rows.append(item)
+            rows = [mark_row_json(dict(zip(cols, r))) for r in cur.fetchall()]
+        source, used = "stored", entry_date
+        if not rows and not params_hash:
+            # Stored entries sit one per week (0.117.0); any other date is simulated
+            # with the same series and simulator, from the next session on or after it.
+            today = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
+            sim = simulate_entry(conn, symbol=symbol, entry_date=entry_date, structure=structure, as_of_end=today)
+            rows = [mark_row_json(r) for r in sim["rows"]]
+            source, used = "on_demand", sim["entry_date"]
         return _ok(
             {
                 "symbol": symbol.strip().upper(),
                 "entry_date": entry_date.isoformat(),
+                "entry_date_used": used.isoformat() if used else None,
+                "source": source,
                 "structure": structure,
                 "rows": rows,
                 "count": len(rows),

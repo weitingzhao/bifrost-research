@@ -180,3 +180,72 @@ def test_iv_series_falls_back_to_vrp_when_the_atm_table_is_empty() -> None:
     d1 = _date(2026, 6, 25)
     out = fetch_atm_iv_series(_IvConn([], [(d1, 0.51)]), "PLTR", d1, d1)
     assert out == {d1: 0.51}
+
+
+# ─── 0.117.0: a fixed weekly entry phase, nightly refresh of open entries, on-demand trajectories ───
+
+import bifrost_research.engines.canonical_pnl.compute as cp  # noqa: E402
+
+
+def _sessions(start: _date, end: _date) -> list[_date]:
+    out, d = [], start
+    while d <= end:
+        if d.weekday() < 5:
+            out.append(d)
+        d += _td(days=1)
+    return out
+
+
+def test_entries_do_not_move_when_the_window_slides() -> None:
+    """PLTR on 2026-09-24 vs 09-25 shared none of its 26 entries under the old stride."""
+    days = _sessions(_date(2026, 3, 1), _date(2026, 9, 30))
+    a_end, b_end = _date(2026, 9, 24), _date(2026, 9, 25)
+    a = cp.phase_entries([d for d in days if d <= a_end], start=a_end - _td(days=183))
+    b = cp.phase_entries([d for d in days if d <= b_end], start=b_end - _td(days=183))
+    overlap = set(a) & set(b)
+    assert len(overlap) >= len(a) - 1
+    assert all(d.weekday() == 0 for d in a)  # one per ISO week, on its first session
+
+
+def test_a_week_that_starts_before_the_window_is_left_out() -> None:
+    days = _sessions(_date(2026, 3, 23), _date(2026, 4, 10))
+    entries = cp.phase_entries(days, start=_date(2026, 3, 25))  # a Wednesday
+    assert entries[0] == _date(2026, 3, 30)
+
+
+def test_a_holiday_monday_moves_the_entry_to_tuesday() -> None:
+    days = [d for d in _sessions(_date(2026, 8, 31), _date(2026, 9, 11)) if d != _date(2026, 9, 7)]
+    assert cp.phase_entries(days, start=_date(2026, 8, 31)) == [_date(2026, 8, 31), _date(2026, 9, 8)]
+
+
+def test_nightly_refresh_recomputes_only_open_entries_and_prunes_off_phase(monkeypatch) -> None:
+    end = _date(2026, 9, 25)
+    days = _sessions(end - _td(days=190), end)
+    monkeypatch.setattr(cp, "fetch_spot_series", lambda c, s, a, b: {d: 100.0 for d in days if a <= d <= b})
+    monkeypatch.setattr(cp, "fetch_atm_iv_series", lambda c, s, a, b: {d: 0.5 for d in days if a <= d <= b})
+    seen: dict[str, list] = {}
+    monkeypatch.setattr(cp, "prune_symbol", lambda c, s, *, start, entries: seen.setdefault("prune", list(entries)) and 0)
+    monkeypatch.setattr(cp, "run_symbol_window", lambda c, **kw: seen.setdefault("todo", list(kw["entry_dates"])) and {"rows_written": 0})
+
+    class _C:
+        commits = 0
+
+        def commit(self) -> None:
+            _C.commits += 1
+
+    cp.run_cohort(_C(), symbols=["PLTR"], as_of=end, coverage=False, refresh_days=cp.MARK_HORIZON_DAYS)
+    assert len(seen["prune"]) >= 25  # the whole window's phase is kept
+    assert seen["todo"] and all(e >= end - _td(days=60) for e in seen["todo"])
+    assert len(seen["todo"]) < len(seen["prune"])
+    assert _C.commits == 1
+
+
+def test_a_weekend_hypothesis_is_simulated_from_the_next_session(monkeypatch) -> None:
+    days = _sessions(_date(2026, 9, 1), _date(2026, 9, 25))
+    spots = {d: 100.0 + i for i, d in enumerate(days)}
+    monkeypatch.setattr(cp, "fetch_spot_series", lambda c, s, a, b: {d: v for d, v in spots.items() if a <= d <= b})
+    monkeypatch.setattr(cp, "fetch_atm_iv_series", lambda c, s, a, b: {d: 0.5 for d in days if a <= d <= b})
+    out = cp.simulate_entry(None, symbol="pltr", entry_date=_date(2026, 9, 12), structure="short_strangle", as_of_end=_date(2026, 9, 25))
+    assert out["entry_date"] == _date(2026, 9, 14)
+    assert out["rows"] and {r["entry_date"] for r in out["rows"]} == {_date(2026, 9, 14)}
+    assert cp.mark_row_json(out["rows"][0])["entry_date"] == "2026-09-14"

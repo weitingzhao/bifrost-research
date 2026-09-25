@@ -8,6 +8,7 @@ from bifrost_research.engines.canonical_pnl.compute import (
     locf_fill_iv,
     run_cohort,
     run_symbol_window,
+    simulate_entry,
     upsert_marks,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     "locf_fill_iv",
     "run_cohort",
     "run_symbol_window",
+    "simulate_entry",
     "upsert_marks",
 ]

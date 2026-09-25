@@ -21,16 +21,18 @@ Routes:
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.canonical_pnl import STRUCTURES
+from bifrost_research.engines.canonical_pnl import simulate_entry
+from bifrost_research.engines.canonical_pnl.compute import mark_row_json
 from bifrost_research.repositories import hypothesis as repo
-from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_CANONICAL_PNL_DAILY
 
 logger = logging.getLogger(__name__)
 
@@ -118,29 +120,12 @@ def _fetch_trajectory_rows(
     symbol: str,
     entry_date: date,
     structure: str,
-) -> list[dict[str, Any]]:
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT as_of_date, entry_date, symbol, structure, params_hash,
-                   structure_params, entry_spot, entry_atm_iv, entry_mid,
-                   as_of_spot, as_of_atm_iv, mtm_value, pnl_since_entry,
-                   dte_remaining, expired, final_pnl, data_quality
-            FROM {TABLE_STOCK_SIGNAL_CANONICAL_PNL_DAILY}
-            WHERE symbol = %s AND entry_date = %s AND structure = %s
-            ORDER BY as_of_date ASC
-            """,
-            (symbol, entry_date, structure),
-        )
-        cols = [d[0] for d in cur.description]
-        rows: list[dict[str, Any]] = []
-        for r in cur.fetchall():
-            item = dict(zip(cols, r))
-            for k in ("as_of_date", "entry_date"):
-                if item.get(k) is not None:
-                    item[k] = item[k].isoformat()
-            rows.append(item)
-    return rows
+) -> tuple[date | None, list[dict[str, Any]]]:
+    """The hypothesis's trajectory, simulated on request (0.117.0). Stored canonical
+    entries sit one per week, so reading the table found 2 of 72 hypotheses' dates."""
+    today = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
+    sim = simulate_entry(conn, symbol=symbol, entry_date=entry_date, structure=structure, as_of_end=today)
+    return sim["entry_date"], [mark_row_json(r) for r in sim["rows"]]
 
 
 def _trajectory_summary(rows: list[dict[str, Any]], *, structure: str, symbol: str, entry_date: date) -> dict[str, Any]:
@@ -308,11 +293,11 @@ def refresh_trajectory(
             raise HTTPException(status_code=400, detail="hypothesis has no symbols")
         symbol = str(symbols[0]).strip().upper()
         entry_date = _parse_entry_date(hyp.get("created_at"))
-        rows = _fetch_trajectory_rows(
+        used, rows = _fetch_trajectory_rows(
             conn, symbol=symbol, entry_date=entry_date, structure=structure
         )
         summary = _trajectory_summary(
-            rows, structure=structure, symbol=symbol, entry_date=entry_date
+            rows, structure=structure, symbol=symbol, entry_date=used or entry_date
         )
         merged = repo.merge_origin_ref(hyp.get("origin_ref"), {"trajectory_summary": summary})
         updated = repo.patch_hypothesis(conn, hypothesis_id, {"origin_ref": merged})
@@ -321,6 +306,7 @@ def refresh_trajectory(
                 "hypothesis": updated,
                 "symbol": symbol,
                 "entry_date": entry_date.isoformat(),
+                "entry_date_used": used.isoformat() if used else None,
                 "structure": structure,
                 "rows": rows,
                 "count": len(rows),

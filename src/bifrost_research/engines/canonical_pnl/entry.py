@@ -29,6 +29,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Canonical structure PnL cohort compute")
     parser.add_argument("--lookback-months", type=int, default=6)
     parser.add_argument("--entry-stride-days", type=int, default=5)
+    parser.add_argument(
+        "--refresh-days",
+        type=int,
+        default=None,
+        help="recompute only entries this young (the nightly run uses the 60-day mark horizon); default: all",
+    )
     parser.add_argument("--symbol", type=str, default=None)
     parser.add_argument("--as-of", type=str, default=None, help="YYYY-MM-DD")
     parser.add_argument("--dry-run", action="store_true")
@@ -59,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
             entry_stride_days=args.entry_stride_days,
             dry_run=args.dry_run,
             reset=args.reset,
+            refresh_days=args.refresh_days,
         )
         print(json.dumps(result, default=str, indent=2))
         return 0
