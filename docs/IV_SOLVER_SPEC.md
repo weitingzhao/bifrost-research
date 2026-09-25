@@ -82,7 +82,7 @@ Python helper `fetch_unified_iv_rows_for_date` (and optional SQL view `features.
 | IDS-4 | `canonical_pnl.insufficient_pct` &lt; 0.15 |
 | IDS-5 | Signal Health exposes `iv_reconstruction` block; package `0.35.0` |
 
-## 2026-09 correction (research 0.106.0 – 0.111.0)
+## 2026-09 correction (research 0.106.0 – 0.118.0)
 
 **The depth path above was fossil data.** Until plugin P3 (2026-09-08) `option_snapshot.snapshot_ts`
 was a contract's *last trade*, so the "~290 dates" in the recon table were contracts fetched in
@@ -102,9 +102,10 @@ What replaced it:
 | Vendor vs Brent | a contract-day with vendor IV keeps it |
 | Daily solver | vendor projection only (0.111.0); Brent is solved where it is read — ATM, and Trade's greeks route — not stored |
 | Projection | a snapshot row must be fetched within 3 days of its session (`SNAPSHOT_MAX_FETCH_LAG_DAYS`) |
+| Partial snapshots | a session whose snapshot holds < 60% of the symbol's recent IV-bearing contracts **and** a median IV > 1.8× theirs is not projected, and its stored vendor rows go (0.118.0: 2026-09-22 left 12 symbols with half their contracts at 2–3× the IV) |
 | IV30 | `atm_iv.iv30_from_expiries`: interpolated within 7–90 DTE; VRP and the IV percentile share it |
 | IV percentile | ranks stored `iv_current` (IV30); NULL until 126 sessions |
-| Canonical PnL | prices on IV30 too (it took the single expiry nearest 30 days); rebuilt by the repair's last step over its 6-month window |
+| Canonical PnL | prices on IV30 too (it took the single expiry nearest 30 days); entries one per ISO week on a fixed phase, nightly refresh of the 60-day open entries, table pruned to the window (0.117.0) |
 | Repair | `engines/volatility/iv_history_repair.py` / `k8s/engines/job-iv-history-repair.yaml`: reproject vendor rows from raw, purge pre-P3 rows no post-P3 projection confirmed (reads only this table, so it holds after raw retention), rebuild ATM → percentile → VRP oldest first |
 | Retired | `iv_solver_entry.py` and `job-iv-solver-backfill.yaml` (a 252-day, whole-window-in-memory cohort solve that would also have overwritten vendor rows) |
 

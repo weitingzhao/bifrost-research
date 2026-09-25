@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from statistics import median
 from typing import Any, Literal, Sequence
 
 from bifrost_research.db.fastcount import breakdown_with_dominant, distinct_count, estimate_rows
@@ -360,6 +361,51 @@ def solve_symbol_window(
     }
 
 
+# A session's snapshot is partial when it carries fewer than DEGRADED_COUNT_RATIO of the
+# IV-bearing contracts of the symbol's previous sessions AND a median IV above
+# DEGRADED_IV_RATIO times theirs. 2026-09-22 on DEV: 12 symbols' EOD snapshots held about
+# half their contracts at 2–3× the IV (CDW 27 contracts at 1.21 against 51 at 0.46), with
+# the day before and after normal. Either signal alone is a thin chain or a real move;
+# together over Aug 5 – Sep 24 they flagged 13 of 6,340 symbol-days, all of that kind.
+DEGRADED_COUNT_RATIO = 0.6
+DEGRADED_IV_RATIO = 1.8
+DEGRADED_PRIOR_SESSIONS = 5
+
+
+def degraded_sessions(conn: Any, symbol: str, start_date: date, end_date: date) -> set[date]:
+    """Sessions in [start, end] whose snapshot for ``symbol`` looks partial (see above),
+    judged against up to ``DEGRADED_PRIOR_SESSIONS`` earlier sessions (at least one)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT DATE(timezone('America/New_York', os.snapshot_ts)) AS d,
+                   COUNT(DISTINCT os.option_ticker),
+                   percentile_cont(0.5) WITHIN GROUP (ORDER BY os.iv)
+            FROM raw_market.option_snapshot os
+            WHERE os.underlying = %s AND os.iv > 0
+              AND os.snapshot_ts >= (%s::timestamp AT TIME ZONE 'America/New_York')
+              AND os.snapshot_ts < (%s::timestamp AT TIME ZONE 'America/New_York')
+              AND {observed_near_session("os")}
+            GROUP BY 1
+            ORDER BY 1
+            """,
+            (symbol, start_date - timedelta(days=21), end_date + timedelta(days=1)),
+        )
+        stats = [(r[0], int(r[1]), float(r[2])) for r in (cur.fetchall() or []) if r[2] is not None]
+    out: set[date] = set()
+    for i, (d, n, iv) in enumerate(stats):
+        if d < start_date:
+            continue
+        prior = stats[max(0, i - DEGRADED_PRIOR_SESSIONS):i]
+        if not prior:
+            continue
+        n_med = median(p[1] for p in prior)
+        iv_med = median(p[2] for p in prior)
+        if n < DEGRADED_COUNT_RATIO * n_med and iv > DEGRADED_IV_RATIO * iv_med:
+            out.add(d)
+    return out
+
+
 def project_vendor_snapshot_window(
     conn: Any,
     symbol: str,
@@ -368,8 +414,13 @@ def project_vendor_snapshot_window(
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Project Polygon snapshot IV into reconstructed table (depth path)."""
+    """Project Polygon snapshot IV into reconstructed table (depth path).
+
+    Sessions ``degraded_sessions`` flags are not projected, and vendor rows already
+    stored for them are deleted, so ATM IV falls back to Brent from option_daily there.
+    """
     sym = symbol.strip().upper()
+    degraded = degraded_sessions(conn, sym, start_date, end_date)
     with conn.cursor() as cur:
         cur.execute(
             f"""
@@ -412,7 +463,7 @@ def project_vendor_snapshot_window(
             iv_f = float(iv)
         except (TypeError, ValueError):
             continue
-        if right is None or expiry is None or trade_d is None:
+        if right is None or expiry is None or trade_d is None or trade_d in degraded:
             continue
         dte = (expiry - trade_d).days
         # Vendor path: keep all positive-DTE contracts with sane IV (depth).
@@ -452,6 +503,7 @@ def project_vendor_snapshot_window(
             "source": "option_snapshot",
             "dry_run": True,
             "rows": len(out_rows),
+            "degraded_sessions": sorted(d.isoformat() for d in degraded),
             "sample": [
                 {
                     "option_ticker": r[1],
@@ -462,11 +514,26 @@ def project_vendor_snapshot_window(
                 for r in out_rows[:3]
             ],
         }
+    dropped = 0
+    if degraded:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                DELETE FROM {TABLE_OPTION_IV_RECONSTRUCTED_DAILY}
+                WHERE symbol = %s AND trade_date = ANY(%s) AND solver_status = 'vendor_snapshot'
+                """,
+                (sym, sorted(degraded)),
+            )
+            dropped = int(cur.rowcount or 0)
+        if not out_rows:
+            conn.commit()
     n = upsert_reconstructed(conn, out_rows)
     return {
         "symbol": sym,
         "source": "option_snapshot",
         "rows_written": n,
+        "degraded_sessions": sorted(d.isoformat() for d in degraded),
+        "degraded_rows_dropped": dropped,
     }
 
 

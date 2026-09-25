@@ -133,3 +133,88 @@ def test_vendor_projection_requires_the_row_to_be_fetched_near_its_session():
 
     project_vendor_snapshot_window(_K(vendor=[], daily=[]), "PLTR", date(2026, 8, 5), date(2026, 8, 7), dry_run=True)
     assert any("fetched_at" in q and "<= 3" in q for q in seen)
+
+
+# ─── 0.118.0: a partial EOD snapshot is not projected ───
+
+from bifrost_research.engines.volatility import iv_solver as ivs  # noqa: E402
+
+
+class _StatCur:
+    def __init__(self, conn) -> None:
+        self.conn, self._rows, self.rowcount = conn, [], 0
+
+    def execute(self, sql, params=None) -> None:
+        self.conn.sql.append(sql)
+        if "percentile_cont" in sql:
+            self._rows = self.conn.stats
+        elif "v_option_snapshot_with_stock" in sql:
+            self._rows = self.conn.snap
+        elif sql.lstrip().startswith("DELETE"):
+            self.rowcount = 7
+        else:
+            self._rows = []
+
+    def executemany(self, sql, seq) -> None:
+        self.conn.upserts.extend(list(seq))
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a) -> None:
+        return None
+
+
+class _StatConn:
+    def __init__(self, stats, snap=()) -> None:
+        self.stats, self.snap, self.sql, self.upserts, self.commits = list(stats), list(snap), [], [], 0
+
+    def cursor(self):
+        return _StatCur(self)
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def rollback(self) -> None:
+        return None
+
+
+D = [date(2026, 9, d) for d in (15, 16, 17, 18, 21, 22, 23)]
+
+
+def test_partial_snapshot_needs_both_fewer_contracts_and_higher_iv():
+    """CDW 2026-09-22: 27 contracts at 1.21 against ~51 at ~0.46."""
+    stats = [(d, 51, 0.46) for d in D]
+    stats[5] = (D[5], 27, 1.21)
+    assert ivs.degraded_sessions(_StatConn(stats), "CDW", D[4], D[6]) == {D[5]}
+    thin_only = [(d, 51, 0.46) for d in D]
+    thin_only[5] = (D[5], 27, 0.47)  # fewer quotes, same vol: a thin day
+    assert ivs.degraded_sessions(_StatConn(thin_only), "CDW", D[4], D[6]) == set()
+    move_only = [(d, 51, 0.46) for d in D]
+    move_only[5] = (D[5], 50, 1.21)  # full chain, vol up: a real move
+    assert ivs.degraded_sessions(_StatConn(move_only), "CDW", D[4], D[6]) == set()
+
+
+def test_one_prior_session_is_enough_to_judge():
+    """PRU entered the snapshot on 09-21 and broke on 09-22 (38 → 21, 0.26 → 0.83)."""
+    stats = [(D[4], 38, 0.262), (D[5], 21, 0.825), (D[6], 41, 0.263)]
+    assert ivs.degraded_sessions(_StatConn(stats), "PRU", D[4], D[6]) == {D[5]}
+
+
+def test_projection_skips_and_clears_a_partial_session():
+    stats = [(d, 51, 0.46) for d in D]
+    stats[5] = (D[5], 27, 1.21)
+    exp = date(2026, 10, 16)
+    snap = [
+        ("O:CDW261016C00145000", "CDW", D[5], exp, 145.0, "C", 1.21, 147.43, 0.5, 0.01),
+        ("O:CDW261016C00145000", "CDW", D[6], exp, 145.0, "C", 0.45, 146.16, 0.5, 0.01),
+    ]
+    conn = _StatConn(stats, snap)
+    out = ivs.project_vendor_snapshot_window(conn, "CDW", D[4], D[6])
+    assert out["degraded_sessions"] == ["2026-09-22"]
+    assert out["degraded_rows_dropped"] == 7
+    assert [r[2] for r in conn.upserts] == [D[6]]
+    assert any(s.lstrip().startswith("DELETE") and "vendor_snapshot" in s for s in conn.sql)
