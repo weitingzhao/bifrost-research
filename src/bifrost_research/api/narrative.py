@@ -8,6 +8,11 @@ name (`features.stock_signal_scan_daily`), never blended into it (Vision §9.2).
 `sources` answers "what is read": how many filings, from when, how much of it
 the vendor classified, which 10-K sections are in. The model readings those
 sections would feed are not produced here — see `lenses/narrative.py`.
+
+`?symbol=` narrows the window to one name (the Symbol page's Narrative panel)
+and adds `symbol_coverage`: that name's 8-K rows on file, all time. An empty
+window then reads two ways the caller must not confuse — no filing this week
+from a name the feed carries, or a name the feed has never carried.
 """
 
 from __future__ import annotations
@@ -55,9 +60,16 @@ def _iso(v: Any) -> Any:
 def narrative(
     days: int = Query(7, ge=1, le=90),
     limit: int = Query(400, ge=1, le=2000),
+    symbol: str | None = Query(None, min_length=1, max_length=16),
 ) -> dict[str, Any]:
     today = _today_et()
     cutoff = today - timedelta(days=days)
+    # The plugin stores tickers stripped and upper-cased; normalise the input,
+    # never the column, so the (symbol, …) index is still usable.
+    sym = symbol.strip().upper() if symbol else None
+    only_sym = " AND symbol = %s" if sym else ""
+    sym_args: tuple[Any, ...] = (sym,) if sym else ()
+    coverage: dict[str, Any] | None = None
     conn = _connect_or_503()
     try:
         with conn.cursor() as cur:
@@ -91,15 +103,34 @@ def narrative(
                 for s, n, m, p in cur.fetchall()
             ]
 
+            if sym:
+                cur.execute(
+                    """
+                    SELECT COUNT(*), MIN(filing_date), MAX(filing_date)
+                    FROM raw_market.sec_8k_filing
+                    WHERE symbol = %s
+                    """,
+                    (sym,),
+                )
+                n_sym, first_sym, last_sym = cur.fetchone()
+                coverage = {
+                    "symbol": sym,
+                    "filings": int(n_sym or 0),
+                    "first_filed": _iso(first_sym),
+                    "last_filed": _iso(last_sym),
+                }
+
             cur.execute(
                 """
                 SELECT accession_number, symbol, filing_date, items, LEFT(items_text, %s), filing_url
                 FROM raw_market.sec_8k_filing
-                WHERE filing_date >= %s
+                WHERE filing_date >= %s"""
+                + only_sym
+                + """
                 ORDER BY filing_date DESC, symbol
                 LIMIT %s
                 """,
-                (BODY_CHARS, cutoff, limit + 1),
+                (BODY_CHARS, cutoff, *sym_args, limit + 1),
             )
             filings = [
                 {
@@ -121,10 +152,12 @@ def narrative(
                        accession_number, symbol, filing_date, filing_url,
                        primary_category, secondary_category, tertiary_category, supporting_text
                 FROM raw_market.sec_8k_disclosure
-                WHERE filing_date >= %s
+                WHERE filing_date >= %s"""
+                + only_sym
+                + """
                 ORDER BY accession_number, symbol, tertiary_category, fetched_at DESC
                 """,
-                (cutoff,),
+                (cutoff, *sym_args),
             )
             cols = (
                 "accession_number",
@@ -189,6 +222,7 @@ def narrative(
                 },
                 "tenk": tenk,
             },
+            "symbol_coverage": coverage,
             "tags": tags,
             "count": len(tags),
         }

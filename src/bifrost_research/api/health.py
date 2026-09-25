@@ -40,6 +40,7 @@ def run_startup_schema_guard() -> None:
 @router.get("/health")
 def health() -> dict[str, Any]:
     from bifrost_research.copilot.approvals import approval_secret_source
+    from bifrost_research.copilot.harness.persona_eval import agents_enabled
 
     secret_source = approval_secret_source()
     if secret_source == "dev_fallback":
@@ -53,6 +54,11 @@ def health() -> dict[str, Any]:
         # Which key signs approval tokens. "dev_fallback" means the constant in the
         # public repo, i.e. anyone can mint one.
         "approval_secret": secret_source,
+        # Which path the persona eval chain takes in *this* process: LLM agents
+        # (BIFROST_PERSONA_EVAL_AGENTS=1) or the heuristic. The harness CronJob
+        # sets its own copy of the flag; this reports the API's. Read-only —
+        # changing it is a deployment act (Ops).
+        "persona_eval_agents": agents_enabled(),
         "startup_error": _startup_error,
         "version": __version__,
         "domain": "research",
