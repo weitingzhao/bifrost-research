@@ -137,3 +137,19 @@ def test_ai_action_log_and_draft_tables_in_workflow_ddl() -> None:
 def test_schema_constants_match_plan_wave_rs_e3() -> None:
     assert TABLE_RESEARCH_AI_ACTION_LOG == "research.ai_action_log"
     assert TABLE_RESEARCH_AI_DRAFT == "research.ai_draft"
+
+
+def test_the_probed_feature_tables_index_computed_at() -> None:
+    """0.115.0: signal-health reads MAX(computed_at); these four timed out as full scans."""
+    from bifrost_research.schema.ddl import apply_features_ddl
+
+    conn = _FakeConnection()
+    apply_features_ddl(conn)
+    body = " ".join(_joined(conn).split())
+    for table, index in (
+        ("stock_signal_canonical_pnl_daily", "stock_signal_canonical_pnl_computed_at"),
+        ("option_iv_reconstructed_daily", "option_iv_reconstructed_computed_at"),
+        ("option_metric_gex_daily", "option_metric_gex_daily_computed_at"),
+        ("option_metric_atm_iv_daily", "option_metric_atm_iv_daily_computed_at"),
+    ):
+        assert f"CREATE INDEX IF NOT EXISTS {index} ON features.{table} (computed_at)" in body

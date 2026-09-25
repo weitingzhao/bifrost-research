@@ -908,6 +908,16 @@ def _create_option_metric_partitioned_tables(cur: _Cursor) -> None:
         ON {SCHEMA_FEATURES}.option_metric_atm_iv_daily (symbol, trade_date DESC)
         """
     )
+    # computed_at: signal-health reads MAX(computed_at) as the table's age. Without
+    # an index that is a full scan, which the bifrost role's 2s statement_timeout
+    # cancels when the database is busy (0.115.0).
+    # On the partitioned parent, so every partition — and every future one — has it.
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS option_metric_atm_iv_daily_computed_at
+        ON {SCHEMA_FEATURES}.option_metric_atm_iv_daily (computed_at)
+        """
+    )
     cur.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.option_metric_pcr_daily (
@@ -1033,6 +1043,15 @@ def _create_research_tables(cur: _Cursor) -> None:
         f"""
         CREATE INDEX IF NOT EXISTS option_metric_gex_daily_symbol_date
         ON {SCHEMA_FEATURES}.option_metric_gex_daily (symbol, trade_date DESC)
+        """
+    )
+    # computed_at: signal-health reads MAX(computed_at) as the table's age. Without
+    # an index that is a full scan, which the bifrost role's 2s statement_timeout
+    # cancels when the database is busy (0.115.0).
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS option_metric_gex_daily_computed_at
+        ON {SCHEMA_FEATURES}.option_metric_gex_daily (computed_at)
         """
     )
 
@@ -1598,6 +1617,15 @@ def _create_research_tables(cur: _Cursor) -> None:
         ON {SCHEMA_FEATURES}.stock_signal_canonical_pnl_daily (symbol, entry_date, structure)
         """
     )
+    # computed_at: signal-health reads MAX(computed_at) as the table's age. Without
+    # an index that is a full scan, which the bifrost role's 2s statement_timeout
+    # cancels when the database is busy (0.115.0).
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_signal_canonical_pnl_computed_at
+        ON {SCHEMA_FEATURES}.stock_signal_canonical_pnl_daily (computed_at)
+        """
+    )
     _ensure_canonical_pnl_features_pk(cur)
 
     # --- IDS Historical IV Solver: dual-source reconstructed IV ---
@@ -1639,6 +1667,16 @@ def _create_research_tables(cur: _Cursor) -> None:
         CREATE INDEX IF NOT EXISTS option_iv_reconstructed_ok_iv
         ON {SCHEMA_FEATURES}.option_iv_reconstructed_daily (trade_date DESC, symbol)
         WHERE iv IS NOT NULL
+        """
+    )
+    # computed_at: signal-health reads MAX(computed_at) as the table's age. Without
+    # an index that is a full scan, which the bifrost role's 2s statement_timeout
+    # cancels when the database is busy (0.115.0).
+    # Also the fossil purge's predicate (0.109.1 purges by computed_at).
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS option_iv_reconstructed_computed_at
+        ON {SCHEMA_FEATURES}.option_iv_reconstructed_daily (computed_at)
         """
     )
     # Unified ATM preference view: reconstructed first, then live snapshot (IDS-4)

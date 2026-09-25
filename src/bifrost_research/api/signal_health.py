@@ -14,6 +14,11 @@ The whole payload is cached in-process for five minutes (thirty seconds when
 any part of it failed): every page's asof tag and the sidebar read this
 endpoint, and each computation scans the two largest feature tables several
 times over.
+
+Since 0.115.0 a freshness probe no longer scans at all: the age is
+``MAX(computed_at)`` off an index on that column (added to the four tables
+whose probes timed out), and the row count is the planner's estimate
+(``row_count_estimated``). The coverage blocks below still count exactly.
 """
 
 from __future__ import annotations
@@ -117,17 +122,36 @@ def _table_freshness(conn: Any, label: str, table: str) -> dict[str, Any]:
                 out["status"] = "missing"
                 out["row_count"] = 0
                 return out
-            # One scan answers both. A failure here is a probe that did not
-            # finish, never a reason to scan the table a second time.
-            if has_computed_at:
-                cur.execute(f"SELECT COUNT(*)::bigint, MAX(computed_at) FROM {table}")
-                row = cur.fetchone() or (0, None)
-            else:
+            # The row count comes from the planner's statistics, summed over
+            # the leaves so a partitioned parent reads its partitions: an
+            # exact COUNT(*) is the full scan the 2s timeout cancels, and
+            # freshness asks how old, not exactly how many (0.115.0). A leaf
+            # that holds data but was never analysed has no estimate, and only
+            # then is the table counted.
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(c.reltuples) FILTER (WHERE c.reltuples >= 0), 0)::bigint,
+                       COUNT(*) FILTER (WHERE c.reltuples < 0 AND pg_relation_size(c.oid) > 0)
+                FROM pg_partition_tree(to_regclass(%s)) p
+                JOIN pg_class c ON c.oid = p.relid
+                WHERE p.isleaf
+                """,
+                (table,),
+            )
+            estimate, unanalysed = cur.fetchone() or (0, 0)
+            if unanalysed:
                 cur.execute(f"SELECT COUNT(*)::bigint FROM {table}")
-                cnt = cur.fetchone()
-                row = (cnt[0] if cnt else 0, None)
-        count = int(row[0] or 0)
-        max_ts = row[1]
+                count = int((cur.fetchone() or (0,))[0] or 0)
+                out["row_count_estimated"] = False
+            else:
+                count = int(estimate or 0)
+                out["row_count_estimated"] = True
+            # Answered from the computed_at index (0.115.0) — a backward index
+            # scan, not a read of the table.
+            max_ts = None
+            if has_computed_at:
+                cur.execute(f"SELECT MAX(computed_at) FROM {table}")
+                max_ts = (cur.fetchone() or (None,))[0]
         out["row_count"] = count
         if max_ts is not None:
             if isinstance(max_ts, datetime):

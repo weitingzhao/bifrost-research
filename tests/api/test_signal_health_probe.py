@@ -43,8 +43,8 @@ class _Conn:
         self.rollbacks += 1
 
 
-def test_a_cancelled_scan_is_unprobed_with_no_count() -> None:
-    conn = _Conn([(True, True), RuntimeError("canceling statement due to statement timeout")])
+def test_a_cancelled_probe_is_unprobed_with_no_count() -> None:
+    conn = _Conn([(True, True), (2_311_020, 0), RuntimeError("canceling statement due to statement timeout")])
     out = sh._table_freshness(conn, "canonical_pnl", "features.t")
     assert out["status"] == "unprobed"
     assert out["row_count"] is None
@@ -59,11 +59,22 @@ def test_a_table_that_is_not_there_is_missing() -> None:
     assert out["row_count"] == 0
 
 
-def test_an_answered_probe_reads_its_age() -> None:
+def test_an_answered_probe_reads_its_age_and_estimates_its_rows() -> None:
     at = datetime.now(UTC)
-    out = sh._table_freshness(_Conn([(True, True), (2_312_255, at)]), "canonical_pnl", "features.t")
+    conn = _Conn([(True, True), (2_311_020, 0), (at,)])
+    out = sh._table_freshness(conn, "canonical_pnl", "features.t")
     assert out["status"] == "fresh"
-    assert out["row_count"] == 2_312_255
+    assert out["row_count"] == 2_311_020
+    assert out["row_count_estimated"] is True
+    assert conn.script == []  # three catalogue/index reads, no COUNT(*)
+
+
+def test_a_leaf_never_analysed_is_counted_exactly() -> None:
+    at = datetime.now(UTC)
+    conn = _Conn([(True, True), (0, 1), (143,), (at,)])
+    out = sh._table_freshness(conn, "gex_intraday", "features.t")
+    assert out["row_count"] == 143
+    assert out["row_count_estimated"] is False
 
 
 def test_unprobed_neither_degrades_nor_clears_the_roll_up() -> None:
