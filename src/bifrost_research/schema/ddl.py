@@ -1626,6 +1626,23 @@ def _create_research_tables(cur: _Cursor) -> None:
         ON {SCHEMA_FEATURES}.stock_signal_canonical_pnl_daily (computed_at)
         """
     )
+    # Coverage off indexes (0.116.0): signal-health counts distinct values by
+    # walking an index that leads on the column, and counts a breakdown's
+    # minority values off a partial index (the dominant one is the total minus
+    # them). The literals match DOMINANT_* in the engine's coverage_report.
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_signal_canonical_pnl_entry_date
+        ON {SCHEMA_FEATURES}.stock_signal_canonical_pnl_daily (entry_date)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_signal_canonical_pnl_quality_minority
+        ON {SCHEMA_FEATURES}.stock_signal_canonical_pnl_daily (data_quality)
+        WHERE data_quality <> 'iv_interpolated'
+        """
+    )
     _ensure_canonical_pnl_features_pk(cur)
 
     # --- IDS Historical IV Solver: dual-source reconstructed IV ---
@@ -1677,6 +1694,24 @@ def _create_research_tables(cur: _Cursor) -> None:
         f"""
         CREATE INDEX IF NOT EXISTS option_iv_reconstructed_computed_at
         ON {SCHEMA_FEATURES}.option_iv_reconstructed_daily (computed_at)
+        """
+    )
+    # Coverage off indexes (0.116.0): signal-health counts distinct values by
+    # walking an index that leads on the column, and counts a breakdown's
+    # minority values off a partial index (the dominant one is the total minus
+    # them). The literals match DOMINANT_* in the engine's coverage_report.
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS option_iv_reconstructed_status_minority
+        ON {SCHEMA_FEATURES}.option_iv_reconstructed_daily (solver_status)
+        WHERE solver_status <> 'vendor_snapshot'
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS option_iv_reconstructed_iv_null
+        ON {SCHEMA_FEATURES}.option_iv_reconstructed_daily (trade_date)
+        WHERE iv IS NULL
         """
     )
     # Unified ATM preference view: reconstructed first, then live snapshot (IDS-4)

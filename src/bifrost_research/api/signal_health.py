@@ -32,6 +32,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from bifrost_research.db.conn import connect
+from bifrost_research.db.fastcount import estimate_rows
 from bifrost_research.engines.canonical_pnl import coverage_report
 from bifrost_research.schema.schemas import (
     CANONICAL_FEATURE_TABLES,
@@ -122,32 +123,11 @@ def _table_freshness(conn: Any, label: str, table: str) -> dict[str, Any]:
                 out["status"] = "missing"
                 out["row_count"] = 0
                 return out
-            # The row count comes from the planner's statistics, summed over
-            # the leaves so a partitioned parent reads its partitions: an
-            # exact COUNT(*) is the full scan the 2s timeout cancels, and
-            # freshness asks how old, not exactly how many (0.115.0). A leaf
-            # that holds data but was never analysed has no estimate, and only
-            # then is the table counted. pg_partition_tree() returns nothing for
-            # a plain table, so the table itself is the leaf unless it is a
-            # partitioned parent (0.115.1 — 0.115.0 read every plain table as 0).
-            cur.execute(
-                """
-                SELECT COALESCE(SUM(c.reltuples) FILTER (WHERE c.reltuples >= 0), 0)::bigint,
-                       COUNT(*) FILTER (WHERE c.reltuples < 0 AND pg_relation_size(c.oid) > 0)
-                FROM pg_class c
-                WHERE (c.oid = to_regclass(%s) AND c.relkind <> 'p')
-                   OR c.oid IN (SELECT relid FROM pg_partition_tree(to_regclass(%s)) WHERE isleaf)
-                """,
-                (table, table),
-            )
-            estimate, unanalysed = cur.fetchone() or (0, 0)
-            if unanalysed:
-                cur.execute(f"SELECT COUNT(*)::bigint FROM {table}")
-                count = int((cur.fetchone() or (0,))[0] or 0)
-                out["row_count_estimated"] = False
-            else:
-                count = int(estimate or 0)
-                out["row_count_estimated"] = True
+            # The row count is the planner's estimate (db/fastcount): an exact
+            # COUNT(*) is the full scan the 2s timeout cancels, and freshness
+            # asks how old, not exactly how many.
+            count, estimated = estimate_rows(cur, table)
+            out["row_count_estimated"] = estimated
             # Answered from the computed_at index (0.115.0) — a backward index
             # scan, not a read of the table.
             max_ts = None
@@ -232,7 +212,7 @@ def _iv_reconstruction(conn: Any) -> dict[str, Any]:
 
     if iv_coverage_report is not None:
         try:
-            return iv_coverage_report(conn)
+            return iv_coverage_report(conn, fast=True)
         except Exception as exc:
             logger.debug("iv_solver.coverage_report unavailable: %s", exc)
             try:
@@ -337,7 +317,7 @@ def _compute_signal_health() -> dict[str, Any]:
         hyp = _hypothesis_counts(conn)
         pnl_cov: dict[str, Any] = {}
         try:
-            pnl_cov = coverage_report(conn)
+            pnl_cov = coverage_report(conn, fast=True)
         except Exception as exc:
             logger.debug("canonical_pnl coverage unavailable: %s", exc)
             try:
@@ -363,6 +343,7 @@ def _compute_signal_health() -> dict[str, Any]:
                     "rows": pnl_cov.get("rows"),
                     "symbols": pnl_cov.get("symbols"),
                     "by_quality": pnl_cov.get("by_quality"),
+                    "rows_estimated": pnl_cov.get("rows_estimated"),
                     # Carried like iv_reconstruction's: a block that did not
                     # run and a block that found nothing both arrive as
                     # empties, and only this tells them apart.

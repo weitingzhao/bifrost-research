@@ -14,6 +14,7 @@ import math
 from datetime import date, datetime, timezone
 from typing import Any, Literal, Sequence
 
+from bifrost_research.db.fastcount import breakdown_with_dominant, distinct_count, estimate_rows
 from bifrost_research.db.upsert import batch_upsert
 from bifrost_research.engines.backtest.canonical_pnl import bs_delta, bs_price
 from bifrost_research.schema.schemas import TABLE_OPTION_IV_RECONSTRUCTED_DAILY
@@ -529,7 +530,44 @@ def run_cohort(
     }
 
 
-def coverage_report(conn: Any) -> dict[str, Any]:
+#: The solver_status nearly every row carries; the rest are counted off a
+#: partial index (0.116.0).
+DOMINANT_STATUS = "vendor_snapshot"
+
+
+def _coverage_fast(conn: Any) -> dict[str, Any]:
+    """The same report without a full scan (0.116.0) — rows are the planner's estimate."""
+    table = TABLE_OPTION_IV_RECONSTRUCTED_DAILY
+    with conn.cursor() as cur:
+        total, estimated = estimate_rows(cur, table)
+        by_status = breakdown_with_dominant(cur, table, "solver_status", DOMINANT_STATUS, total)
+        symbols = distinct_count(cur, table, "symbol")
+        dates = distinct_count(cur, table, "trade_date")
+        # Rows without an IV are the few; counted off the partial index.
+        cur.execute(f"SELECT COUNT(*)::bigint FROM {table} WHERE iv IS NULL")
+        without_iv = int((cur.fetchone() or (0,))[0] or 0)
+    ok = int(by_status.get("ok") or 0) + int(by_status.get("vendor_snapshot") or 0)
+    return {
+        "rows": total,
+        "rows_estimated": estimated,
+        "symbols": symbols,
+        "distinct_dates": dates,
+        "with_iv": max(total - without_iv, 0),
+        "by_status": by_status,
+        "solver_ok_pct": (ok / total) if total else None,
+    }
+
+
+def coverage_report(conn: Any, *, fast: bool = False) -> dict[str, Any]:
+    """Coverage of the reconstructed-IV table.
+
+    ``fast`` reads it off indexes and the planner's row estimate — what a
+    reader-facing endpoint under the 2s statement timeout needs. Without it
+    the counts are exact full scans, which a cohort run's own summary wants
+    right after it writes.
+    """
+    if fast:
+        return _coverage_fast(conn)
     with conn.cursor() as cur:
         cur.execute(
             f"""

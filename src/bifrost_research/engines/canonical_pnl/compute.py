@@ -7,6 +7,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any, Mapping, Sequence
 
+from bifrost_research.db.fastcount import breakdown_with_dominant, distinct_count, estimate_rows
 from bifrost_research.engines.volatility.atm_iv import IV30_MAX_DTE, IV30_MIN_DTE, iv30_from_expiries
 from bifrost_research.engines.backtest.canonical_pnl import (
     STRUCTURES,
@@ -183,7 +184,43 @@ def upsert_marks(conn: Any, rows: Sequence[Mapping[str, Any]]) -> int:
     return len(payloads)
 
 
-def coverage_report(conn: Any) -> dict[str, Any]:
+#: The data_quality nearly every row carries; the rest are counted off a
+#: partial index (0.116.0).
+DOMINANT_QUALITY = "iv_interpolated"
+
+
+def _coverage_fast(conn: Any) -> dict[str, Any]:
+    """The same report without a full scan (0.116.0) — rows are the planner's estimate."""
+    table = TABLE_STOCK_SIGNAL_CANONICAL_PNL_DAILY
+    with conn.cursor() as cur:
+        total, estimated = estimate_rows(cur, table)
+        by_q = breakdown_with_dominant(cur, table, "data_quality", DOMINANT_QUALITY, total)
+        symbols = distinct_count(cur, table, "symbol")
+        entry_dates = distinct_count(cur, table, "entry_date")
+    insuff = int(by_q.get("insufficient_chain") or 0)
+    return {
+        "symbols": symbols,
+        "entry_dates": entry_dates,
+        "rows": total,
+        "rows_estimated": estimated,
+        "by_quality": by_q,
+        "insufficient_pct": (insuff / total) if total else None,
+        "mart_table": TABLE_MART_CANONICAL_PNL_DAILY,
+        "features_table": TABLE_STOCK_SIGNAL_CANONICAL_PNL_DAILY,
+        "dw_schema": SCHEMA_DW_STOCK,
+    }
+
+
+def coverage_report(conn: Any, *, fast: bool = False) -> dict[str, Any]:
+    """Coverage of the canonical P&L features table.
+
+    ``fast`` reads it off indexes and the planner's row estimate — what a
+    reader-facing endpoint under the 2s statement timeout needs. Without it
+    the counts are exact full scans, which a batch run's own summary wants
+    right after it writes (before autoanalyze has refreshed the estimate).
+    """
+    if fast:
+        return _coverage_fast(conn)
     with conn.cursor() as cur:
         cur.execute(
             f"""

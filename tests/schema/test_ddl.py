@@ -153,3 +153,24 @@ def test_the_probed_feature_tables_index_computed_at() -> None:
         ("option_metric_atm_iv_daily", "option_metric_atm_iv_daily_computed_at"),
     ):
         assert f"CREATE INDEX IF NOT EXISTS {index} ON features.{table} (computed_at)" in body
+
+
+def test_the_coverage_indexes_match_the_fast_reports() -> None:
+    """0.116.0: the partial indexes' literals are the engines' dominant values, or the planner cannot use them."""
+    from bifrost_research.engines.canonical_pnl.compute import DOMINANT_QUALITY
+    from bifrost_research.engines.volatility.iv_solver import DOMINANT_STATUS
+    from bifrost_research.schema.ddl import apply_features_ddl
+
+    conn = _FakeConnection()
+    apply_features_ddl(conn)
+    body = " ".join(_joined(conn).split())
+    assert (
+        "stock_signal_canonical_pnl_quality_minority ON features.stock_signal_canonical_pnl_daily "
+        f"(data_quality) WHERE data_quality <> '{DOMINANT_QUALITY}'"
+    ) in body
+    assert (
+        "option_iv_reconstructed_status_minority ON features.option_iv_reconstructed_daily "
+        f"(solver_status) WHERE solver_status <> '{DOMINANT_STATUS}'"
+    ) in body
+    assert "stock_signal_canonical_pnl_entry_date ON features.stock_signal_canonical_pnl_daily (entry_date)" in body
+    assert "option_iv_reconstructed_iv_null ON features.option_iv_reconstructed_daily (trade_date) WHERE iv IS NULL" in body
