@@ -59,6 +59,10 @@ ATM_MAX_MONEYNESS = 0.10
 # for 6.6% of days, all on thin names; PLTR / NVDA / SPY lost none.
 ATM_MIN_IV = 0.05
 ATM_MIN_CONTRACTS = 2
+# An expiry priced by Brent alone also needs both a call and a put near spot (0.121.0):
+# a pair of same-side last trades still inverted into noise on thin names. Over the
+# Brent era (2024-09 → 2026-08-04, 46 symbols) this took suspects 17 → 3 for 2.7% of
+# days, all on thin names (CMS, WBS, ALLE); vendor-priced expiries are unaffected.
 
 
 def _row_to_dict(row: Any, columns: Sequence[str]) -> Dict[str, Any]:
@@ -230,11 +234,12 @@ def fetch_reconstructed_iv_rows_for_date(
         "expiry",
         "strike",
         "option_right",
+        "solver_status",
     )
     syms = [str(s).strip().upper() for s in (underlyings or []) if str(s).strip()]
     base = """
         SELECT option_ticker, symbol AS underlying, iv, spot AS underlying_price,
-               expiry, strike, option_right
+               expiry, strike, option_right, solver_status
         FROM features.option_iv_reconstructed_daily
         WHERE trade_date = %s
           AND iv IS NOT NULL AND iv > 0
@@ -301,7 +306,7 @@ def fetch_snapshot_iv_rows_for_date(
                 (trade_date,),
             )
         raw = cur.fetchall() if hasattr(cur, "fetchall") else []
-    return [_row_to_dict(r, cols) for r in (raw or [])]
+    return [{**_row_to_dict(r, cols), "solver_status": "vendor_snapshot"} for r in (raw or [])]
 
 
 def fetch_option_daily_brent_rows_for_date(
@@ -357,6 +362,7 @@ def fetch_option_daily_brent_rows_for_date(
                 "expiry": exp,
                 "strike": strike_f,
                 "option_right": right,
+                "solver_status": "ok",
             }
         )
     return out
@@ -430,6 +436,9 @@ def compute_atm_iv_for_date(
             continue
         items = build_expiry_side_items(rows, spot, max_moneyness=ATM_MAX_MONEYNESS, min_iv=ATM_MIN_IV)
         if len(items) < ATM_MIN_CONTRACTS:
+            continue
+        vendor = any(r.get("solver_status") == "vendor_snapshot" for r in rows)
+        if not vendor and not (any(i[1] is not None for i in items) and any(i[2] is not None for i in items)):
             continue
         atm_iv, _iv_c, _iv_p, best_strike = atm_iv_from_side_items(items)
         if atm_iv is None or best_strike is None:

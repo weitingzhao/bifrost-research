@@ -45,7 +45,7 @@ class _FakeCursor:
             self.parent._fetchall = rows
         elif "features.option_iv_reconstructed_daily" in q:
             self.parent._fetchall = [
-                (r["option_ticker"], r["underlying"], r["iv"], r["underlying_price"], r["expiry"], r["strike"], r["option_right"])
+                (r["option_ticker"], r["underlying"], r["iv"], r["underlying_price"], r["expiry"], r["strike"], r["option_right"], r.get("solver_status"))
                 for r in self.parent.recon_rows
             ]
         elif "raw_market.option_daily" in q:
@@ -376,3 +376,29 @@ def test_ivs_below_five_vol_do_not_count() -> None:
     compute_atm_iv_for_date(conn, trade_date=td, underlyings=["PLTR"])
     (row,) = conn.upserts
     assert row[4] == 0.59  # 310C and 300P; the 0.037 call is not a price
+
+
+
+# ─── 0.121.0: an expiry priced by Brent alone needs a call and a put ───
+
+
+def test_a_brent_only_expiry_with_two_calls_gets_no_row() -> None:
+    td, exp, spot = date(2025, 3, 3), date(2025, 3, 28), 50.0
+    conn = _FakeConn()
+    conn.daily_rows = [
+        _bar("O:X1", 50.0, "C", 0.40, spot, td, exp),
+        _bar("O:X2", 52.5, "C", 0.38, spot, td, exp),
+    ]
+    assert compute_atm_iv_for_date(conn, trade_date=td, underlyings=["PLTR"])["rows_written"] == 0
+
+
+def test_a_vendor_priced_expiry_with_two_calls_keeps_its_row() -> None:
+    td, exp, spot = date(2026, 9, 21), date(2026, 10, 16), 50.0
+    conn = _FakeConn()
+    conn.recon_rows = [
+        {**_row(td, "O:X1", "PLTR", 50.0, "C", 0.40, spot, exp), "solver_status": "vendor_snapshot"},
+        {**_row(td, "O:X2", "PLTR", 52.5, "C", 0.38, spot, exp), "solver_status": "vendor_snapshot"},
+    ]
+    compute_atm_iv_for_date(conn, trade_date=td, underlyings=["PLTR"])
+    (row,) = conn.upserts
+    assert row[4] == 0.40

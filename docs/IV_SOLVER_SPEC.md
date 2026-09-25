@@ -82,7 +82,7 @@ Python helper `fetch_unified_iv_rows_for_date` (and optional SQL view `features.
 | IDS-4 | `canonical_pnl.insufficient_pct` &lt; 0.15 |
 | IDS-5 | Signal Health exposes `iv_reconstruction` block; package `0.35.0` |
 
-## 2026-09 correction (research 0.106.0 – 0.118.0)
+## 2026-09 correction (research 0.106.0 – 0.121.0)
 
 **The depth path above was fossil data.** Until plugin P3 (2026-09-08) `option_snapshot.snapshot_ts`
 was a contract's *last trade*, so the "~290 dates" in the recon table were contracts fetched in
@@ -97,7 +97,7 @@ What replaced it:
 | Piece | Now |
 |-------|-----|
 | ATM strike | within ±10% of spot, else the expiry gets no row |
-| ATM evidence | an expiry needs two priced contracts near spot, each at ≥ 5 vol (0.111.0: one stale last trade was most of the 280 readings left after the first repair) |
+| ATM evidence | an expiry needs two priced contracts near spot, each at ≥ 5 vol (0.111.0: one stale last trade was most of the 280 readings left after the first repair); one priced by Brent alone also needs a call and a put (0.121.0) |
 | ATM source | reconstructed rows, plus Brent solved in place from `option_daily` for contracts they lack (±10%, DTE 5–90). Not stored: ATM is the only reader, and storing the universe's two years would be ~23M rows |
 | Vendor vs Brent | a contract-day with vendor IV keeps it |
 | Daily solver | vendor projection only (0.111.0); Brent is solved where it is read — ATM, and Trade's greeks route — not stored |
