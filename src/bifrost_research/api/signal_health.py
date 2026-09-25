@@ -1,11 +1,26 @@
 """Signal Health aggregate — Wave 14.
 
 GET /research/signal-health
+
+Three kinds of "no reading" are kept apart (0.114.0). A table that does not
+exist is ``missing``; a table that exists and holds nothing is ``empty``; a
+probe that did not finish — the ``bifrost`` role's 2s ``statement_timeout``
+cancelling a full scan of a 900 MB feature table while the database is busy —
+is ``unprobed``, with its error and no row count. Until 0.114.0 every failure
+read ``missing`` with 0 rows, which turned the console's asof amber over a
+timeout and told the reader a 2.3M-row table was gone.
+
+The whole payload is cached in-process for five minutes (thirty seconds when
+any part of it failed): every page's asof tag and the sidebar read this
+endpoint, and each computation scans the two largest feature tables several
+times over.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -75,25 +90,39 @@ def _table_freshness(conn: Any, label: str, table: str) -> dict[str, Any]:
         "label": label,
         "table": table,
         "max_computed_at": None,
-        "row_count": 0,
-        "status": "missing",
+        # None until the probe answers: a count nobody took is not zero.
+        "row_count": None,
+        "status": "unprobed",
         "age_hours": None,
         "sla_hours": freshness_sla_hours(),
     }
     try:
         with conn.cursor() as cur:
-            # Prefer computed_at; fall back to as_of_date / trade_date presence
-            try:
-                cur.execute(
-                    f"""
-                    SELECT COUNT(*)::bigint,
-                           MAX(computed_at)
-                    FROM {table}
-                    """
-                )
+            # Catalogue lookups first — they cannot time out on the table's
+            # size, and they are what tells "not there" from "not answered".
+            cur.execute(
+                """
+                SELECT to_regclass(%s) IS NOT NULL,
+                       EXISTS (
+                           SELECT 1 FROM pg_attribute
+                           WHERE attrelid = to_regclass(%s)
+                             AND attname = 'computed_at'
+                             AND NOT attisdropped
+                       )
+                """,
+                (table, table),
+            )
+            exists, has_computed_at = cur.fetchone() or (False, False)
+            if not exists:
+                out["status"] = "missing"
+                out["row_count"] = 0
+                return out
+            # One scan answers both. A failure here is a probe that did not
+            # finish, never a reason to scan the table a second time.
+            if has_computed_at:
+                cur.execute(f"SELECT COUNT(*)::bigint, MAX(computed_at) FROM {table}")
                 row = cur.fetchone() or (0, None)
-            except Exception:
-                conn.rollback()
+            else:
                 cur.execute(f"SELECT COUNT(*)::bigint FROM {table}")
                 cnt = cur.fetchone()
                 row = (cnt[0] if cnt else 0, None)
@@ -123,12 +152,15 @@ def _table_freshness(conn: Any, label: str, table: str) -> dict[str, Any]:
         else:
             out["status"] = "empty"
     except Exception as exc:
-        logger.debug("freshness failed for %s: %s", table, exc)
+        # Logged at info: a probe that did not finish is what a reader of the
+        # console needs explained, and debug is where it used to disappear.
+        logger.info("freshness probe did not finish for %s: %s", table, str(exc).splitlines()[0] if str(exc) else exc)
         try:
             conn.rollback()
         except Exception:
             pass
-        out["status"] = "missing"
+        out["status"] = "unprobed"
+        out["row_count"] = None
         out["error"] = str(exc)
     return out
 
@@ -246,18 +278,25 @@ def _iv_reconstruction(conn: Any) -> dict[str, Any]:
 
 
 def _overall_from_freshness(freshness: list[dict[str, Any]]) -> str:
-    """Roll up table freshness rows — stale and missing both degrade."""
+    """Roll up table freshness rows — stale and missing both degrade.
+
+    An ``unprobed`` row says nothing about the table, so it neither degrades
+    the roll-up nor clears it; when no row answered at all the roll-up is
+    ``unknown``.
+    """
     if not freshness:
         return "empty"
-    if all(f.get("status") in ("empty", "missing") for f in freshness):
+    probed = [f for f in freshness if f.get("status") != "unprobed"]
+    if not probed:
+        return "unknown"
+    if all(f.get("status") in ("empty", "missing") for f in probed):
         return "empty"
-    if any(f.get("status") in ("missing", "stale") for f in freshness):
+    if any(f.get("status") in ("missing", "stale") for f in probed):
         return "degraded"
     return "ok"
 
 
-@router.get("")
-def signal_health() -> dict[str, Any]:
+def _compute_signal_health() -> dict[str, Any]:
     conn = _connect_or_503()
     try:
         freshness = [_table_freshness(conn, label, table) for label, table in _FRESHNESS_TABLES]
@@ -298,6 +337,10 @@ def signal_health() -> dict[str, Any]:
                     "rows": pnl_cov.get("rows"),
                     "symbols": pnl_cov.get("symbols"),
                     "by_quality": pnl_cov.get("by_quality"),
+                    # Carried like iv_reconstruction's: a block that did not
+                    # run and a block that found nothing both arrive as
+                    # empties, and only this tells them apart.
+                    **({"error": pnl_cov["error"]} if pnl_cov.get("error") else {}),
                 },
                 "iv_reconstruction": iv_recon,
             }
@@ -312,11 +355,64 @@ def signal_health() -> dict[str, Any]:
             pass
 
 
+CACHE_TTL_SECONDS = 300.0
+#: A payload with any part that did not finish is kept only briefly, so the
+#: next reader retries rather than inheriting a timeout for five minutes.
+PARTIAL_CACHE_TTL_SECONDS = 30.0
+
+_cache_lock = threading.Lock()
+_cache: dict[str, Any] = {"at": 0.0, "ttl": 0.0, "payload": None}
+
+
+def _payload_is_partial(payload: dict[str, Any]) -> bool:
+    data = payload.get("data") or {}
+    rows = list(data.get("freshness") or []) + list(data.get("extra_tables") or [])
+    if any(r.get("status") == "unprobed" for r in rows):
+        return True
+    blocks = (
+        data.get("iv_reconstruction") or {},
+        data.get("hypotheses") or {},
+        data.get("canonical_pnl") or {},
+    )
+    return any(b.get("error") for b in blocks)
+
+
+def _cached() -> dict[str, Any] | None:
+    payload = _cache["payload"]
+    if payload is not None and time.monotonic() - float(_cache["at"]) < float(_cache["ttl"]):
+        return payload
+    return None
+
+
+def reset_cache() -> None:
+    """Drop the cached payload (tests; an operator who wants a re-read restarts the pod)."""
+    with _cache_lock:
+        _cache.update(at=0.0, ttl=0.0, payload=None)
+
+
+@router.get("")
+def signal_health() -> dict[str, Any]:
+    hit = _cached()
+    if hit is not None:
+        return hit
+    # One computation at a time: readers that arrive while it runs wait for
+    # its answer instead of starting their own scans.
+    with _cache_lock:
+        hit = _cached()
+        if hit is not None:
+            return hit
+        payload = _compute_signal_health()
+        ttl = PARTIAL_CACHE_TTL_SECONDS if _payload_is_partial(payload) else CACHE_TTL_SECONDS
+        _cache.update(at=time.monotonic(), ttl=ttl, payload=payload)
+        return payload
+
+
 __all__ = [
-    "router",
+    "FRESH_SLA_HOURS",
+    "WEEKEND_SLA_HOURS",
     "_overall_from_freshness",
     "freshness_sla_hours",
     "freshness_status_from_age",
-    "FRESH_SLA_HOURS",
-    "WEEKEND_SLA_HOURS",
+    "reset_cache",
+    "router",
 ]
