@@ -72,7 +72,7 @@ Trade FE `EventRadarPage` shows the events table when API returns rows.
 "News source not configured" is replaced by a "No events yet" empty state that
 points at the Research-workspace input path once this ingest Cron exists.
 
-## Local watcher (2026-10-02)
+## Local watcher (2026-09-24)
 
 The Dagster schedule that owns the event-radar slot runs in a pod with no
 mount for `event-radar-input-pvc`, so cluster runs always idle; the Owner's

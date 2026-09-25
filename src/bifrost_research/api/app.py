@@ -25,6 +25,7 @@ from bifrost_research.api.policy_template import router as policy_template_route
 from bifrost_research.api.health import router as health_router
 from bifrost_research.api.hypothesis import router as hypothesis_router
 from bifrost_research.api.lenses import router as lenses_router
+from bifrost_research.api.narrative import router as narrative_router
 from bifrost_research.api.opex_cycle import router as opex_cycle_router
 from bifrost_research.api.options import router as options_router
 from bifrost_research.api.order_intents import router as order_intents_router
@@ -77,6 +78,7 @@ def create_app() -> FastAPI:
     app.include_router(wave4_router)
     app.include_router(hypothesis_router)
     app.include_router(saved_screen_router)
+    app.include_router(narrative_router)
     app.include_router(candidates_router)
     app.include_router(harness_router)
     app.include_router(policy_template_router)
