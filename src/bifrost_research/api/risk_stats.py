@@ -1,7 +1,7 @@
 """Beta, correlation and the realised-vol cone, computed on request (RS2).
 
 GET /analytics/risk/beta?symbols=NVDA,MU&benchmark=SPY&windows=60,252
-GET /analytics/risk/correlation?symbols=NVDA,MU,SPY&window=60
+GET /analytics/risk/correlation?symbols=NVDA,MU,SPY&window=60[&as_of=2026-06-30]   (as_of: 0.124.0)
 GET /analytics/vol/rv-cone?symbol=NVDA&tenors=10,20,30,60,90&years=3
 GET /analytics/vol/earnings-moves?symbol=PLTR&limit=8   (research 0.122.0)
 
@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import math
 from collections import defaultdict
+from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -86,20 +87,37 @@ def _ints(raw: str, *, what: str, maximum: int) -> list[int]:
     return sorted(out)
 
 
-def _closes(conn: Any, symbols: list[str], lookback_days: int) -> dict[str, dict[Any, float]]:
-    """``{symbol: {bar_date: close}}`` — positive closes only, so a bad row cannot make a return."""
+def _closes(
+    conn: Any, symbols: list[str], lookback_days: int, *, as_of: date | None = None
+) -> dict[str, dict[Any, float]]:
+    """``{symbol: {bar_date: close}}`` — positive closes only, so a bad row cannot make a return.
+    With ``as_of`` the window ends at that date instead of today, and nothing after it is read."""
     with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT symbol, bar_date, close::float
-            FROM {STOCK_DAILY}
-            WHERE symbol = ANY(%s)
-              AND bar_date >= (CURRENT_DATE - %s * INTERVAL '1 day')
-              AND close IS NOT NULL AND close > 0
-            ORDER BY symbol, bar_date ASC
-            """,
-            (symbols, lookback_days),
-        )
+        if as_of is None:
+            cur.execute(
+                f"""
+                SELECT symbol, bar_date, close::float
+                FROM {STOCK_DAILY}
+                WHERE symbol = ANY(%s)
+                  AND bar_date >= (CURRENT_DATE - %s * INTERVAL '1 day')
+                  AND close IS NOT NULL AND close > 0
+                ORDER BY symbol, bar_date ASC
+                """,
+                (symbols, lookback_days),
+            )
+        else:
+            cur.execute(
+                f"""
+                SELECT symbol, bar_date, close::float
+                FROM {STOCK_DAILY}
+                WHERE symbol = ANY(%s)
+                  AND bar_date <= %s
+                  AND bar_date >= (%s::date - %s * INTERVAL '1 day')
+                  AND close IS NOT NULL AND close > 0
+                ORDER BY symbol, bar_date ASC
+                """,
+                (symbols, as_of, as_of, lookback_days),
+            )
         rows = cur.fetchall() or []
     out: dict[str, dict[Any, float]] = defaultdict(dict)
     for symbol, bar_date, close in rows:
@@ -168,12 +186,22 @@ def get_beta(
 def get_correlation(
     symbols: str = Query(..., description=f"Comma-separated symbols (max {MAX_SYMBOLS})"),
     window: int = Query(60, ge=2, le=MAX_WINDOW),
+    as_of: date | None = Query(
+        None,
+        description="Read the matrix as it stood at this date's close — the last session on or before it.",
+    ),
 ) -> dict[str, Any]:
-    """Pairwise return correlation, each pair on its own date intersection."""
+    """Pairwise return correlation, each pair on its own date intersection.
+
+    ``as_of`` walks the same matrix back in time: History's correlation-over-time
+    line is one of these per session, so the line and Risk's matrix are one
+    implementation (0.124.0). The answer's ``as_of`` is the last bar that took
+    part, which on a holiday is the session before the date asked for.
+    """
     syms = _symbols(symbols)
     conn = _connect_or_503()
     try:
-        closes = _closes(conn, syms, _sessions_to_days(window))
+        closes = _closes(conn, syms, _sessions_to_days(window), as_of=as_of)
     finally:
         try:
             conn.close()

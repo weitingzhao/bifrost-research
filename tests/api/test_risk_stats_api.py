@@ -31,6 +31,9 @@ class _Cur:
     def execute(self, sql: str, params: Any = None) -> None:
         wanted = set(params[0]) if params else set()
         self._rows = [r for r in self._all if r[0] in wanted]
+        if params and len(params) == 4:  # (symbols, as_of, as_of, lookback_days)
+            end, lookback = params[1], params[3]
+            self._rows = [r for r in self._rows if end - timedelta(days=lookback) <= r[1] <= end]
 
     def fetchall(self) -> list[tuple[Any, ...]]:
         return list(self._rows)
@@ -124,6 +127,25 @@ def test_correlation_matrix_is_symmetric_and_counts_its_pairs() -> None:
     # SPY has 39 shared returns — under 80% of the 60-session window.
     assert matrix["NVDA"]["SPY"]["rho"] is None and matrix["NVDA"]["SPY"]["n"] == 39
     assert data["n_pairs"] == 1
+
+
+def test_correlation_as_of_reads_nothing_after_the_date_asked_for() -> None:
+    # NVDA and MU zig-zag together for 100 sessions, then MU flips phase.
+    days = [START + timedelta(days=i) for i in range(160)]
+    rows = [("NVDA", d, 101.0 if i % 2 else 100.0) for i, d in enumerate(days)]
+    rows += [("MU", d, (101.0 if i % 2 else 100.0) if i < 100 else (100.0 if i % 2 else 101.0)) for i, d in enumerate(days)]
+    client = _client(rows)
+    with patch("bifrost_research.api.risk_stats.connect", return_value=_Conn(rows)):
+        then = client.get(
+            "/analytics/risk/correlation",
+            params={"symbols": "NVDA,MU", "window": "60", "as_of": str(days[99])},
+        ).json()["data"]
+        now = client.get("/analytics/risk/correlation", params={"symbols": "NVDA,MU", "window": "60"}).json()["data"]
+    assert then["as_of"] == str(days[99])
+    assert then["matrix"]["NVDA"]["MU"]["rho"] > 0.99
+    # Without as_of the window ends today and sees the flip.
+    assert now["as_of"] == str(days[-1])
+    assert now["matrix"]["NVDA"]["MU"]["rho"] < -0.99
 
 
 def test_rv_cone_carries_current_reading_sessions_and_as_of() -> None:
