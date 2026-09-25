@@ -45,6 +45,8 @@ class _Cur:
             self._rows = []
         elif flat.startswith("SELECT COUNT(*), MIN(filing_date), MAX(filing_date)"):
             self._rows = [self.coverage]
+        elif flat.startswith("SELECT DISTINCT filing_date"):
+            self._rows = [(FILING[2],)] if FILING[1] in params else []
         elif "FROM raw_market.sec_8k_filing" in flat and "items_text" in flat:
             # The filing is ZZZ's: a read narrowed to another name does not see it.
             self._rows = [FILING] if "symbol = %s" not in flat or FILING[1] in params else []
@@ -105,3 +107,18 @@ def test_a_name_the_feed_never_carried_reads_zero_not_missing(monkeypatch) -> No
     body = _client(monkeypatch, _Conn()).get("/research/narrative?symbol=QQQQ").json()["data"]
     assert body["symbol_coverage"] == {"symbol": "QQQQ", "filings": 0, "first_filed": None, "last_filed": None}
     assert body["tags"] == []
+
+
+
+def test_earnings_dates_are_the_names_item_202_filings(monkeypatch) -> None:
+    conn = _Conn(coverage=(14, date(2029, 9, 3), date(2031, 3, 11)))
+    body = _client(monkeypatch, conn).get("/research/narrative/earnings?symbol=%20zzz").json()["data"]
+    assert body["symbol"] == "ZZZ"
+    assert body["dates"] == ["2031-03-11"]
+    assert body["filings"] == 14
+    assert any("'2.02' = ANY(items)" in sql for sql, _ in conn.calls)
+
+
+def test_earnings_for_a_name_the_feed_never_carried_says_so(monkeypatch) -> None:
+    body = _client(monkeypatch, _Conn()).get("/research/narrative/earnings?symbol=QQQQ").json()["data"]
+    assert body["dates"] == [] and body["filings"] == 0

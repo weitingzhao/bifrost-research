@@ -227,3 +227,53 @@ def narrative(
             "count": len(tags),
         }
     )
+
+
+@router.get("/earnings")
+def earnings_dates(symbol: str = Query(..., min_length=1, max_length=16)) -> dict[str, Any]:
+    """Dates this name filed an 8-K carrying Item 2.02 (results of operations) —
+    the earnings dates the feed can vouch for, all of them.
+
+    The History page reads these so an IV30 spike on an earnings print is called an
+    event rather than a store fault (research 0.119.0). The feed carries the
+    plugin's names only; ``filings`` says how many 8-Ks this name has on file at
+    all, so an empty ``dates`` from a name the feed never carried is not read as
+    "no earnings".
+    """
+    sym = symbol.strip().upper()
+    conn = _connect_or_503()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*), MIN(filing_date), MAX(filing_date)
+                FROM raw_market.sec_8k_filing
+                WHERE symbol = %s
+                """,
+                (sym,),
+            )
+            n, first_filed, last_filed = cur.fetchone()
+            cur.execute(
+                """
+                SELECT DISTINCT filing_date
+                FROM raw_market.sec_8k_filing
+                WHERE symbol = %s AND '2.02' = ANY(items)
+                ORDER BY filing_date
+                """,
+                (sym,),
+            )
+            dates = [_iso(r[0]) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.exception("narrative/earnings failed")
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        conn.close()
+    return _ok(
+        {
+            "symbol": sym,
+            "dates": dates,
+            "filings": int(n or 0),
+            "first_filed": _iso(first_filed),
+            "last_filed": _iso(last_filed),
+        }
+    )
