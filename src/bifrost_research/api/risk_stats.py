@@ -3,6 +3,7 @@
 GET /analytics/risk/beta?symbols=NVDA,MU&benchmark=SPY&windows=60,252
 GET /analytics/risk/correlation?symbols=NVDA,MU,SPY&window=60
 GET /analytics/vol/rv-cone?symbol=NVDA&tenors=10,20,30,60,90&years=3
+GET /analytics/vol/earnings-moves?symbol=PLTR&limit=8   (research 0.122.0)
 
 Owner chose compute-on-read over a nightly table: the inputs are five years of
 ``raw_market.stock_daily`` closes, which is small enough to read per request and
@@ -23,6 +24,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from bifrost_research.db.conn import connect
+from bifrost_research.engines.volatility.earnings_moves import earnings_moves
 from bifrost_research.engines.risk_stats import (
     MIN_FILL,
     aligned_returns,
@@ -241,3 +243,29 @@ def get_rv_cone(
             "tenors": rows,
         }
     )
+
+
+@router.get("/vol/earnings-moves")
+def get_earnings_moves(
+    symbol: str = Query(..., min_length=1, max_length=32),
+    limit: int = Query(8, ge=1, le=20),
+) -> dict[str, Any]:
+    """Each recent print's straddle-priced move, the move that came, and the IV crush.
+
+    Print dates are the name's 8-K Item 2.02 filings; ``filing_days`` counts every
+    day it filed an 8-K at all, so an empty ``prints`` from a name the feed never
+    carried reads 0 there, not "no earnings". See ``engines/volatility/earnings_moves``
+    for the two-session window and the pricing.
+    """
+    conn = _connect_or_503()
+    try:
+        body = earnings_moves(conn, symbol, limit=limit)
+    except Exception as exc:
+        logger.exception("vol/earnings-moves failed")
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return _ok(body)
