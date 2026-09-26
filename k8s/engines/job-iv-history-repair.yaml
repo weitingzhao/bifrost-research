@@ -43,7 +43,7 @@ spec:
               exit 1
       containers:
         - name: repair
-          image: 192.168.10.73:30500/bifrost-research:0.126.1
+          image: 192.168.10.73:30500/bifrost-research:0.127.0
           imagePullPolicy: Always
           # No RESEARCH_WATCHLIST: the universe must be research.option_universe,
           # the same one the daily ATM IV / IV percentile / VRP slots use.
