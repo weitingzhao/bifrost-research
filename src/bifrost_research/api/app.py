@@ -24,6 +24,7 @@ from bifrost_research.api.harness import router as harness_router
 from bifrost_research.api.policy_template import router as policy_template_router
 from bifrost_research.api.health import router as health_router
 from bifrost_research.api.hypothesis import router as hypothesis_router
+from bifrost_research.api.iv_cone import router as iv_cone_router
 from bifrost_research.api.lenses import router as lenses_router
 from bifrost_research.api.narrative import router as narrative_router
 from bifrost_research.api.opex_cycle import router as opex_cycle_router
@@ -97,6 +98,7 @@ def create_app() -> FastAPI:
     app.include_router(alerts_router)
     app.include_router(exhibit_router)
     app.include_router(vol_surface_router)
+    app.include_router(iv_cone_router)
     app.include_router(risk_stats_router)
     app.include_router(opex_cycle_router)
     app.include_router(backtest_event_router)
