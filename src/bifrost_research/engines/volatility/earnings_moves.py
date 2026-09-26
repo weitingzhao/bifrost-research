@@ -31,20 +31,17 @@ from statistics import median
 from typing import Any, Sequence
 
 from bifrost_research.engines.backtest.canonical_pnl import bs_price
-from bifrost_research.repositories.earnings_filings import fetch_item_202, split_releases
-
-# 8-K/A amendments and follow-up filings land within days of the release.
-SAME_PRINT_DAYS = 7
-
+from bifrost_research.repositories.earnings_filings import (
+    SAME_PRINT_DAYS,
+    distinct_prints,
+    fetch_item_202,
+    split_releases,
+)
 
 def print_dates(filing_dates: Sequence[date], *, limit: int) -> list[date]:
     """The newest ``limit`` prints, oldest first; filings within ``SAME_PRINT_DAYS``
     of a kept one are the same print."""
-    kept: list[date] = []
-    for d in sorted(set(filing_dates)):
-        if kept and (d - kept[-1]).days <= SAME_PRINT_DAYS:
-            continue
-        kept.append(d)
+    kept = distinct_prints(filing_dates)
     return kept[-limit:] if limit > 0 else kept
 
 

@@ -135,6 +135,8 @@ def test_a_202_filing_that_is_not_a_results_release_is_set_aside(monkeypatch) ->
     body = _client(monkeypatch, conn).get("/research/narrative/earnings?symbol=ZZZ").json()["data"]
     assert body["dates"] == ["2031-02-25", "2031-03-11"]
     assert [(a["filed"], a["release"]) for a in body["set_aside"]] == [("2031-02-18", "2031-02-25")]
+    # Two prints are not a cadence: nothing is estimated.
+    assert body["expected_next"] is None
 
 
 def test_earnings_for_a_name_the_feed_never_carried_says_so(monkeypatch) -> None:

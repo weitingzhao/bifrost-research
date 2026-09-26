@@ -20,13 +20,21 @@ quarter Tesla's deliveries would stand as the latest print for three weeks. A
 name with ``HABIT_MIN`` filings already set aside has shown the habit, and its
 trailing ones are set aside too.
 
+The feed holds no forward calendar, so ``expected_next`` estimates the next print
+as the same quarter's print a year earlier plus 52 weeks — companies report in
+the same week each year. Backtested over the feed on 2026-09-25 (2,107 prints
+with four quarterly prints before them): median miss 0 days, 71% within 3 days,
+90% within 7; the last print plus 13 weeks misses by a median of 5 (72% within
+7). Each answer carries the rule's record on that name.
+
 Read-only: ``raw_market.sec_8k_filing``.
 """
 
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, timedelta
+from statistics import median
 from typing import Any, Sequence
 
 # Every 2.02 filing carries its item headings; they name "results" whatever the
@@ -45,6 +53,19 @@ _RESULTS_WORDS = re.compile(
 
 RELEASE_WITHIN_DAYS = 45
 HABIT_MIN = 2
+
+# 8-K/A amendments and follow-up filings land within days of the release.
+SAME_PRINT_DAYS = 7
+# The same quarter a year on, same weekday.
+YEAR_DAYS = 364
+# Four quarterly prints span about three quarters; outside this the name is not
+# on a quarterly cadence (a gap, a fiscal-year change, a new listing) and the
+# rule has nothing to stand on.
+CADENCE_SPAN_DAYS = (239, 309)
+# Twice the rule's 90th-percentile miss. An estimate this far past with no results
+# 8-K has stopped meaning anything: the name was acquired or delisted (EA,
+# AXTI on 2026-09-25) or the feed missed a print (FDS's June quarter).
+STALE_AFTER_DAYS = 14
 
 
 def speaks_of_results(text: str | None) -> bool:
@@ -100,6 +121,53 @@ def split_releases(filings: Sequence[tuple[date, bool]]) -> tuple[list[date], li
     return kept, aside
 
 
+def distinct_prints(dates: Sequence[date]) -> list[date]:
+    """Print dates oldest first; a date within ``SAME_PRINT_DAYS`` of a kept one is
+    the same print."""
+    kept: list[date] = []
+    for d in sorted(set(dates)):
+        if kept and (d - kept[-1]).days <= SAME_PRINT_DAYS:
+            continue
+        kept.append(d)
+    return kept
+
+
+def _quarterly(prints: Sequence[date], k: int) -> bool:
+    """Whether the four prints ending at ``k`` sit on a quarterly cadence."""
+    lo, hi = CADENCE_SPAN_DAYS
+    return k >= 3 and lo <= (prints[k] - prints[k - 3]).days <= hi
+
+
+def expected_next(dates: Sequence[date], *, as_of: date) -> dict[str, Any] | None:
+    """The next print, estimated as the same quarter's print a year earlier plus
+    ``YEAR_DAYS``, with the rule's record on this name. None when the name has
+    fewer than four prints, is not on a quarterly cadence, or the estimate is
+    more than ``STALE_AFTER_DAYS`` past. ``days_away`` below zero means the
+    estimate has passed with no results 8-K on file yet."""
+    p = distinct_prints(dates)
+    if len(p) < 4 or not _quarterly(p, len(p) - 1):
+        return None
+    est = p[-4] + timedelta(days=YEAR_DAYS)
+    if (as_of - est).days > STALE_AFTER_DAYS:
+        return None
+    misses = [
+        abs((p[k] - (p[k - 4] + timedelta(days=YEAR_DAYS))).days)
+        for k in range(4, len(p))
+        if _quarterly(p, k - 1)
+    ]
+    return {
+        "date": est.isoformat(),
+        "basis": "same quarter last year + 52 weeks",
+        "from": p[-4].isoformat(),
+        "days_away": (est - as_of).days,
+        "track": {
+            "n": len(misses),
+            "median_miss_days": median(misses) if misses else None,
+            "max_miss_days": max(misses) if misses else None,
+        },
+    }
+
+
 def fetch_item_202(conn: Any, symbol: str, *, as_of: date | None = None) -> list[tuple[date, bool]]:
     """The name's Item 2.02 filings as (filing_date, speaks_of_results), on or before ``as_of``."""
     sql = """
@@ -118,8 +186,14 @@ def fetch_item_202(conn: Any, symbol: str, *, as_of: date | None = None) -> list
 
 
 __all__ = [
+    "CADENCE_SPAN_DAYS",
     "HABIT_MIN",
     "RELEASE_WITHIN_DAYS",
+    "SAME_PRINT_DAYS",
+    "STALE_AFTER_DAYS",
+    "YEAR_DAYS",
+    "distinct_prints",
+    "expected_next",
     "split_releases",
     "fetch_item_202",
     "speaks_of_results",
