@@ -227,3 +227,38 @@ def test_repository_returns_empty_when_no_data(monkeypatch) -> None:
     assert repo.get_history(_Conn(None), "SPX", cycles=3) == []
     assert repo.get_pin_analysis(_Conn(None), "SPX", cycles=3) == []
     assert repo.latest_trade_date(_Conn(None)) is None
+
+
+def test_vanna_charm_map_is_the_window_around_spot() -> None:
+    """2026-09-26: it was the 60 lowest strikes — PLTR 5…145 against spot 189.67."""
+    from datetime import date
+    from typing import Self
+
+    from bifrost_research.repositories import opex_cycle as repo
+
+    calls: list[tuple[str, Any]] = []
+
+    class _Cur:
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def execute(self, sql: str, params: Any = None) -> None:
+            calls.append((sql, params))
+
+        def fetchall(self) -> list[tuple]:
+            return [(185.0, 10, 20, 1.0, -2.0, -1.0), (190.0, 30, 5, 3.0, -0.5, 2.5)]
+
+    class _Conn:
+        def cursor(self) -> _Cur:
+            return _Cur()
+
+    rows = repo.get_vanna_charm_map(_Conn(), "pltr", trade_date=date(2026, 9, 25), limit=60)
+    assert [r["strike"] for r in rows] == [185.0, 190.0]
+    sql, params = calls[-1]
+    assert "ORDER BY ABS(agg.strike - COALESCE(s.spot, agg.strike)), agg.strike" in sql
+    assert "option_metric_vanna_charm_daily" in sql and "option_metric_gex_levels_daily" in sql
+    assert sql.rstrip().endswith("ORDER BY w.strike")
+    assert params == {"sym": "PLTR", "td": date(2026, 9, 25), "lim": 60}

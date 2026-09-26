@@ -126,6 +126,13 @@ def get_vanna_charm_map(
     is reconstructed from ``option_metric_gex_daily`` OI, weighted by BS
     approximations. Callers should treat this as a **shape hint**, not an
     exact distribution.
+
+    The ``limit`` strikes nearest the day's spot, in strike order. Until
+    2026-09-26 this was the ``limit`` lowest strikes: PLTR's 121 listed strikes
+    run 5…410 and the map stopped at 145 against a 189.67 spot, SPY's started
+    at 50 against 771 — every name above its 60th strike got a map with no
+    money in it. Spot is the OpEx row's own, else the GEX levels'; with
+    neither, the lowest strikes as before.
     """
     sym = symbol.strip().upper()
     td = _resolve_trade_date(conn, sym, trade_date)
@@ -133,21 +140,38 @@ def get_vanna_charm_map(
         return []
     lim = max(1, min(int(limit), 500))
     sql = """
-        SELECT strike,
-               SUM(call_oi)  AS call_oi,
-               SUM(put_oi)   AS put_oi,
-               SUM(call_gex) AS call_gex,
-               SUM(put_gex)  AS put_gex,
-               SUM(net_gex)  AS net_gex
-        FROM features.option_metric_gex_daily
-        WHERE symbol = %s AND trade_date = %s
-        GROUP BY strike
-        ORDER BY strike
-        LIMIT %s
+        WITH agg AS (
+            SELECT strike,
+                   SUM(call_oi)  AS call_oi,
+                   SUM(put_oi)   AS put_oi,
+                   SUM(call_gex) AS call_gex,
+                   SUM(put_gex)  AS put_gex,
+                   SUM(net_gex)  AS net_gex
+            FROM features.option_metric_gex_daily
+            WHERE symbol = %(sym)s AND trade_date = %(td)s
+            GROUP BY strike
+        ),
+        s AS (
+            SELECT COALESCE(
+                (SELECT spot FROM features.option_metric_vanna_charm_daily
+                 WHERE symbol = %(sym)s AND trade_date = %(td)s AND spot > 0
+                 LIMIT 1),
+                (SELECT MAX(spot) FROM features.option_metric_gex_levels_daily
+                 WHERE symbol = %(sym)s AND trade_date = %(td)s AND spot > 0)
+            ) AS spot
+        )
+        SELECT w.strike, w.call_oi, w.put_oi, w.call_gex, w.put_gex, w.net_gex
+        FROM (
+            SELECT agg.*
+            FROM agg CROSS JOIN s
+            ORDER BY ABS(agg.strike - COALESCE(s.spot, agg.strike)), agg.strike
+            LIMIT %(lim)s
+        ) w
+        ORDER BY w.strike
     """
     cols = ("strike", "call_oi", "put_oi", "call_gex", "put_gex", "net_gex")
     with conn.cursor() as cur:
-        cur.execute(sql, (sym, td, lim))
+        cur.execute(sql, {"sym": sym, "td": td, "lim": lim})
         rows = cur.fetchall() or []
     out: list[dict[str, Any]] = []
     for r in rows:

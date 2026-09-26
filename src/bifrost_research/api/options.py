@@ -86,6 +86,19 @@ def _apply_date_filters(
     return resolved_td
 
 
+# One name's year is at most ~4,000 ATM-IV rows (SPY / QQQ: 15.8 expiries a
+# session) and ~2,200 max-pain rows; a flat 500 returned about a month of either
+# for a 365-day lookback and said nothing. A named symbol gets room for a year
+# and more; an all-symbol read keeps the old page. Routes ask for one row past
+# the cap and say ``truncated`` when it came back.
+SYMBOL_ROW_CAP = 10_000
+ALL_SYMBOLS_ROW_CAP = 500
+
+
+def row_cap(symbol: str | None) -> int:
+    return SYMBOL_ROW_CAP if symbol and str(symbol).strip() else ALL_SYMBOLS_ROW_CAP
+
+
 def query_max_pain(
     conn: Any,
     *,
@@ -93,6 +106,7 @@ def query_max_pain(
     expiry: date | None = None,
     trade_date: date | None = None,
     lookback_days: int | None = None,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     cols = (
         "symbol",
@@ -127,10 +141,10 @@ def query_max_pain(
         FROM features.option_metric_max_pain_daily
         {where}
         ORDER BY trade_date DESC, symbol ASC, expiry ASC
-        LIMIT 500
+        LIMIT %s
     """
     with conn.cursor() as cur:
-        cur.execute(sql, tuple(params))
+        cur.execute(sql, (*params, limit if limit is not None else row_cap(sym)))
         raw = cur.fetchall() if hasattr(cur, "fetchall") else []
     return [_row_dict(r, cols) for r in (raw or [])]
 
@@ -142,6 +156,7 @@ def query_atm_iv(
     expiry: date | None = None,
     trade_date: date | None = None,
     lookback_days: int | None = None,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     cols = (
         "symbol",
@@ -177,10 +192,10 @@ def query_atm_iv(
         FROM features.option_metric_atm_iv_daily
         {where}
         ORDER BY trade_date DESC, symbol ASC, expiry ASC
-        LIMIT 500
+        LIMIT %s
     """
     with conn.cursor() as cur:
-        cur.execute(sql, tuple(params))
+        cur.execute(sql, (*params, limit if limit is not None else row_cap(sym)))
         raw = cur.fetchall() if hasattr(cur, "fetchall") else []
     return [_row_dict(r, cols) for r in (raw or [])]
 
@@ -451,15 +466,19 @@ def max_pain(
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
     try:
+        cap = row_cap(symbol)
         rows = query_max_pain(
             conn,
             symbol=symbol,
             expiry=expiry,
             trade_date=trade_date,
             lookback_days=lookback_days,
+            limit=cap + 1,
         )
     finally:
         conn.close()
+    truncated = len(rows) > cap
+    rows = rows[:cap]
 
     if not rows and symbol:
         raise HTTPException(status_code=404, detail="No max-pain rows for symbol")
@@ -470,6 +489,8 @@ def max_pain(
         "trade_date": trade_date.isoformat() if trade_date else None,
         "expiry": expiry.isoformat() if expiry else None,
         "lookback_days": lookback_days,
+        "truncated": truncated,
+        "row_cap": cap,
     }
 
 
@@ -485,15 +506,19 @@ def atm_iv(
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
     try:
+        cap = row_cap(symbol)
         rows = query_atm_iv(
             conn,
             symbol=symbol,
             expiry=expiry,
             trade_date=trade_date,
             lookback_days=lookback_days,
+            limit=cap + 1,
         )
     finally:
         conn.close()
+    truncated = len(rows) > cap
+    rows = rows[:cap]
 
     if not rows and symbol:
         raise HTTPException(status_code=404, detail="No atm-iv rows for symbol")
@@ -504,6 +529,8 @@ def atm_iv(
         "trade_date": trade_date.isoformat() if trade_date else None,
         "expiry": expiry.isoformat() if expiry else None,
         "lookback_days": lookback_days,
+        "truncated": truncated,
+        "row_cap": cap,
     }
 
 
