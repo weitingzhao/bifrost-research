@@ -356,6 +356,20 @@ def run_settlement(
         if not prior:
             continue
         session_day = prior[-1]
+        # Sessions dated on a closed day between the two forecast nothing of
+        # their own: before the calendar read a real source (0.126.1) every
+        # weekday counted, and Labor Day's session was settled against 09-08
+        # beside Friday 09-04's — one target day counted twice.
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM features.stock_backtest_settlement
+                WHERE trade_date > %s AND trade_date < %s
+                """,
+                (session_day, settle_day),
+            )
+            removed += max(cur.rowcount or 0, 0)
+        conn.commit()
         with conn.cursor() as cur:
             cur.execute(
                 """

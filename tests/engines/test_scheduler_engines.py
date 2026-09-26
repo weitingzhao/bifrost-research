@@ -120,6 +120,9 @@ def test_run_settlement_settles_the_prior_session_against_the_settle_day() -> No
     delete_sql, delete_params = cursor.execute.call_args_list[-1].args
     assert "DELETE FROM features.stock_backtest_settlement" in delete_sql
     assert delete_params == ("PLTR", session_day, "stl-PLTR-2026-09-23")
+    closed_sql, closed_params = cursor.execute.call_args_list[0].args
+    assert "trade_date > %s AND trade_date < %s" in closed_sql
+    assert closed_params == (session_day, settle_day)
     assert result["sessions_settled"] == 1
     assert result["settled_on_hourly_bars"] == 1
-    assert result["stale_settlements_removed"] == 2
+    assert result["stale_settlements_removed"] == 4  # two deletes, rowcount 2 each

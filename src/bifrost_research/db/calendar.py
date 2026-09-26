@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo
+
+_NY = ZoneInfo("America/New_York")
 
 
 def _as_date(value: Any) -> date | None:
@@ -25,33 +28,77 @@ def fetch_closed_holiday_dates(
     start: date,
     end: date,
 ) -> set[date]:
-    """Load closed holiday dates from market.trading_calendar when available."""
+    """Weekdays between ``start`` and ``end`` on which NYSE did not trade.
+
+    Until 2026-09-26 this read ``raw_market.trading_calendar``, a table that does
+    not exist: the query failed, the set came back empty, and every weekday
+    counted as a session — forecast wrote sessions for Labor Day (2026-09-07)
+    and settlement paired Friday 09-04's session with the holiday instead of
+    09-08. Two sources now, because neither covers both directions:
+
+    - ``raw_market.us_market_holiday`` (the plugin's vendor feed) lists upcoming
+      holidays only — it covers today and later; ``early-close`` days trade;
+    - before today, a weekday on which none of SPY, QQQ and IWM has a daily bar
+      was not a session (2026-07-01…09-25 on DEV: exactly 07-03 and 09-07).
+    """
     closed: set[date] = set()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT trade_date
-                FROM raw_market.trading_calendar
-                WHERE trade_date >= %s AND trade_date <= %s
-                  AND COALESCE(is_open, true) = false
-                """,
-                (start, end),
-            )
-            rows = cur.fetchall() if hasattr(cur, "fetchall") else []
-    except Exception:
+    today = datetime.now(_NY).date()
+
+    def _rows(sql: str, params: tuple[Any, ...]) -> list[Any]:
         try:
-            conn.rollback()
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return list(cur.fetchall() or []) if hasattr(cur, "fetchall") else []
         except Exception:
-            pass
-        return closed
-    for row in rows or []:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return []
+
+    def _first_date(row: Any) -> date | None:
         if isinstance(row, Mapping):
-            d = _as_date(row.get("trade_date") or next(iter(row.values()), None))
-        else:
-            d = _as_date(row[0] if row else None)
+            return _as_date(next(iter(row.values()), None))
+        return _as_date(row[0] if row else None)
+
+    for row in _rows(
+        """
+        SELECT DISTINCT holiday_date
+        FROM raw_market.us_market_holiday
+        WHERE status = 'closed' AND holiday_date >= %s AND holiday_date <= %s
+        """,
+        (start, end),
+    ):
+        d = _first_date(row)
         if d is not None:
             closed.add(d)
+
+    past_end = min(end, today - timedelta(days=1))
+    if start <= past_end:
+        traded = {
+            d
+            for d in (
+                _first_date(r)
+                for r in _rows(
+                    """
+                    SELECT DISTINCT bar_date
+                    FROM raw_market.stock_daily
+                    WHERE symbol IN ('SPY', 'QQQ', 'IWM')
+                      AND bar_date >= %s AND bar_date <= %s
+                    """,
+                    (start, past_end),
+                )
+            )
+            if d is not None
+        }
+        # No bars at all for the window means the source is unreadable, not a
+        # month of holidays — mark nothing rather than close every day.
+        if traded:
+            day = start
+            while day <= past_end:
+                if day.weekday() < 5 and day not in traded:
+                    closed.add(day)
+                day += timedelta(days=1)
     return closed
 
 
