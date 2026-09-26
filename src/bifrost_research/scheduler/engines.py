@@ -301,29 +301,83 @@ def run_terrain_intraday(
     }
 
 
+def _intraday_chain_symbols(conn: Any, day: date) -> list[str]:
+    """Underlyings the plugin's intraday chain observed on ``day`` before the close.
+
+    Only these carry the session's own OI and gamma during the session (the
+    plugin's ``intraday-chain`` slot writes both, 26 names on DEV); the EOD chain
+    is keyed at 16:00 New York and lands in the evening.
+    """
+    start = datetime.combine(day, datetime.min.time(), tzinfo=_NY)
+    close = datetime.combine(day, datetime.min.time(), tzinfo=_NY).replace(hour=16)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT underlying
+            FROM raw_market.option_snapshot
+            WHERE snapshot_ts >= %s AND snapshot_ts < %s
+            """,
+            (start, close),
+        )
+        rows = cur.fetchall() or []
+    out = {
+        str(r.get("underlying") if isinstance(r, Mapping) else r[0]).strip().upper()
+        for r in rows
+        if (r.get("underlying") if isinstance(r, Mapping) else (r[0] if r else None))
+    }
+    return sorted(out)
+
+
 def run_gex_intraday(
     conn: Any,
     *,
     trading_days: Sequence[date],
     symbols: Sequence[str],
 ) -> dict[str, Any]:
+    """Intraday GEX for the names whose chain was observed this session.
+
+    Until 2026-09-26 it walked the whole option universe (669 names), found no
+    spot for any but SPX and no session OI for most, and returned success with
+    ``symbols_ok`` 1 every half hour; the Dagster job stayed green for three
+    weeks while the table held one index. It now takes the intraday chain's own
+    names, and a trading day on which none of them computes raises, so the
+    failure shows where the schedule is watched.
+    """
     now_utc = datetime.now(timezone.utc)
     today = _today_ny()
+    wanted = {str(x).strip().upper() for x in symbols}
+    observed = [x for x in _intraday_chain_symbols(conn, today) if not wanted or x in wanted]
     ok = 0
-    failed = 0
-    for sym in symbols:
+    failures: dict[str, str] = {}
+    prior_close = 0
+    for sym in observed:
         result = compute_gex_intraday(conn, symbol=sym, trade_date=today, asof_ts=now_utc)
         if result.get("ok"):
             ok += 1
+            if result.get("spot_source") == "prior_close":
+                prior_close += 1
         else:
-            failed += 1
-    return {
+            failures[sym] = str(result.get("error") or "failed")
+    summary = {
         "slot": "gex-intraday",
         "symbols_ok": ok,
-        "symbols_failed": failed,
-        "symbols": len(symbols),
+        "symbols_failed": len(failures),
+        "symbols": len(observed),
+        "spot_prior_close": prior_close,
+        "failures": dict(sorted(failures.items())[:20]),
         "asof_ts": now_utc.isoformat(),
     }
+    session = fetch_recent_trading_days(conn, 1, as_of=today)
+    if ok == 0 and session and session[-1] == today:
+        raise RuntimeError(
+            "gex-intraday wrote nothing on a trading day: "
+            + (
+                f"{len(failures)} observed names all failed ({summary['failures']})"
+                if observed
+                else "the plugin's intraday chain has observed no name today"
+            )
+        )
+    return summary
 
 
 def _terrain_input_faults(conn: Any, session_day: date) -> dict[str, str]:

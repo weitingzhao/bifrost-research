@@ -57,3 +57,86 @@ def test_levels_empty() -> None:
     levels = compute_gex_levels([], 100.0)
     assert levels["total_net_gex"] == 0.0
     assert levels["zero_gamma"] is None
+
+
+# ─── 2026-09-26: intraday spot stands on the latest close ───
+
+from datetime import date
+from typing import Self
+
+from bifrost_research.engines.gex.exposure import fetch_spot, fetch_spot_reading
+
+
+class _SpotCursor:
+    """Answers the spot queries from a table of (sql fragment → row)."""
+
+    def __init__(self, answers: dict[str, object]) -> None:
+        self.answers = answers
+        self.last: object = None
+        self.calls: list[tuple[str, tuple]] = []
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple) -> None:
+        self.calls.append((sql, params))
+        self.last = None
+        for frag, row in self.answers.items():
+            if frag in sql:
+                self.last = row
+                return
+
+    def fetchone(self) -> object:
+        return self.last
+
+    def fetchall(self) -> list:
+        return self.last if isinstance(self.last, list) else []
+
+
+class _SpotConn:
+    def __init__(self, answers: dict[str, object]) -> None:
+        self.cur = _SpotCursor(answers)
+
+    def cursor(self) -> _SpotCursor:
+        return self.cur
+
+
+def test_intraday_spot_falls_back_to_the_prior_close_only_when_asked() -> None:
+    # During the session neither exact-date table holds today: stock_daily and
+    # stock_snapshot are written after the close.
+    conn = _SpotConn({"bar_date < %s": (189.67, date(2026, 9, 25))})
+    assert fetch_spot(conn, "PLTR", date(2026, 9, 28)) is None
+    reading = fetch_spot_reading(conn, "PLTR", date(2026, 9, 28), prior_close_days=7)
+    assert reading == (189.67, "prior_close", date(2026, 9, 25))
+    sql, params = conn.cur.calls[-1]
+    assert "ORDER BY bar_date DESC" in sql
+    assert params == ("PLTR", date(2026, 9, 28), date(2026, 9, 21))
+
+
+def test_the_days_own_close_wins_over_the_prior_close() -> None:
+    conn = _SpotConn({"bar_date = %s": (190.5,), "bar_date < %s": (189.67, date(2026, 9, 25))})
+    assert fetch_spot_reading(conn, "PLTR", date(2026, 9, 28), prior_close_days=7) == (
+        190.5,
+        "close",
+        date(2026, 9, 28),
+    )
+
+
+def test_index_spot_still_falls_back_to_the_max_oi_strike() -> None:
+    conn = _SpotConn({"SUM(open_interest)": (6600.0,)})
+    reading = fetch_spot_reading(conn, "SPX", date(2026, 9, 28), prior_close_days=7)
+    assert reading == (6600.0, "oi_max_strike", date(2026, 9, 28))
+
+
+def test_index_spot_is_priced_by_parity_before_the_max_oi_strike() -> None:
+    # SPX 2026-09-25: F = K + C − P on the nearest expiry at the five strikes
+    # where C and P are closest; the max-OI strike read 7000 (SPY closed 771.35).
+    fwds = [(7745.1,), (7745.53,), (7745.4,), (7744.9,), (7745.5,)]
+    conn = _SpotConn({"c.strike + c.px - p.px": fwds, "SUM(open_interest)": (7000.0,)})
+    reading = fetch_spot_reading(conn, "SPX", date(2026, 9, 25), prior_close_days=7)
+    assert reading == (7745.4, "parity", date(2026, 9, 25))
+    _, params = next(c for c in conn.cur.calls if "c.strike + c.px - p.px" in c[0])
+    assert params[0] == "SPX" and params[3] == date(2026, 9, 25)

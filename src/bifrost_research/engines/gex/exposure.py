@@ -21,10 +21,13 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from bifrost_research.db.upsert import batch_upsert
+
+_NY = ZoneInfo("America/New_York")
 
 _GEX_COLS = (
     "symbol",
@@ -256,7 +259,80 @@ def _as_date(value: Any) -> date | None:
     return date.fromisoformat(s)
 
 
-def fetch_spot(conn: Any, symbol: str, trade_date: date) -> float | None:
+def _first_positive(row: Any) -> float | None:
+    if row is None:
+        return None
+    v = row[0] if not isinstance(row, Mapping) else next(iter(row.values()))
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 else None
+
+
+def parity_spot(conn: Any, underlying: str, trade_date: date) -> float | None:
+    """The underlying implied by put–call parity on the day's newest chain.
+
+    On the nearest expiry after ``trade_date``, ``F = K + C − P`` at each strike
+    with both sides priced; the five strikes where C and P are closest bracket
+    the money, and their median is the forward — a day or two of carry off spot,
+    well inside a strike step. SPX 2026-09-25 read 7744.9–7745.5 across them, and
+    SPY closed 771.35. Uses the newest snapshot of the day, so an intraday caller
+    gets the session's own level.
+    """
+    start = datetime.combine(trade_date, datetime.min.time(), tzinfo=_NY)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH s AS (
+              SELECT oc.expiry, oc.strike, oc.option_right AS r, os.day_close AS px, os.snapshot_ts
+              FROM raw_market.option_snapshot os
+              JOIN raw_market.option_contract oc ON oc.option_ticker = os.option_ticker
+              WHERE os.underlying = %s
+                AND os.snapshot_ts >= %s AND os.snapshot_ts < %s
+                AND os.day_close > 0
+                AND oc.expiry > %s
+            ),
+            pick AS (SELECT MAX(snapshot_ts) AS ts, MIN(expiry) AS ex FROM s)
+            SELECT c.strike + c.px - p.px AS fwd
+            FROM s c
+            JOIN s p ON p.strike = c.strike AND p.expiry = c.expiry
+                    AND p.snapshot_ts = c.snapshot_ts AND p.r = 'P'
+            JOIN pick ON c.snapshot_ts = pick.ts AND c.expiry = pick.ex
+            WHERE c.r = 'C'
+            ORDER BY ABS(c.px - p.px)
+            LIMIT 5
+            """,
+            (underlying, start, start + timedelta(days=1), trade_date),
+        )
+        rows = cur.fetchall() if hasattr(cur, "fetchall") else []
+    fwds = sorted(f for f in (_first_positive(r) for r in rows or []) if f is not None)
+    if not fwds:
+        return None
+    return round(float(fwds[len(fwds) // 2]), 4)
+
+
+def fetch_spot_reading(
+    conn: Any,
+    symbol: str,
+    trade_date: date,
+    *,
+    prior_close_days: int = 0,
+) -> tuple[float, str, date] | None:
+    """Spot for ``trade_date`` with where it came from: ``(spot, source, as_of)``.
+
+    ``source`` is ``close`` (that day's daily bar), ``snapshot`` (that day's stock
+    snapshot), ``prior_close``, or for an index ``parity`` (``parity_spot``) and,
+    failing that, ``oi_max_strike``.
+
+    ``prior_close_days`` lets an intraday caller stand on the newest close up to
+    that many days before ``trade_date``. Both exact-date tables are written after
+    the close, so during the session they hold nothing for today: until
+    2026-09-26 gex-intraday asked for today, found no spot for 668 of 669 names
+    each half hour and reported success (terrain met the same wall on 09-02,
+    b79773b). The daily path keeps the exact match — a stale close there would
+    hide a missing bar.
+    """
     sym = symbol.strip().upper()
     # Index options: OI stored as SPX; spot may live as SPX or Polygon I:SPX.
     candidates = [sym]
@@ -266,46 +342,48 @@ def fetch_spot(conn: Any, symbol: str, trade_date: date) -> float | None:
         candidates.append("SPX")
         sym = "SPX"
 
-    with conn.cursor() as cur:
-        for cand in candidates:
-            cur.execute(
-                """
-                SELECT close FROM raw_market.stock_daily
-                WHERE symbol = %s AND bar_date = %s
-                """,
-                (cand, trade_date),
-            )
-            row = cur.fetchone()
-            if row is not None:
-                break
-        else:
-            row = None
-    if row is None:
+    for table, col, source in (
+        ("raw_market.stock_daily", "bar_date", "close"),
+        ("raw_market.stock_snapshot", "session_date", "snapshot"),
+    ):
+        with conn.cursor() as cur:
+            for cand in candidates:
+                cur.execute(
+                    f"SELECT close FROM {table} WHERE symbol = %s AND {col} = %s",
+                    (cand, trade_date),
+                )
+                f = _first_positive(cur.fetchone())
+                if f is not None:
+                    return f, source, trade_date
+
+    if prior_close_days > 0:
         with conn.cursor() as cur:
             for cand in candidates:
                 cur.execute(
                     """
-                    SELECT close FROM raw_market.stock_snapshot
-                    WHERE symbol = %s AND session_date = %s
+                    SELECT close, bar_date FROM raw_market.stock_daily
+                    WHERE symbol = %s AND bar_date < %s AND bar_date >= %s
+                    ORDER BY bar_date DESC
+                    LIMIT 1
                     """,
-                    (cand, trade_date),
+                    (cand, trade_date, trade_date - timedelta(days=prior_close_days)),
                 )
                 row = cur.fetchone()
-                if row is not None:
-                    break
-    if row is not None:
-        v = row[0] if not isinstance(row, Mapping) else next(iter(row.values()))
-        try:
-            f = float(v)
-        except (TypeError, ValueError):
-            f = None
-        if f is not None and f > 0:
-            return f
+                f = _first_positive(row)
+                if f is not None:
+                    bar = row.get("bar_date") if isinstance(row, Mapping) else row[1]
+                    return f, "prior_close", _as_date(bar) or trade_date
 
-    # Indices spot bars may be entitlement-gated (Polygon I:SPX 403). Fall back to
-    # the strike with maximum combined OI that day — a real market signal, not synthetic.
+    # Indices spot bars may be entitlement-gated (Polygon I:SPX 403): no SPX price
+    # sits in any raw_market table. The chain itself prices the index — see
+    # ``parity_spot``. The max-OI strike stays as the last resort only: it read
+    # 7000 for SPX on 2026-09-25 against 7745 by parity (SPY 771.35), so every
+    # intraday SPX row put spot below zero γ and called dealers short gamma.
     if sym in ("SPX", "NDX", "RUT", "VIX") or sym.startswith("I:"):
         oi_sym = "SPX" if sym in ("SPX", "I:SPX") else sym.removeprefix("I:")
+        f = parity_spot(conn, oi_sym, trade_date)
+        if f is not None:
+            return f, "parity", trade_date
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -318,15 +396,15 @@ def fetch_spot(conn: Any, symbol: str, trade_date: date) -> float | None:
                 """,
                 (oi_sym, trade_date),
             )
-            oi_row = cur.fetchone()
-        if oi_row is not None:
-            raw = oi_row[0] if not isinstance(oi_row, Mapping) else next(iter(oi_row.values()))
-            try:
-                strike = float(raw)
-            except (TypeError, ValueError):
-                return None
-            return strike if strike > 0 else None
+            f = _first_positive(cur.fetchone())
+        if f is not None:
+            return f, "oi_max_strike", trade_date
     return None
+
+
+def fetch_spot(conn: Any, symbol: str, trade_date: date) -> float | None:
+    reading = fetch_spot_reading(conn, symbol, trade_date)
+    return reading[0] if reading else None
 
 
 def fetch_gex_contracts(
@@ -553,6 +631,11 @@ _INTRADAY_COLS = (
 )
 
 
+# A long weekend is four calendar days; a week covers it without reaching back
+# to a close that no longer describes the name.
+INTRADAY_PRIOR_CLOSE_DAYS = 7
+
+
 def compute_gex_intraday(
     conn: Any,
     *,
@@ -561,10 +644,16 @@ def compute_gex_intraday(
     asof_ts: datetime,
     expiry: date | None = None,
 ) -> dict[str, Any]:
-    """Compute intraday GEX snapshot and write to features.option_metric_gex_intraday."""
-    spot = fetch_spot(conn, symbol, trade_date)
-    if spot is None:
+    """Compute intraday GEX snapshot and write to features.option_metric_gex_intraday.
+
+    Spot is the newest close up to a week back when the session has none yet
+    (``spot_source`` says which); OI and gamma are the session's own, from the
+    plugin's intraday chain.
+    """
+    reading = fetch_spot_reading(conn, symbol, trade_date, prior_close_days=INTRADAY_PRIOR_CLOSE_DAYS)
+    if reading is None:
         return {"ok": False, "error": "No spot price", "symbol": symbol.strip().upper()}
+    spot, spot_source, spot_date = reading
 
     pairs = fetch_gex_contracts(conn, symbol, trade_date, expiry=expiry)
     if not pairs:
@@ -624,6 +713,8 @@ def compute_gex_intraday(
         "trade_date": trade_date.isoformat(),
         "asof_ts": asof_ts.isoformat(),
         "spot": spot,
+        "spot_source": spot_source,
+        "spot_date": spot_date.isoformat(),
         "total_net_gex": levels["total_net_gex"],
         "zero_gamma": levels["zero_gamma"],
         "major_call_wall": levels["major_call_wall"],

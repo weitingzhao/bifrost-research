@@ -32,7 +32,7 @@ make dagster-ensure-schedule
 | `market_intraday_chain_{1030,1300,1530}_schedule` | `10:30 / 13:00 / 15:30` **America/New_York** | intraday option chain snapshots (market clock, not UTC) |
 | `market_self_heal_schedule` | `45 0 * * 2-6` UTC | Plugin doctor → heal → drain → recheck for the day's session; fails (→ Alertmanager) only when still critical |
 | `research_opex_schedule` … | see `research_aux_schedules.py` | OpEx / SVI / alert / signal-hit / settlement (VRP moved into `research_trading_day` after volatility — A4) |
-| `research_intraday_schedule` | `30 14-20 * * 1-5` UTC | terrain + gex intraday |
+| `research_intraday_schedule` | `45 10-16 * * 1-5` **America/New_York** | terrain + gex intraday — a quarter past the intraday chain; gex runs on the names that chain observed and fails when none computes |
 | `research_event_radar_schedule` | `*/30 * * * 1-5` UTC | event-radar ingest |
 | `research_morning_prep_schedule` / `research_eod_review_schedule` | UTC | agents |
 | `research_ensure_partitions_schedule` / `research_vol_weekly_backfill_schedule` | UTC | maintenance |

@@ -161,3 +161,69 @@ def test_run_settlement_stamps_a_session_drawn_from_walls_off_spot() -> None:
     stl = captured["stl"]
     assert stl.stats_json["input_fault"] == "walls_off_spot"
     assert result["input_faults"] == 1
+
+
+def _gex_conn(observed: list[str]) -> MagicMock:
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.fetchall.return_value = [(s,) for s in observed]
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+    return conn
+
+
+def test_gex_intraday_runs_the_names_the_intraday_chain_observed() -> None:
+    """The universe is 669 names; the session's OI and gamma exist for the chain's 26."""
+    conn = _gex_conn(["PLTR", "SPX", "SPY"])
+    seen: list[str] = []
+
+    def fake(conn, *, symbol, trade_date, asof_ts):
+        seen.append(symbol)
+        return {"ok": True, "spot_source": "prior_close" if symbol != "SPX" else "oi_max_strike"}
+
+    with patch.object(sched, "_today_ny", return_value=date(2026, 9, 28)), \
+         patch.object(sched, "compute_gex_intraday", side_effect=fake), \
+         patch.object(sched, "fetch_recent_trading_days", return_value=[date(2026, 9, 28)]):
+        result = sched.run_gex_intraday(conn, trading_days=[], symbols=["AAPL", "PLTR", "SPX", "SPY"])
+
+    assert seen == ["PLTR", "SPX", "SPY"]
+    assert result["symbols"] == 3 and result["symbols_ok"] == 3
+    assert result["spot_prior_close"] == 2
+    start, close = conn.cursor.return_value.execute.call_args.args[1]
+    assert (close - start).total_seconds() == 16 * 3600
+
+
+def test_gex_intraday_keeps_to_an_explicit_symbol_list() -> None:
+    conn = _gex_conn(["PLTR", "SPX", "SPY"])
+    with patch.object(sched, "_today_ny", return_value=date(2026, 9, 28)), \
+         patch.object(sched, "compute_gex_intraday", return_value={"ok": True}) as compute, \
+         patch.object(sched, "fetch_recent_trading_days", return_value=[date(2026, 9, 28)]):
+        sched.run_gex_intraday(conn, trading_days=[], symbols=["SPY"])
+    assert [c.kwargs["symbol"] for c in compute.call_args_list] == ["SPY"]
+
+
+def test_gex_intraday_raises_when_a_trading_day_writes_nothing() -> None:
+    """Three weeks of green runs wrote one index; now a dead session is red."""
+    import pytest
+
+    conn = _gex_conn(["PLTR", "SPY"])
+    with patch.object(sched, "_today_ny", return_value=date(2026, 9, 28)), \
+         patch.object(sched, "compute_gex_intraday", return_value={"ok": False, "error": "No OI contracts"}), \
+         patch.object(sched, "fetch_recent_trading_days", return_value=[date(2026, 9, 28)]), \
+         pytest.raises(RuntimeError, match="all failed"):
+        sched.run_gex_intraday(conn, trading_days=[], symbols=["PLTR", "SPY"])
+
+    empty = _gex_conn([])
+    with patch.object(sched, "_today_ny", return_value=date(2026, 9, 28)), \
+         patch.object(sched, "fetch_recent_trading_days", return_value=[date(2026, 9, 28)]), \
+         pytest.raises(RuntimeError, match="observed no name"):
+        sched.run_gex_intraday(empty, trading_days=[], symbols=["PLTR"])
+
+
+def test_gex_intraday_is_quiet_on_a_closed_day() -> None:
+    conn = _gex_conn([])
+    # 2026-11-26 is Thanksgiving: the calendar's latest session is the day before.
+    with patch.object(sched, "_today_ny", return_value=date(2026, 11, 26)), \
+         patch.object(sched, "fetch_recent_trading_days", return_value=[date(2026, 11, 25)]):
+        result = sched.run_gex_intraday(conn, trading_days=[], symbols=["PLTR"])
+    assert result["symbols"] == 0 and result["symbols_ok"] == 0

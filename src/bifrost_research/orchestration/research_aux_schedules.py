@@ -467,8 +467,12 @@ _specs: list[tuple[str, str, list[Any], str, str, str]] = [
         "research_intraday_schedule",
         "research_intraday_job",
         [engines_terrain_intraday, engines_gex_intraday],
-        "30 14-20 * * 1-5",
-        "UTC",
+        # A quarter past the plugin's intraday chain (10:30 / 13:00 / 15:30 New
+        # York): at :30 UTC the 10:30 run fired beside the chain it reads and found
+        # no session OI, and the UTC clock drifted an hour off the chain each
+        # winter. New York time keeps the two in step.
+        "45 10-16 * * 1-5",
+        "America/New_York",
         "intraday terrain+gex",
     ),
     (
