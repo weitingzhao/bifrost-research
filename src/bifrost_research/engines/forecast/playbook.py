@@ -5,7 +5,6 @@ D10 BLOCKED — structures are advisory; no order placement.
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Mapping, Sequence
@@ -358,7 +357,11 @@ def build_forecast_session(
         narrative = str(enriched.get("narrative") or "")
         provider_name = str(enriched.get("provider") or provider.name)
 
-    sid = session_id or f"{terrain.symbol}-{terrain.trade_date.isoformat()}-{uuid.uuid4().hex[:8]}"
+    # One session per symbol and date. The nightly slot recomputes its last two
+    # trading days; with a random suffix each re-run inserted a second session
+    # for the same date, one that settlement never picked up (PLTR on DEV: 194
+    # sessions over 54 dates). A fixed id lets the re-run overwrite in place.
+    sid = session_id or f"{terrain.symbol}-{terrain.trade_date.isoformat()}"
     return ForecastSession(
         session_id=sid,
         symbol=terrain.symbol,

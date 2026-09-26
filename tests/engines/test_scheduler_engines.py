@@ -84,3 +84,42 @@ def test_unknown_slot_not_in_runners() -> None:
         runner = sched._SLOT_RUNNERS.get("not-a-slot")
         if runner is None:
             raise ValueError("unknown slot: not-a-slot")
+
+
+def test_run_settlement_settles_the_prior_session_against_the_settle_day() -> None:
+    """A session dated D forecasts D+1: it is settled with D+1's close and bars,
+    and every other settlement row for the symbol and D goes (2026-09-26)."""
+    settle_day = date(2026, 9, 24)
+    session_day = date(2026, 9, 23)
+
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.fetchall.side_effect = [
+        [("PLTR-2026-09-23", "PLTR", 188.7, 191.79)],  # latest session per symbol for D
+        [(10, "higher-high", 190.0, 193.0, 191.0)],    # its hourly path
+    ]
+    cursor.rowcount = 2
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    captured = {}
+    with patch.object(sched, "fetch_recent_trading_days", return_value=[session_day]) as cal, \
+         patch.object(sched, "load_actual_close", return_value=192.59) as actual, \
+         patch.object(sched, "load_hourly_closes", return_value={10: 192.115}) as bars, \
+         patch.object(sched, "upsert_settlement", side_effect=lambda c, s: captured.setdefault("stl", s)):
+        result = sched.run_settlement(conn, trading_days=[settle_day], symbols=[])
+
+    assert cal.call_args.kwargs["as_of"] == date(2026, 9, 23)
+    actual.assert_called_once_with(conn, "PLTR", settle_day)
+    bars.assert_called_once_with(conn, "PLTR", settle_day)
+    stl = captured["stl"]
+    assert stl.trade_date == session_day
+    assert stl.actual_close == 192.59
+    assert stl.stats_json["target_date"] == "2026-09-24"
+    assert stl.stats_json["path_basis"] == "hourly"
+    delete_sql, delete_params = cursor.execute.call_args_list[-1].args
+    assert "DELETE FROM features.stock_backtest_settlement" in delete_sql
+    assert delete_params == ("PLTR", session_day, "stl-PLTR-2026-09-23")
+    assert result["sessions_settled"] == 1
+    assert result["settled_on_hourly_bars"] == 1
+    assert result["stale_settlements_removed"] == 2

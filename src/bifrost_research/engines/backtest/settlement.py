@@ -9,9 +9,10 @@ D10 BLOCKED — evaluation only; no order placement.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Mapping, Sequence
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from bifrost_research.db.upsert import batch_upsert
 
@@ -149,8 +150,22 @@ def settle_forecast(
     actual_close: float,
     hourly_actuals: Mapping[int, float] | None = None,
     settlement_id: str | None = None,
+    spot: float | None = None,
+    target_date: date | None = None,
 ) -> ForecastSettlement:
-    """Settle one forecast session against actual close (+ optional hourly prints)."""
+    """Settle one forecast session against the close it forecast (+ hourly prints).
+
+    A session is built after its trade date's close from that close's data, so what
+    it forecasts is the session that follows: ``actual_close`` and
+    ``hourly_actuals`` belong to that session (``target_date``), and ``spot`` is the
+    close the forecast started from.
+
+    An hour with no print is left unjudged. Until 2026-09-26 every such hour was
+    scored against the day's close, so a settlement with no intraday prints still
+    reported an hourly path hit rate it never measured; the path is now judged on
+    the hours that printed, or on the close alone when none did
+    (``stats_json.path_basis``).
+    """
     miss = actual_close - expected_close
     miss_pct = miss / expected_close if expected_close else 0.0
     hits: list[HourlyActual] = []
@@ -160,9 +175,6 @@ def settle_forecast(
         actual_px = None
         if hourly_actuals and hour in hourly_actuals:
             actual_px = float(hourly_actuals[hour])
-        elif hourly_actuals is None:
-            # Without intraday prints, approximate with linear blend spot→close
-            actual_px = actual_close
         hit = False
         if actual_px is not None:
             hit = _path_hit_for_hour(
@@ -185,13 +197,30 @@ def settle_forecast(
                 hit=hit,
             )
         )
-    hit_count = sum(1 for x in hits if x.hit)
-    total = len(hits) or 1
-    # Session path_hit: majority of hourly hits AND close within 1% of expected
+    judged = [x for x in hits if x.actual_price is not None]
+    hit_count = sum(1 for x in judged if x.hit)
+    # Session path_hit: majority of the judged hours AND close within 1% of
+    # expected; with no hour judged, the close alone.
     close_ok = abs(miss_pct) <= 0.01
-    path_hit = (hit_count / total >= 0.5) and close_ok
+    if judged:
+        path_hit = (hit_count / len(judged) >= 0.5) and close_ok
+        path_basis = "hourly"
+    else:
+        path_hit = close_ok
+        path_basis = "close"
 
-    direction_hit = actual_close >= expected_close if expected_close else path_hit
+    # Direction is the sign of the move the session called against the move that
+    # came, both from its spot. «Close at or above the target» — what this was —
+    # scores a call for a fall as right whenever the price rose.
+    if spot is not None and spot > 0:
+        called = expected_close - spot
+        came = actual_close - spot
+        if abs(called) / spot < 0.001:
+            direction_hit = abs(came) / spot <= 0.005
+        else:
+            direction_hit = called * came > 0
+    else:
+        direction_hit = actual_close >= expected_close if expected_close else path_hit
     if abs(miss_pct) <= 0.005:
         path_shape = "flat"
     elif miss_pct > 0.01:
@@ -206,17 +235,26 @@ def settle_forecast(
         close_zone = "near"
     else:
         close_zone = "far"
-    lean_miss = not close_ok and hit_count < total
+    lean_miss = not close_ok and (hit_count < len(judged) if judged else True)
 
-    stats_json = {
+    stats_json: dict[str, Any] = {
         "direction_hit": direction_hit,
         "path_shape": path_shape,
         "close_zone": close_zone,
         "lean_miss": lean_miss,
+        "path_basis": path_basis,
+        "hours_judged": len(judged),
+        "forecast_hours": len(hits),
     }
+    if spot is not None:
+        stats_json["spot"] = float(spot)
+    if target_date is not None:
+        stats_json["target_date"] = target_date.isoformat()
 
     return ForecastSettlement(
-        settlement_id=settlement_id or f"stl-{uuid4().hex[:10]}",
+        # One settlement per session: re-settling (the hourly basis arriving after
+        # a close-only pass) replaces the row instead of adding a second.
+        settlement_id=settlement_id or f"stl-{session_id}",
         session_id=session_id,
         symbol=symbol.strip().upper(),
         trade_date=trade_date,
@@ -226,7 +264,7 @@ def settle_forecast(
         close_miss_pct=round(miss_pct, 6),
         path_hit=path_hit,
         path_hit_count=hit_count,
-        path_total=len(hits),
+        path_total=len(judged),
         hourly=hits,
         notes="D10 BLOCKED — settlement is advisory evaluation only",
         stats_json=stats_json,
@@ -296,6 +334,43 @@ def load_actual_close(conn: Any, symbol: str, trade_date: date) -> float | None:
     if isinstance(row, Mapping):
         return float(next(iter(row.values())))
     return float(row[0])
+
+
+_NY = ZoneInfo("America/New_York")
+
+
+def load_hourly_closes(conn: Any, symbol: str, day: date) -> dict[int, float]:
+    """The price at each whole hour ET of ``day``, keyed by that hour (10…16).
+
+    The market-data plugin stores 1-hour bars labelled by their **start**
+    (``raw_market.stock_minute``, period ``1 hour``; measured on PLTR 2026-09-24:
+    the 15:00 ET bar closes at 192.62 against a daily close of 192.59), so the
+    price at 10:00 ET is the close of the bar that started at 09:00 ET. The window
+    is a ``bar_time`` range rather than a date cast so the primary key serves it.
+    Empty when the name has no hourly bars — the plugin pulls them for its
+    minute-bar scope only.
+    """
+    start = datetime.combine(day, time(0, 0), tzinfo=_NY)
+    end = start + timedelta(days=1)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT bar_time, close FROM raw_market.stock_minute
+            WHERE symbol = %s AND period = '1 hour'
+              AND bar_time >= %s AND bar_time < %s
+            """,
+            (symbol.strip().upper(), start, end),
+        )
+        rows = cur.fetchall() or []
+    out: dict[int, float] = {}
+    for row in rows:
+        bar_time, close = (row["bar_time"], row["close"]) if isinstance(row, Mapping) else (row[0], row[1])
+        if close is None:
+            continue
+        hour_end = bar_time.astimezone(_NY).hour + 1
+        if 10 <= hour_end <= 16:
+            out[hour_end] = float(close)
+    return out
 
 
 def upsert_settlement(conn: Any, settlement: ForecastSettlement) -> int:

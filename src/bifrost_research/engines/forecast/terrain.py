@@ -560,19 +560,27 @@ def load_upstream_signals(
             else:
                 iv = {"iv_percentile_1y": row[0], "iv_rank_1y": row[1]}
 
-        if spot <= 0:
-            cur.execute(
-                """
-                SELECT close FROM raw_market.stock_daily
-                WHERE symbol = %s AND bar_date <= %s
-                ORDER BY bar_date DESC
-                LIMIT 1
-                """,
-                (sym, trade_date),
-            )
-            row = cur.fetchone()
-            if row:
-                spot = float(row[0] if not isinstance(row, Mapping) else next(iter(row.values())))
+        # Spot is the session's own close when the store has it; an older close
+        # only fills in when nothing else gave a spot. The levels row above is
+        # the newest at or before trade_date, so when a day's levels landed late
+        # the session carried an older day's spot: PLTR's sessions for 09-08,
+        # 09-09 and 09-10 all read 174.33 against closes of 170.30, 169.53 and
+        # 165.86. The intraday path, asking for today before today's bar
+        # exists, keeps the levels spot as before.
+        cur.execute(
+            """
+            SELECT bar_date, close FROM raw_market.stock_daily
+            WHERE symbol = %s AND bar_date <= %s
+            ORDER BY bar_date DESC
+            LIMIT 1
+            """,
+            (sym, trade_date),
+        )
+        row = cur.fetchone()
+        if row:
+            bar_date, close = (row["bar_date"], row["close"]) if isinstance(row, Mapping) else (row[0], row[1])
+            if close is not None and float(close) > 0 and (bar_date == trade_date or spot <= 0):
+                spot = float(close)
 
     # Fallback for index underlyings (SPX etc.) that have no stock row:
     # derive spot from option_snapshot delta≈0.5 / max_pain (shared with

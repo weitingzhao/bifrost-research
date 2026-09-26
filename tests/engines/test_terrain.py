@@ -175,3 +175,27 @@ def test_compute_terrain_records_the_zone_source_and_keeps_a_readable_band() -> 
     plain = compute_market_terrain("NVDA", date(2026, 9, 4), spot=230.36, gex=None, momentum=None, iv=None)
     assert plain.inputs_json["gamma_zone_source"] == "spot_band"
     assert plain.gamma_zone_low < plain.gamma_zone_high
+
+
+def test_load_upstream_signals_takes_the_days_own_close_over_a_stale_levels_spot() -> None:
+    """PLTR 09-10 read 174.33 from an older levels row; the day's close was 165.86."""
+    rowsets = [
+        (160.0, 180.0, 170.0, 1e8, 174.33),   # levels: newest row at or before the day
+        None,                                   # momentum
+        None,                                   # iv percentile
+        (date(2026, 9, 10), 165.86),            # stock_daily: the day's own close
+    ]
+    spot, _gex, _m, _iv = load_upstream_signals(_FakeTerrainConn(rowsets), "PLTR", date(2026, 9, 10))
+    assert spot == 165.86
+
+
+def test_load_upstream_signals_keeps_the_levels_spot_over_an_older_close() -> None:
+    """Intraday asks for today before today's bar exists: yesterday's close must not win."""
+    rowsets = [
+        (160.0, 180.0, 170.0, 1e8, 190.10),
+        None,
+        None,
+        (date(2026, 9, 24), 192.59),            # stock_daily: the prior day only
+    ]
+    spot, _gex, _m, _iv = load_upstream_signals(_FakeTerrainConn(rowsets), "PLTR", date(2026, 9, 25))
+    assert spot == 190.10

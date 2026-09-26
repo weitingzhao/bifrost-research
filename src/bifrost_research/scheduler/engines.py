@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Sequence
 from zoneinfo import ZoneInfo
 
@@ -33,6 +33,7 @@ from bifrost_research.engines.forecast.terrain import (
 )
 from bifrost_research.engines.backtest.settlement import (
     load_actual_close,
+    load_hourly_closes,
     settle_forecast,
     upsert_settlement,
 )
@@ -330,33 +331,54 @@ def run_settlement(
     trading_days: Sequence[date],
     symbols: Sequence[str],
 ) -> dict[str, Any]:
-    """Settle all unsettled forecast sessions for the given trading days."""
+    """Settle each forecast session against the session that follows it.
+
+    A session dated D is computed after D's close (research_forecast_schedule,
+    23:00 ET) from D's data — its spot *is* D's close — so what it forecasts is the
+    next trading day. Until 2026-09-26 it was settled against D's own close, a price
+    it already knew: on DEV, PLTR had actual_close == spot on 24 of 29 settlements
+    (SPY 21/29, AAPL 23/27), so hit rate, miss and calibration measured hindsight.
+
+    Each ``settle_day`` in ``trading_days`` settles the sessions dated the trading
+    day before it, one per symbol — the latest computed; re-runs overwrite a date
+    from 0.126.0 on, older dates still carry a never-settled second session —
+    against ``settle_day``'s close and its 1-hour bars. Rows are upserted, so a day
+    first settled on the close alone is re-settled on the hourly basis once its
+    bars land (the schedule's lookback reaches back), and any other settlement for
+    the same symbol and session date is removed, leaving one per session day.
+    """
     settled = 0
     skipped = 0
-    for td in trading_days:
+    removed = 0
+    hourly_basis = 0
+    for settle_day in trading_days:
+        prior = fetch_recent_trading_days(conn, 1, as_of=settle_day - timedelta(days=1))
+        if not prior:
+            continue
+        session_day = prior[-1]
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT fs.session_id, fs.symbol, fs.trade_date,
-                       fs.expected_close, fs.prob_rangy, fs.prob_bull,
-                       fs.prob_bear, fs.prob_squeeze
-                FROM features.stock_forecast_session fs
-                LEFT JOIN features.stock_backtest_settlement stl
-                    ON stl.session_id = fs.session_id
-                WHERE fs.trade_date = %s AND stl.settlement_id IS NULL
+                SELECT DISTINCT ON (symbol) session_id, symbol, expected_close, spot
+                FROM features.stock_forecast_session
+                WHERE trade_date = %s
+                ORDER BY symbol, computed_at DESC
                 """,
-                (td,),
+                (session_day,),
             )
             rows = cur.fetchall() or []
 
         for row in rows:
             if isinstance(row, dict):
-                sid, sym, tdate = row["session_id"], row["symbol"], row["trade_date"]
+                sid, sym = row["session_id"], row["symbol"]
                 expected = float(row["expected_close"] or 0)
+                spot = float(row["spot"]) if row.get("spot") is not None else None
             else:
-                sid, sym, tdate, expected = row[0], row[1], row[2], float(row[3] or 0)
+                sid, sym = row[0], row[1]
+                expected = float(row[2] or 0)
+                spot = float(row[3]) if row[3] is not None else None
 
-            actual = load_actual_close(conn, sym, tdate)
+            actual = load_actual_close(conn, sym, settle_day)
             if actual is None:
                 skipped += 1
                 continue
@@ -384,20 +406,41 @@ def run_settlement(
                         "level_target": hr[4],
                     })
 
+            prints = load_hourly_closes(conn, sym, settle_day)
             stl = settle_forecast(
                 session_id=sid,
                 symbol=sym,
-                trade_date=tdate if isinstance(tdate, date) else date.fromisoformat(str(tdate)),
+                trade_date=session_day,
                 expected_close=expected,
                 hourly=hourly,
                 actual_close=actual,
+                hourly_actuals=prints or None,
+                spot=spot,
+                target_date=settle_day,
             )
             upsert_settlement(conn, stl)
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM features.stock_backtest_settlement
+                    WHERE symbol = %s AND trade_date = %s AND settlement_id <> %s
+                    """,
+                    # By settlement_id, not session_id: rows written before
+                    # 0.126.0 carry a random id, so the same session can hold an
+                    # old row beside the one just upserted.
+                    (sym, session_day, stl.settlement_id),
+                )
+                removed += max(cur.rowcount or 0, 0)
+            conn.commit()
             settled += 1
+            if prints:
+                hourly_basis += 1
 
     return {
         "slot": "settlement",
         "sessions_settled": settled,
+        "settled_on_hourly_bars": hourly_basis,
+        "stale_settlements_removed": removed,
         "skipped_no_actual": skipped,
         "trading_days": [d.isoformat() for d in trading_days],
     }

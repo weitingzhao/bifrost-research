@@ -457,7 +457,9 @@ _specs: list[tuple[str, str, list[Any], str, str, str]] = [
         "research_settlement_schedule",
         "research_settlement_job",
         [engines_settlement],
-        "0 22 * * 1-5",
+        # After the plugin's 1-hour bars land (~23:15 UTC): settlement reads the
+        # settled session's hourly prints, and at 22:00 it had none to read.
+        "45 23 * * 1-5",
         "UTC",
         "settlement",
     ),
@@ -530,8 +532,9 @@ _specs: list[tuple[str, str, list[Any], str, str, str]] = [
     #
     # New York, 1-5, matching research_trading_day: this asset depends on
     # engines/terrain, which that job produces at 22:30 ET. Half an hour later
-    # keeps the dependency ordered on the same calendar, and still lands well
-    # before research_settlement_schedule at 22:00 UTC the following day.
+    # keeps the dependency ordered on the same calendar. The session forecasts
+    # the next trading day, which research_settlement_schedule (23:45 UTC)
+    # settles that evening.
     (
         "research_forecast_schedule",
         "research_forecast_job",
