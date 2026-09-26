@@ -13,7 +13,7 @@ import argparse
 import logging
 import sys
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from bifrost_research.db.calendar import (
@@ -29,6 +29,7 @@ from bifrost_research.engines.forecast.playbook import (
 from bifrost_research.engines.forecast.terrain import (
     compute_market_terrain,
     load_upstream_signals,
+    terrain_input_fault,
     upsert_market_terrain,
 )
 from bifrost_research.engines.backtest.settlement import (
@@ -325,6 +326,37 @@ def run_gex_intraday(
     }
 
 
+def _terrain_input_faults(conn: Any, session_day: date) -> dict[str, str]:
+    """Symbol → the input fault its terrain for ``session_day`` carried, if any.
+
+    The forecast upserts its terrain beside the session, so the day's terrain row
+    holds the levels the session's target was drawn from.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT symbol, spot, inputs_json
+            FROM features.stock_forecast_terrain_daily
+            WHERE trade_date = %s
+            """,
+            (session_day,),
+        )
+        rows = cur.fetchall() or []
+    out: dict[str, str] = {}
+    for row in rows:
+        if isinstance(row, Mapping):
+            sym, spot, inputs = row.get("symbol"), row.get("spot"), row.get("inputs_json")
+        else:
+            sym, spot, inputs = row[0], row[1], row[2]
+        fault = terrain_input_fault(
+            float(spot) if spot is not None else None,
+            inputs if isinstance(inputs, Mapping) else None,
+        )
+        if sym and fault:
+            out[str(sym)] = fault
+    return out
+
+
 def run_settlement(
     conn: Any,
     *,
@@ -351,6 +383,7 @@ def run_settlement(
     skipped = 0
     removed = 0
     hourly_basis = 0
+    input_faults = 0
     for settle_day in trading_days:
         prior = fetch_recent_trading_days(conn, 1, as_of=settle_day - timedelta(days=1))
         if not prior:
@@ -381,6 +414,7 @@ def run_settlement(
                 (session_day,),
             )
             rows = cur.fetchall() or []
+        faults = _terrain_input_faults(conn, session_day)
 
         for row in rows:
             if isinstance(row, dict):
@@ -431,6 +465,7 @@ def run_settlement(
                 hourly_actuals=prints or None,
                 spot=spot,
                 target_date=settle_day,
+                input_fault=faults.get(sym),
             )
             upsert_settlement(conn, stl)
             with conn.cursor() as cur:
@@ -449,12 +484,15 @@ def run_settlement(
             settled += 1
             if prints:
                 hourly_basis += 1
+            if stl.stats_json.get("input_fault"):
+                input_faults += 1
 
     return {
         "slot": "settlement",
         "sessions_settled": settled,
         "settled_on_hourly_bars": hourly_basis,
         "stale_settlements_removed": removed,
+        "input_faults": input_faults,
         "skipped_no_actual": skipped,
         "trading_days": [d.isoformat() for d in trading_days],
     }

@@ -199,3 +199,61 @@ def test_load_upstream_signals_keeps_the_levels_spot_over_an_older_close() -> No
     ]
     spot, _gex, _m, _iv = load_upstream_signals(_FakeTerrainConn(rowsets), "PLTR", date(2026, 9, 25))
     assert spot == 190.10
+
+
+# ─── 2026-09-26: walls that never reached the price bound nothing ───
+
+from bifrost_research.engines.forecast.terrain import (
+    terrain_input_fault,
+    walls_reach_spot,
+)
+
+
+def test_walls_off_spot_fall_back_to_the_spot_band() -> None:
+    # PLTR 2026-07-27: the backfilled chain put every level on 20 against 131.53,
+    # and the range target was drawn to 20.5.
+    t = compute_market_terrain(
+        "PLTR",
+        date(2026, 7, 27),
+        spot=131.53,
+        gex={"zero_gamma": 20.0, "major_call_wall": 20.0, "major_put_wall": 20.0, "total_net_gex": 1e6},
+        momentum={"score": 50, "path": "", "crash": 40},
+        iv={"iv_percentile_1y": 50.0},
+    )
+    assert t.inputs_json["gamma_zone_source"] == "walls_off_spot"
+    assert t.inputs_json["levels_off_spot"] == {
+        "zero_gamma": 20.0,
+        "major_call_wall": 20.0,
+        "major_put_wall": 20.0,
+    }
+    assert t.gamma_zone_low < 131.53 < t.gamma_zone_high
+    assert abs(t.expected_close / 131.53 - 1) < 0.02
+    # The row it writes is not a fault: its forecast used the spot band.
+    assert terrain_input_fault(t.spot, t.inputs_json) is None
+
+
+def test_one_wall_near_spot_keeps_the_walls() -> None:
+    assert walls_reach_spot(spot=17.1, call_wall=22.5, put_wall=17.0)
+    assert walls_reach_spot(spot=100.0, call_wall=None, put_wall=None)
+    assert not walls_reach_spot(spot=31.41, call_wall=0.5, put_wall=1.0)
+    assert not walls_reach_spot(spot=100.0, call_wall=None, put_wall=70.0)
+    t = compute_market_terrain(
+        "NNE",
+        date(2026, 9, 21),
+        spot=17.1,
+        gex={"zero_gamma": 22.15, "major_call_wall": 22.5, "major_put_wall": 17.0},
+        momentum=None,
+        iv=None,
+    )
+    assert t.inputs_json["gamma_zone_source"] == "walls"
+    assert "levels_off_spot" not in t.inputs_json
+
+
+def test_terrain_input_fault_names_rows_written_before_the_guard() -> None:
+    old = {"gamma_zone_source": "walls_widened", "gex": {"major_call_wall": 20.0, "major_put_wall": 20.0}}
+    assert terrain_input_fault(131.53, old) == "walls_off_spot"
+    near = {"gamma_zone_source": "walls", "gex": {"major_call_wall": 135.0, "major_put_wall": 125.0}}
+    assert terrain_input_fault(131.53, near) is None
+    assert terrain_input_fault(131.53, {"gex": {}}) is None
+    assert terrain_input_fault(131.53, None) is None
+    assert terrain_input_fault(None, old) is None

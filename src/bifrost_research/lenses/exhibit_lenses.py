@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from bifrost_research.engines.backtest.settlement import forecast_result_sql
 from bifrost_research.lenses.exhibit_model import ExhibitResponse, freshness_from, iso_date, rollback_quietly
 from bifrost_research.api.similar_regime import similar_rows
 from bifrost_research.lenses.registry import LENSES
@@ -480,6 +481,7 @@ def exhibit_forecast_path(conn: Any, symbol: str) -> ExhibitResponse:
                    MAX(computed_at)
             FROM {TABLE_STOCK_BACKTEST_SETTLEMENT}
             WHERE symbol = %s AND trade_date >= CURRENT_DATE - INTERVAL '30 days'
+              AND {forecast_result_sql()}
             """,
             (symbol,),
         )

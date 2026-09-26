@@ -152,6 +152,7 @@ def settle_forecast(
     settlement_id: str | None = None,
     spot: float | None = None,
     target_date: date | None = None,
+    input_fault: str | None = None,
 ) -> ForecastSettlement:
     """Settle one forecast session against the close it forecast (+ hourly prints).
 
@@ -165,6 +166,13 @@ def settle_forecast(
     reported an hourly path hit rate it never measured; the path is now judged on
     the hours that printed, or on the close alone when none did
     (``stats_json.path_basis``).
+
+    ``input_fault`` names an input the forecast was drawn from that did not
+    describe the price (``terrain_input_fault``). The row is still written — the
+    page shows what happened — but ``forecast_result_sql`` leaves it out of every
+    rate and average, which would otherwise measure that input: PLTR's avg |miss|
+    in range read 57% on the strength of July targets set at 20–65 against a
+    120–130 stock.
     """
     miss = actual_close - expected_close
     miss_pct = miss / expected_close if expected_close else 0.0
@@ -250,6 +258,8 @@ def settle_forecast(
         stats_json["spot"] = float(spot)
     if target_date is not None:
         stats_json["target_date"] = target_date.isoformat()
+    if input_fault:
+        stats_json["input_fault"] = input_fault
 
     return ForecastSettlement(
         # One settlement per session: re-settling (the hourly basis arriving after
@@ -271,13 +281,34 @@ def settle_forecast(
     )
 
 
+def forecast_result_sql(alias: str = "") -> str:
+    """SQL predicate: this settlement scores the forecast, not a faulty input.
+
+    Every rate or average over ``features.stock_backtest_settlement`` applies it;
+    lists of rows do not, and show the fault instead.
+    """
+    col = f"{alias}.stats_json" if alias else "stats_json"
+    return f"NOT COALESCE({col} ? 'input_fault', false)"
+
+
+def input_fault_count_sql(alias: str = "") -> str:
+    """``COUNT(*) FILTER (…)`` of the rows ``forecast_result_sql`` leaves out."""
+    return f"COUNT(*) FILTER (WHERE NOT ({forecast_result_sql(alias)}))"
+
+
 def aggregate_accuracy(
     settlements: Sequence[ForecastSettlement],
     *,
     symbol: str | None = None,
     result_id: str | None = None,
 ) -> BacktestSummary:
-    """Aggregate Path Hit rate and Close Miss stats across settlements."""
+    """Aggregate Path Hit rate and Close Miss stats across settlements.
+
+    Settlements stamped with an input fault are left out (``forecast_result_sql``)
+    and counted in ``stats_json.input_faults``.
+    """
+    faults = sum(1 for s in settlements if (s.stats_json or {}).get("input_fault"))
+    settlements = [s for s in settlements if not (s.stats_json or {}).get("input_fault")]
     if not settlements:
         today = date.today()
         return BacktestSummary(
@@ -289,7 +320,7 @@ def aggregate_accuracy(
             path_hit_rate=0.0,
             avg_close_miss_pct=0.0,
             median_close_miss_pct=0.0,
-            stats_json={"empty": True},
+            stats_json={"empty": True, "input_faults": faults},
         )
     sym = (symbol or settlements[0].symbol).upper()
     dates = sorted(s.trade_date for s in settlements)
@@ -312,6 +343,7 @@ def aggregate_accuracy(
             "path_hits": hits,
             "path_misses": len(settlements) - hits,
             "mean_abs_close_miss_pct": round(avg, 6),
+            "input_faults": faults,
             "advisory": "D10 BLOCKED",
         },
     )

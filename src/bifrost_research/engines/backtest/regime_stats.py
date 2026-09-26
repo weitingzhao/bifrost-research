@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any, Mapping
 
+from bifrost_research.engines.backtest.settlement import forecast_result_sql
+
 
 def compute_regime_stats(
     conn: Any,
@@ -17,7 +19,7 @@ def compute_regime_stats(
     cutoff = date.today() - timedelta(days=max(lookback_days, 1))
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT
                 f.regime,
                 COUNT(*) AS n,
@@ -26,6 +28,7 @@ def compute_regime_stats(
             FROM features.stock_backtest_settlement s
             JOIN features.stock_forecast_session f ON f.session_id = s.session_id
             WHERE s.symbol = %s AND s.trade_date >= %s
+              AND {forecast_result_sql("s")}
             GROUP BY f.regime
             ORDER BY n DESC
             """,

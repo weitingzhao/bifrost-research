@@ -201,3 +201,52 @@ def test_hourly_closes_key_each_bar_by_the_hour_it_ends() -> None:
     sym, start, end = conn.cur.params
     assert sym == "PLTR"
     assert start.utcoffset() is not None and (end - start).days == 1
+
+
+# ─── 2026-09-26: a settlement drawn from a faulty input scores that input ───
+
+from bifrost_research.engines.backtest.settlement import (
+    forecast_result_sql,
+    input_fault_count_sql,
+)
+
+
+def test_input_fault_is_stamped_and_left_out_of_the_aggregate() -> None:
+    faulty = settle_forecast(
+        session_id="PLTR-2026-07-27",
+        symbol="PLTR",
+        trade_date=date(2026, 7, 27),
+        expected_close=20.502,
+        hourly=[],
+        actual_close=123.53,
+        spot=131.53,
+        target_date=date(2026, 7, 28),
+        input_fault="walls_off_spot",
+    )
+    assert faulty.stats_json["input_fault"] == "walls_off_spot"
+    fine = settle_forecast(
+        session_id="PLTR-2026-09-23",
+        symbol="PLTR",
+        trade_date=date(2026, 9, 23),
+        expected_close=190.0,
+        hourly=[],
+        actual_close=191.0,
+        spot=191.79,
+        target_date=date(2026, 9, 24),
+    )
+    assert "input_fault" not in fine.stats_json
+    summary = aggregate_accuracy([faulty, fine], symbol="PLTR")
+    assert summary.sessions_settled == 1
+    assert summary.avg_close_miss_pct < 0.01
+    assert summary.stats_json["input_faults"] == 1
+    only_faults = aggregate_accuracy([faulty], symbol="PLTR")
+    assert only_faults.sessions_settled == 0
+    assert only_faults.stats_json["input_faults"] == 1
+
+
+def test_forecast_result_sql_treats_a_missing_stats_json_as_a_result() -> None:
+    # A NULL stats_json must not drop the row: `NULL ? key` is NULL, and NOT NULL
+    # filters it out.
+    assert forecast_result_sql() == "NOT COALESCE(stats_json ? 'input_fault', false)"
+    assert forecast_result_sql("st") == "NOT COALESCE(st.stats_json ? 'input_fault', false)"
+    assert input_fault_count_sql("s").startswith("COUNT(*) FILTER (WHERE NOT (NOT COALESCE(s.stats_json")

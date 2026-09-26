@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from bifrost_research.engines.backtest.settlement import forecast_result_sql
 from bifrost_research.lenses.registry import LENSES, classify, classify_category
 
 logger = logging.getLogger(__name__)
@@ -161,13 +162,14 @@ def _opex_pin_sql() -> str:
 
 def _forecast_path_sql() -> str:
     """The lens reads a hit *rate* over the window, not one settlement."""
-    return """
+    return f"""
         SELECT symbol,
                CASE WHEN avg((path_hit)::int) >= 0.5 THEN 'hit' ELSE 'miss' END AS value,
                max(trade_date) AS as_of
         FROM features.stock_backtest_settlement
         WHERE symbol = ANY(%(symbols)s) AND trade_date >= %(since)s
           AND path_hit IS NOT NULL
+          AND {forecast_result_sql()}
         GROUP BY symbol
     """
 

@@ -96,6 +96,7 @@ def test_run_settlement_settles_the_prior_session_against_the_settle_day() -> No
     cursor.__enter__.return_value = cursor
     cursor.fetchall.side_effect = [
         [("PLTR-2026-09-23", "PLTR", 188.7, 191.79)],  # latest session per symbol for D
+        [("PLTR", 191.79, {"gex": {"major_call_wall": 195.0, "major_put_wall": 185.0}})],  # D's terrain
         [(10, "higher-high", 190.0, 193.0, 191.0)],    # its hourly path
     ]
     cursor.rowcount = 2
@@ -117,6 +118,7 @@ def test_run_settlement_settles_the_prior_session_against_the_settle_day() -> No
     assert stl.actual_close == 192.59
     assert stl.stats_json["target_date"] == "2026-09-24"
     assert stl.stats_json["path_basis"] == "hourly"
+    assert "input_fault" not in stl.stats_json
     delete_sql, delete_params = cursor.execute.call_args_list[-1].args
     assert "DELETE FROM features.stock_backtest_settlement" in delete_sql
     assert delete_params == ("PLTR", session_day, "stl-PLTR-2026-09-23")
@@ -126,3 +128,36 @@ def test_run_settlement_settles_the_prior_session_against_the_settle_day() -> No
     assert result["sessions_settled"] == 1
     assert result["settled_on_hourly_bars"] == 1
     assert result["stale_settlements_removed"] == 4  # two deletes, rowcount 2 each
+    assert result["input_faults"] == 0
+
+
+def test_run_settlement_stamps_a_session_drawn_from_walls_off_spot() -> None:
+    """PLTR 2026-07-27: both walls on 20 against a 131.53 close — the backfilled
+    chain held a handful of contracts — so the target was 20.5. The settlement is
+    written and stamped; rates leave it out (2026-09-26)."""
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.fetchall.side_effect = [
+        [("PLTR-2026-07-27", "PLTR", 20.502, 131.53)],
+        [
+            ("PLTR", 131.53, {"gamma_zone_source": "walls_widened",
+                              "gex": {"zero_gamma": 20.0, "major_call_wall": 20.0, "major_put_wall": 20.0}}),
+            ("SPY", 640.0, {"gamma_zone_source": "walls_off_spot",
+                            "gex": {"major_call_wall": 400.0, "major_put_wall": 380.0}}),
+        ],
+        [],
+    ]
+    cursor.rowcount = 0
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    captured = {}
+    with patch.object(sched, "fetch_recent_trading_days", return_value=[date(2026, 7, 27)]), \
+         patch.object(sched, "load_actual_close", return_value=123.53), \
+         patch.object(sched, "load_hourly_closes", return_value={}), \
+         patch.object(sched, "upsert_settlement", side_effect=lambda c, s: captured.setdefault("stl", s)):
+        result = sched.run_settlement(conn, trading_days=[date(2026, 7, 28)], symbols=[])
+
+    stl = captured["stl"]
+    assert stl.stats_json["input_fault"] == "walls_off_spot"
+    assert result["input_faults"] == 1

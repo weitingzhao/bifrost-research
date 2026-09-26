@@ -176,6 +176,52 @@ def classify_regime(
 
 GAMMA_ZONE_MIN_WIDTH = 0.002  # a zone narrower than 0.2% of spot is a point
 GAMMA_ZONE_WIDEN = 0.005  # …and is widened to ±0.5% around its middle
+LEVELS_OFF_SPOT = 0.20  # no wall within 20% of spot: the chain did not reach the price
+
+
+def walls_reach_spot(
+    *,
+    spot: float,
+    call_wall: float | None,
+    put_wall: float | None,
+) -> bool:
+    """Whether the GEX walls describe the price they are asked to bound.
+
+    The July–August 2026 terrain was backfilled from option chains holding a
+    handful of contracts (PLTR 2026-07-24: six), so both walls could sit on one
+    strike nowhere near the price — PLTR's on 20 against a 131.53 close — and the
+    forecast target was drawn to them: 200 of the 925 terrain rows before
+    September, their targets on average 50% from spot against 3% for the rest.
+    With no wall within ``LEVELS_OFF_SPOT`` of spot the levels measure that
+    chain, not this price. No walls at all is not this case (spot band).
+    """
+    walls = [float(w) for w in (call_wall, put_wall) if w and w > 0]
+    if not walls or spot <= 0:
+        return True
+    return any(abs(w / spot - 1.0) < LEVELS_OFF_SPOT for w in walls)
+
+
+def terrain_input_fault(spot: float | None, inputs_json: Mapping[str, Any] | None) -> str | None:
+    """Name the input fault a stored terrain row's forecast was drawn from, if any.
+
+    Rows written before the guard in ``compute_market_terrain`` kept walls that
+    never reached spot; rows written after it fell back to the spot band
+    (``walls_off_spot``) and forecast from that, so they carry no fault.
+    """
+    if not inputs_json or not spot:
+        return None
+    if inputs_json.get("gamma_zone_source") == "walls_off_spot":
+        return None
+    gex = inputs_json.get("gex")
+    if not isinstance(gex, Mapping):
+        return None
+    if walls_reach_spot(
+        spot=float(spot),
+        call_wall=_f(gex, "major_call_wall", 0.0) or None,
+        put_wall=_f(gex, "major_put_wall", 0.0) or None,
+    ):
+        return None
+    return "walls_off_spot"
 
 
 def gamma_zone_source(
@@ -252,6 +298,16 @@ def compute_market_terrain(
         call_wall = None
     if put_wall == 0.0:
         put_wall = None
+    # Levels from a chain that never reached the price bound nothing here; the
+    # zone falls back to the spot band and says why.
+    levels_off_spot: dict[str, Any] | None = None
+    if not walls_reach_spot(spot=spot, call_wall=call_wall, put_wall=put_wall):
+        levels_off_spot = {
+            "zero_gamma": zero_gamma,
+            "major_call_wall": call_wall,
+            "major_put_wall": put_wall,
+        }
+        zero_gamma = call_wall = put_wall = None
 
     pin = pin_score_from_gex(
         spot=spot,
@@ -301,9 +357,15 @@ def compute_market_terrain(
         "gex": dict(gex) if gex else {},
         "momentum": dict(momentum) if momentum else {},
         "iv": dict(iv) if iv else {},
-        "gamma_zone_source": gamma_zone_source(spot=spot, call_wall=call_wall, put_wall=put_wall),
+        "gamma_zone_source": (
+            "walls_off_spot"
+            if levels_off_spot
+            else gamma_zone_source(spot=spot, call_wall=call_wall, put_wall=put_wall)
+        ),
         "advisory": "D10 BLOCKED — terrain is advisory only",
     }
+    if levels_off_spot:
+        inputs["levels_off_spot"] = levels_off_spot
     return MarketTerrain(
         symbol=sym,
         trade_date=trade_date,

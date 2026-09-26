@@ -15,6 +15,8 @@ from pydantic import BaseModel, Field
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.settlement import (
     aggregate_accuracy,
+    forecast_result_sql,
+    input_fault_count_sql,
     settle_forecast,
 )
 from bifrost_research.engines.event_radar.placeholders import PLACEHOLDER_SQL
@@ -470,7 +472,7 @@ def forecast_calibration(
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT s.regime,
                        COUNT(*),
                        COUNT(*) FILTER (WHERE st.path_hit),
@@ -480,23 +482,49 @@ def forecast_calibration(
                 FROM features.stock_forecast_session s
                 JOIN features.stock_backtest_settlement st ON st.session_id = s.session_id
                 WHERE s.symbol = %s AND s.trade_date >= CURRENT_DATE - %s::int
+                  AND {forecast_result_sql("st")}
                 GROUP BY s.regime
                 ORDER BY COUNT(*) DESC
                 """,
                 (sym, days),
             )
             raw = cur.fetchall() or []
+            cur.execute(
+                f"""
+                SELECT {input_fault_count_sql()}
+                FROM features.stock_backtest_settlement
+                WHERE symbol = %s AND trade_date >= CURRENT_DATE - %s::int
+                """,
+                (sym, days),
+            )
+            fault_row = cur.fetchone()
     finally:
         conn.close()
     rows = calibration_rows(list(raw))
     total = sum(r["n"] for r in rows)
     hits = sum(r["hits"] for r in rows)
+    faults = _first_int(fault_row)
     return {
         "symbol": sym,
         "days": days,
         "rows": rows,
-        "overall": {"n": total, "hits": hits, "hit_rate": (hits / total) if total else None},
+        "overall": {
+            "n": total,
+            "hits": hits,
+            "hit_rate": (hits / total) if total else None,
+            "input_faults": faults,
+        },
     }
+
+
+def _first_int(row: Any) -> int:
+    if row is None:
+        return 0
+    if isinstance(row, Mapping):
+        value = next(iter(row.values()), 0)
+    else:
+        value = row[0] if row else 0
+    return int(value or 0)
 
 
 @router.get("/forecast/sessions/{session_id}")
@@ -1072,14 +1100,15 @@ def forecast_hit_rate(
     )
     try:
         with conn.cursor() as cur:
+            ok = forecast_result_sql()
             cur.execute(
-                """
+                f"""
                 SELECT
-                    COUNT(*)::bigint AS session_count,
+                    COUNT(*) FILTER (WHERE {ok})::bigint AS session_count,
                     ROUND(
-                        AVG(CASE WHEN path_hit THEN 1.0 ELSE 0.0 END)::numeric, 4
+                        AVG(CASE WHEN path_hit THEN 1.0 ELSE 0.0 END) FILTER (WHERE {ok})::numeric, 4
                     ) AS path_hit_rate,
-                    ROUND(AVG(ABS(close_miss_pct))::numeric, 6) AS avg_close_miss_pct,
+                    ROUND(AVG(ABS(close_miss_pct)) FILTER (WHERE {ok})::numeric, 6) AS avg_close_miss_pct,
                     ROUND(
                         AVG(
                             CASE
@@ -1090,9 +1119,10 @@ def forecast_hit_rate(
                                 END
                                 ELSE NULL
                             END
-                        )::numeric,
+                        ) FILTER (WHERE {ok})::numeric,
                         4
-                    ) AS direction_hit_rate
+                    ) AS direction_hit_rate,
+                    {input_fault_count_sql()} AS input_faults
                 FROM features.stock_backtest_settlement
                 WHERE symbol = %s
                   AND trade_date >= CURRENT_DATE - (%s::integer)
@@ -1123,11 +1153,13 @@ def forecast_hit_rate(
                 if isinstance(agg, Mapping) and (agg or {}).get("direction_hit_rate") is not None
                 else None
             )
+            input_faults = int((agg or {}).get("input_faults") or 0) if isinstance(agg, Mapping) else 0
         else:
             session_count = int(agg[0] or 0)
             path_hit_rate = float(agg[1] or 0)
             avg_close_miss_pct = float(agg[2] or 0)
             direction_hit_rate = float(agg[3]) if agg[3] is not None else None
+            input_faults = int(agg[4] or 0) if len(agg) > 4 else 0
         rows = [_row_dict(r, summary_cols) for r in raw]
         # Flatten direction_hit onto row summaries when present
         for item in rows:
@@ -1141,6 +1173,9 @@ def forecast_hit_rate(
             "path_hit_rate": path_hit_rate,
             "avg_close_miss_pct": avg_close_miss_pct,
             "direction_hit_rate": direction_hit_rate,
+            # Settlements left out of the rates above: their forecast was drawn
+            # from levels that did not describe the price (the rows still list).
+            "input_faults": input_faults,
             "rows": rows,
         }
     finally:
@@ -1189,7 +1224,7 @@ def forecast_backtest(
                     ROUND(AVG(ABS(close_miss_pct))::numeric, 6) AS avg_close_miss_pct,
                     PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ABS(close_miss_pct)) AS median_close_miss_pct
                 FROM features.stock_backtest_settlement
-                {where}
+                {where} AND {forecast_result_sql()}
                 """,
                 tuple(params),
             )
