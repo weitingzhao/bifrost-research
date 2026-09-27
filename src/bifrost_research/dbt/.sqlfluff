@@ -9,7 +9,11 @@ templater = jinja
 # ST06 (reorders SELECT columns, i.e. the materialized table's column order)
 # and ST07 (USING -> ON, which changes `select *`). `core` is sqlfluff's
 # curated set; widen it on purpose, not by upgrade.
-rules = core
+# RF02 (added 2026-09-26): qualify columns wherever a select sees more than one
+# table, scalar subqueries included. An unqualified column there binds to the
+# innermost scope that has it, so if that table ever loses the column it quietly
+# binds to the outer one instead of failing.
+rules = core,RF02
 # Same width as ruff's line-length.
 max_line_length = 100
 

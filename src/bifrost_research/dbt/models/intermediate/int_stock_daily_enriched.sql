@@ -30,7 +30,7 @@ with fresh as (
     inner join {{ ref('dim_universe') }} u on d.symbol = u.symbol
     {% if is_incremental() %}
         where d.bar_date > (
-            select max(trade_date) - interval '{{ lookback_days }} days' from {{ this }}
+            select max(prev.trade_date) - interval '{{ lookback_days }} days' from {{ this }} prev
         )
     {% endif %}
 ),
@@ -47,7 +47,7 @@ with fresh as (
             volume
         from {{ this }}
         where trade_date <= (
-            select max(trade_date) - interval '{{ lookback_days }} days' from {{ this }}
+            select max(prev.trade_date) - interval '{{ lookback_days }} days' from {{ this }} prev
         )
     ),
 
@@ -170,6 +170,6 @@ select
 from with_atr
 {% if is_incremental() %}
     where trade_date > (
-        select max(trade_date) - interval '{{ lookback_days }} days' from {{ this }}
+        select max(prev.trade_date) - interval '{{ lookback_days }} days' from {{ this }} prev
     )
 {% endif %}

@@ -124,7 +124,7 @@ select
     coalesce(d.roc_21 > 0, false) as roc_21_positive,
 
     -- RS vs SPY (JOIN instead of correlated subquery)
-    coalesce(d.return_252d > (select spy_252d_return from spy_return), false) as rs_gt_spy,
+    coalesce(d.return_252d > (select spy.spy_252d_return from spy_return spy), false) as rs_gt_spy,
 
     -- Volume trend signals
     coalesce(v.vol_10 > v.volume_ma_50, false) as volume_expanding,
@@ -141,7 +141,7 @@ select
         + coalesce((m.ema_12_approx - m.ema_26_approx) / nullif(d.close, 0) > 0.01, false)::int
         + coalesce(d.roc_10 > 0, false)::int
         + coalesce(d.roc_21 > 0, false)::int
-        + coalesce(d.return_252d > (select spy_252d_return from spy_return), false)::int
+        + coalesce(d.return_252d > (select spy.spy_252d_return from spy_return spy), false)::int
         + coalesce(v.vol_10 > v.volume_ma_50, false)::int
         + coalesce(v.vol_10 > v.volume_ma_50 * 1.5, false)::int
         + coalesce(d.close > d.sma_10, false)::int
