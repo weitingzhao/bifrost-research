@@ -21,8 +21,8 @@ with enriched_latest as (
         e.atr_14,
         e.bar_sequence,
         row_number() over (partition by e.symbol order by e.trade_date desc) as recency
-    from {{ ref('int_stock_daily_enriched') }} e
-    inner join {{ ref('dim_universe') }} u on e.symbol = u.symbol
+    from {{ ref('int_stock_daily_enriched') }} as e
+    inner join {{ ref('dim_universe') }} as u on e.symbol = u.symbol
     where e.bar_sequence >= 252
 ),
 
@@ -116,14 +116,14 @@ vol_contraction as (
         prev.atr_14 as atr_50d_ago
     from (
         select symbol, atr_14 from enriched_latest where recency = 1
-    ) cur
+    ) as cur
     left join lateral (
         select e2.atr_14
-        from enriched_latest e2
+        from enriched_latest as e2
         where e2.symbol = cur.symbol and e2.recency between 48 and 52
         order by e2.recency
         limit 1
-    ) prev on true
+    ) as prev on true
 )
 
 select
@@ -173,10 +173,10 @@ select
     vc.current_atr,
     vc.atr_50d_ago
 
-from {{ ref('dim_universe') }} u
-left join bb_latest bbl on u.symbol = bbl.symbol
-left join bb_avg bba on u.symbol = bba.symbol
-left join adx_calc adx on u.symbol = adx.symbol
-left join aroon_latest ar on u.symbol = ar.symbol
-left join vol_contraction vc on u.symbol = vc.symbol
+from {{ ref('dim_universe') }} as u
+left join bb_latest as bbl on u.symbol = bbl.symbol
+left join bb_avg as bba on u.symbol = bba.symbol
+left join adx_calc as adx on u.symbol = adx.symbol
+left join aroon_latest as ar on u.symbol = ar.symbol
+left join vol_contraction as vc on u.symbol = vc.symbol
 where u.included = true

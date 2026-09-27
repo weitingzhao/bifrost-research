@@ -99,7 +99,7 @@ select
             then a.revenue / a.rev_fy_prev - 1
     end) as rev_fy_g1
 
-from quarterly_ranked q
-left join annual_ranked a using (symbol)
+from quarterly_ranked as q
+left join annual_ranked as a using (symbol)
 where q.q_rank <= 4
 group by q.symbol

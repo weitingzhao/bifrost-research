@@ -13,8 +13,8 @@ with latest as (
         e.low_52w,
         e.high_52w,
         e.sma_200_20d_ago
-    from {{ ref('int_stock_daily_enriched') }} e
-    inner join {{ ref('dim_universe') }} u on e.symbol = u.symbol
+    from {{ ref('int_stock_daily_enriched') }} as e
+    inner join {{ ref('dim_universe') }} as u on e.symbol = u.symbol
     where e.bar_sequence >= 252
     order by e.symbol asc, e.trade_date desc
 ),
@@ -72,5 +72,5 @@ select
     c.crs_percentile,
     c.return_252d
 
-from latest l
-left join latest_crs c on l.symbol = c.symbol
+from latest as l
+left join latest_crs as c on l.symbol = c.symbol

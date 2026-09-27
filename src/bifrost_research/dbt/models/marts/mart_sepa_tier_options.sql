@@ -41,7 +41,7 @@ joined as (
         gex.zero_gamma,
         gex.call_wall,
         gex.put_wall
-    from {{ ref('dim_universe') }} u
+    from {{ ref('dim_universe') }} as u
     left join iv on u.symbol = iv.symbol
     left join pcr on u.symbol = pcr.symbol
     left join gex on u.symbol = gex.symbol

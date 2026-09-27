@@ -20,10 +20,10 @@ with base as (
         t.high_52w,
         o.iv_percentile,
         o.pcr_oi
-    from {{ ref('mart_sepa_screener_wide') }} w
-    inner join {{ ref('mart_sepa_composite_score') }} c using (symbol)
-    inner join {{ ref('mart_sepa_technical_eval') }} t using (symbol)
-    left join {{ ref('mart_sepa_tier_options') }} o using (symbol)
+    from {{ ref('mart_sepa_screener_wide') }} as w
+    inner join {{ ref('mart_sepa_composite_score') }} as c using (symbol)
+    inner join {{ ref('mart_sepa_technical_eval') }} as t using (symbol)
+    left join {{ ref('mart_sepa_tier_options') }} as o using (symbol)
 )
 
 select

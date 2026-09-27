@@ -26,11 +26,12 @@ with fresh as (
         d.low,
         d.close,
         d.volume
-    from {{ source('market', 'stock_daily') }} d
-    inner join {{ ref('dim_universe') }} u on d.symbol = u.symbol
+    from {{ source('market', 'stock_daily') }} as d
+    inner join {{ ref('dim_universe') }} as u on d.symbol = u.symbol
     {% if is_incremental() %}
         where d.bar_date > (
-            select max(prev.trade_date) - interval '{{ lookback_days }} days' from {{ this }} prev
+            select max(prev.trade_date) - interval '{{ lookback_days }} days'
+            from {{ this }} as prev
         )
     {% endif %}
 ),
@@ -47,7 +48,8 @@ with fresh as (
             volume
         from {{ this }}
         where trade_date <= (
-            select max(prev.trade_date) - interval '{{ lookback_days }} days' from {{ this }} prev
+            select max(prev.trade_date) - interval '{{ lookback_days }} days'
+            from {{ this }} as prev
         )
     ),
 
@@ -115,7 +117,7 @@ with_prev as (
             rows between 251 preceding and current row
         ) as high_52w
 
-    from source_data d
+    from source_data as d
     window w as (partition by d.symbol order by d.trade_date)
 ),
 
@@ -170,6 +172,6 @@ select
 from with_atr
 {% if is_incremental() %}
     where trade_date > (
-        select max(prev.trade_date) - interval '{{ lookback_days }} days' from {{ this }} prev
+        select max(prev.trade_date) - interval '{{ lookback_days }} days' from {{ this }} as prev
     )
 {% endif %}

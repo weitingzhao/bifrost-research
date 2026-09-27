@@ -57,7 +57,7 @@ select
     u.name as company_name,
     u.primary_exchange
 
-from {{ ref('mart_sepa_screening_ranked') }} r
-inner join {{ ref('mart_sepa_fundamental_eval') }} f using (symbol)
-inner join {{ ref('mart_sepa_technical_eval') }} t using (symbol)
-inner join {{ ref('dim_universe') }} u using (symbol)
+from {{ ref('mart_sepa_screening_ranked') }} as r
+inner join {{ ref('mart_sepa_fundamental_eval') }} as f using (symbol)
+inner join {{ ref('mart_sepa_technical_eval') }} as t using (symbol)
+inner join {{ ref('dim_universe') }} as u using (symbol)

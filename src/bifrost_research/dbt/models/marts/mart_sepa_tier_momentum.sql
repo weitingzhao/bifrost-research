@@ -22,8 +22,8 @@ with daily_latest as (
         e.roc_21,
         e.return_252d,
         e.price_change
-    from {{ ref('int_stock_daily_enriched') }} e
-    inner join {{ ref('dim_universe') }} u on e.symbol = u.symbol
+    from {{ ref('int_stock_daily_enriched') }} as e
+    inner join {{ ref('dim_universe') }} as u on e.symbol = u.symbol
     where e.bar_sequence >= 252
     order by e.symbol asc, e.trade_date desc
 ),
@@ -44,8 +44,8 @@ rsi_calc as (
                 order by e.trade_date rows between 13 preceding and current row
             )
             as avg_loss
-    from {{ ref('int_stock_daily_enriched') }} e
-    inner join {{ ref('dim_universe') }} u on e.symbol = u.symbol
+    from {{ ref('int_stock_daily_enriched') }} as e
+    inner join {{ ref('dim_universe') }} as u on e.symbol = u.symbol
     where e.bar_sequence >= 30
 ),
 
@@ -75,8 +75,8 @@ macd_calc as (
                 order by e.trade_date rows between 25 preceding and current row
             )
             as ema_26_approx
-    from {{ ref('int_stock_daily_enriched') }} e
-    inner join {{ ref('dim_universe') }} u on e.symbol = u.symbol
+    from {{ ref('int_stock_daily_enriched') }} as e
+    inner join {{ ref('dim_universe') }} as u on e.symbol = u.symbol
     where e.bar_sequence >= 252
     order by e.symbol asc, e.trade_date desc
 ),
@@ -98,8 +98,8 @@ vol_trend as (
             )
             as vol_10,
         e.volume_ma_50
-    from {{ ref('int_stock_daily_enriched') }} e
-    inner join {{ ref('dim_universe') }} u on e.symbol = u.symbol
+    from {{ ref('int_stock_daily_enriched') }} as e
+    inner join {{ ref('dim_universe') }} as u on e.symbol = u.symbol
     where e.bar_sequence >= 252
     order by e.symbol asc, e.trade_date desc
 )
@@ -124,7 +124,8 @@ select
     coalesce(d.roc_21 > 0, false) as roc_21_positive,
 
     -- RS vs SPY (JOIN instead of correlated subquery)
-    coalesce(d.return_252d > (select spy.spy_252d_return from spy_return spy), false) as rs_gt_spy,
+    coalesce(d.return_252d > (select spy.spy_252d_return from spy_return as spy), false)
+        as rs_gt_spy,
 
     -- Volume trend signals
     coalesce(v.vol_10 > v.volume_ma_50, false) as volume_expanding,
@@ -141,7 +142,7 @@ select
         + coalesce((m.ema_12_approx - m.ema_26_approx) / nullif(d.close, 0) > 0.01, false)::int
         + coalesce(d.roc_10 > 0, false)::int
         + coalesce(d.roc_21 > 0, false)::int
-        + coalesce(d.return_252d > (select spy.spy_252d_return from spy_return spy), false)::int
+        + coalesce(d.return_252d > (select spy.spy_252d_return from spy_return as spy), false)::int
         + coalesce(v.vol_10 > v.volume_ma_50, false)::int
         + coalesce(v.vol_10 > v.volume_ma_50 * 1.5, false)::int
         + coalesce(d.close > d.sma_10, false)::int
@@ -153,7 +154,7 @@ select
     d.roc_10,
     d.roc_21
 
-from daily_latest d
-left join latest_rsi r on d.symbol = r.symbol
-left join macd_calc m on d.symbol = m.symbol
-left join vol_trend v on d.symbol = v.symbol
+from daily_latest as d
+left join latest_rsi as r on d.symbol = r.symbol
+left join macd_calc as m on d.symbol = m.symbol
+left join vol_trend as v on d.symbol = v.symbol

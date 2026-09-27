@@ -85,6 +85,6 @@ select
     f.rev_fy_g0,
     f.rev_fy_g1
 
-from {{ ref('dim_universe') }} u
-left join {{ ref('int_financials_yoy') }} f on u.symbol = f.symbol
+from {{ ref('dim_universe') }} as u
+left join {{ ref('int_financials_yoy') }} as f on u.symbol = f.symbol
 where u.included = true

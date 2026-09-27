@@ -30,7 +30,7 @@ prev_si as (
             short_pct_float,
             row_number() over (partition by symbol order by period_date desc) as rn
         from {{ ref('stg_short_interest') }}
-    ) ranked
+    ) as ranked
     where rn = 2
     order by symbol
 ),
@@ -49,7 +49,7 @@ sv_recent as (
             short_volume_ratio,
             row_number() over (partition by symbol order by period_date desc) as rn
         from {{ ref('stg_short_volume') }}
-    ) ranked
+    ) as ranked
     where rn <= 20
     group by symbol
 )
@@ -93,8 +93,8 @@ select
     sv.sv_ratio_5d,
     sv.sv_ratio_20d
 
-from {{ ref('dim_universe') }} u
-left join latest_si si on u.symbol = si.symbol
-left join prev_si psi on u.symbol = psi.symbol
-left join sv_recent sv on u.symbol = sv.symbol
+from {{ ref('dim_universe') }} as u
+left join latest_si as si on u.symbol = si.symbol
+left join prev_si as psi on u.symbol = psi.symbol
+left join sv_recent as sv on u.symbol = sv.symbol
 where u.included = true

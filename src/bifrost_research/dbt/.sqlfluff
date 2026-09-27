@@ -19,7 +19,9 @@ templater = jinja
 # RF03 (added 2026-09-26): a single-table select qualifies all of its columns or
 # none. It matters most in a correlated subquery, where the other table in play
 # is the outer one: there, qualify every column rather than trust scope.
-rules = core,RF02,AM03,RF03
+# AL01 (added 2026-09-26): table aliases say `as` (`from t as d`), so an alias
+# cannot be mistaken for a table name or a missing comma.
+rules = core,RF02,AM03,RF03,AL01
 # Same width as ruff's line-length.
 max_line_length = 100
 

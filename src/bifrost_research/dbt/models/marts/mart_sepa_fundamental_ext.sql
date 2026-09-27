@@ -152,9 +152,9 @@ select
         + coalesce(inc.revenue > 100000000, false)::int
     ) as ext_pass_count
 
-from {{ ref('dim_universe') }} u
-left join latest_ratios r on u.symbol = r.symbol
-left join latest_balance b on u.symbol = b.symbol
-left join latest_cashflow cf on u.symbol = cf.symbol
-left join latest_income inc on u.symbol = inc.symbol
+from {{ ref('dim_universe') }} as u
+left join latest_ratios as r on u.symbol = r.symbol
+left join latest_balance as b on u.symbol = b.symbol
+left join latest_cashflow as cf on u.symbol = cf.symbol
+left join latest_income as inc on u.symbol = inc.symbol
 where u.included = true

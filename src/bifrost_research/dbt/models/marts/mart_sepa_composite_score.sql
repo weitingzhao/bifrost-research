@@ -20,8 +20,8 @@ select
     o.options_structure_score as structure_score,
     se.sentiment_score
 
-from {{ ref('mart_sepa_fundamental_eval') }} f
-inner join {{ ref('mart_sepa_technical_eval') }} t using (symbol)
-left join {{ ref('mart_sepa_tier_momentum') }} m using (symbol)
-left join {{ ref('mart_sepa_tier_options') }} o using (symbol)
-left join {{ ref('mart_sepa_tier_sentiment') }} se using (symbol)
+from {{ ref('mart_sepa_fundamental_eval') }} as f
+inner join {{ ref('mart_sepa_technical_eval') }} as t using (symbol)
+left join {{ ref('mart_sepa_tier_momentum') }} as m using (symbol)
+left join {{ ref('mart_sepa_tier_options') }} as o using (symbol)
+left join {{ ref('mart_sepa_tier_sentiment') }} as se using (symbol)

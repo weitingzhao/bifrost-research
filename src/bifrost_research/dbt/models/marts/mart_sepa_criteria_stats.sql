@@ -76,11 +76,11 @@ tech_stats as (
 select
     'fundamental' as domain,
     to_jsonb(f.*) as stats
-from fund_stats f
+from fund_stats as f
 
 union all
 
 select
     'technical' as domain,
     to_jsonb(t.*) as stats
-from tech_stats t
+from tech_stats as t
