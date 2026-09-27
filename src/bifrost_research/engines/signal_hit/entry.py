@@ -38,6 +38,7 @@ from bifrost_research.engines.signal_hit.build import (
     hit_for,
 )
 from bifrost_research.lenses.registry import decay_lens_ids
+from bifrost_research.lenses.slope_tenor import SLOPE_PICK_ORDER, slope_window_sql
 from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_LENS_HIT_DAILY
 
 logger = logging.getLogger(__name__)
@@ -246,23 +247,24 @@ def _load_momentum_triggers(conn: Any, trade_date: date) -> list[tuple[str, str,
 
 
 def _load_skew_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, float]]:
-    # C2: today's near-30-DTE slope against the symbol's own prior 252 days —
-    # the percentile is the share of those days whose |slope| sat below today's.
+    # C2: today's ~30-day slope (lenses/slope_tenor.py) against the symbol's own
+    # prior 252 days, read the same way — the percentile is the share of those
+    # days whose |slope| sat below today's.
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             WITH today AS (
                 SELECT DISTINCT ON (symbol) symbol, atm_slope::float AS slope
                 FROM features.option_surface_fit_daily
-                WHERE trade_date = %s AND atm_slope IS NOT NULL
-                ORDER BY symbol, ABS(dte - 30) ASC, expiry ASC
+                WHERE trade_date = %s AND {slope_window_sql()}
+                ORDER BY symbol, {SLOPE_PICK_ORDER}
             ),
             hist AS (
                 SELECT DISTINCT ON (symbol, trade_date) symbol, trade_date, ABS(atm_slope)::float AS a
                 FROM features.option_surface_fit_daily
-                WHERE atm_slope IS NOT NULL
+                WHERE {slope_window_sql()}
                   AND trade_date < %s AND trade_date >= %s::date - INTERVAL '252 days'
-                ORDER BY symbol, trade_date, ABS(dte - 30) ASC, expiry ASC
+                ORDER BY symbol, trade_date, {SLOPE_PICK_ORDER}
             )
             SELECT t.symbol, t.slope,
                    100.0 * COUNT(h.a) FILTER (WHERE h.a < ABS(t.slope)) / NULLIF(COUNT(h.a), 0),

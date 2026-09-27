@@ -32,6 +32,7 @@ from fastapi import APIRouter, HTTPException, Query
 from bifrost_research.db.conn import connect
 from bifrost_research.lenses.pin_expiry import monthly_expiry_sql
 from bifrost_research.lenses.similar import summarize_forward_returns
+from bifrost_research.lenses.slope_tenor import SLOPE_PICK_ORDER, slope_window_sql
 from bifrost_research.schema.schemas import (
     TABLE_OPTION_METRIC_GEX_LEVELS_DAILY,
     TABLE_OPTION_METRIC_IV_PERCENTILE_DAILY,
@@ -220,7 +221,7 @@ def _similar_term_slope(
     k: int,
     horizon: int,
 ) -> tuple[list[dict[str, Any]], str]:
-    """k-NN on atm_slope for the ~30 DTE surface-fit row per trade_date."""
+    """k-NN on atm_slope for the ~30-day surface-fit row per trade_date (lenses/slope_tenor.py)."""
     source = "option_surface_fit_daily.atm_slope"
     with conn.cursor() as cur:
         cur.execute(
@@ -230,8 +231,8 @@ def _similar_term_slope(
                        trade_date, symbol, atm_slope, dte, expiry
                 FROM {_SURFACE_FIT}
                 WHERE symbol = %s
-                  AND atm_slope IS NOT NULL
-                ORDER BY trade_date, ABS(dte - 30) ASC, expiry ASC
+                  AND {slope_window_sql()}
+                ORDER BY trade_date, {SLOPE_PICK_ORDER}
             )
             SELECT trade_date, symbol, atm_slope AS lens_value, dte, expiry
             FROM nearest_dte

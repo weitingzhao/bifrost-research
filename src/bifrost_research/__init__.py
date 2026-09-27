@@ -1,3 +1,3 @@
 """Bifrost Research Engine — OLAP analytics domain."""
 
-__version__ = "0.139.0"
+__version__ = "0.140.0"

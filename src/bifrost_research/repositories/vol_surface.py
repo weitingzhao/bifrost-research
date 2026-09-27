@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
+from bifrost_research.lenses.slope_tenor import SLOPE_PICK_ORDER, slope_window_sql
+
 
 _FIT_COLUMNS: tuple[str, ...] = (
     "symbol",
@@ -162,8 +164,8 @@ def get_residuals(
     return [_row_to_dict(r, _RESIDUAL_COLUMNS) for r in rows]
 
 
-# The ~30-day read: the fit nearest 30 DTE inside 20–45, with a slope.
-_SKEW_WINDOW = "atm_slope IS NOT NULL AND dte BETWEEN 20 AND 45"
+# The ~30-day read, as every skew reader takes it (lenses/slope_tenor.py).
+_SKEW_WINDOW = slope_window_sql()
 
 
 def get_skew_extremes(conn: Any, *, as_of: date, limit: int = 20) -> list[dict[str, Any]]:
@@ -179,7 +181,7 @@ def get_skew_extremes(conn: Any, *, as_of: date, limit: int = 20) -> list[dict[s
             FROM features.option_surface_fit_daily
             WHERE trade_date = %s
               AND {_SKEW_WINDOW}
-            ORDER BY symbol, ABS(dte - 30) ASC, expiry ASC
+            ORDER BY symbol, {SLOPE_PICK_ORDER}
         )
         SELECT * FROM session_fits
         ORDER BY ABS(atm_slope) DESC, symbol

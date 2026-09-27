@@ -158,7 +158,8 @@ _SPECS: tuple[LensSpec, ...] = (
         hit_rule="mean_revert",
         notes=(
             "C2: the verdict reads |atm_slope| as a percentile of the symbol's own 252-day "
-            "history (near-30-DTE fit per day) — the raw ±0.25 threshold fired once in 25 "
+            "history (one ~30-day fit per day: nearest 30 DTE within 20–45, none outside it — "
+            "lenses/slope_tenor.py) — the raw ±0.25 threshold fired once in 25 "
             "symbols × 179 days. Scan flags the signed slope on a normalised 0-100 score; "
             "similar-regime calls this lens term_slope. Decay trigger stays contrarian on the "
             "sign at the hot band: call-skew extreme (slope < 0) is the hot side and expects the "

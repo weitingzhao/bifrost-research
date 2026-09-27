@@ -16,6 +16,7 @@ from typing import Any
 from bifrost_research.engines.backtest.settlement import forecast_result_sql
 from bifrost_research.lenses.pin_expiry import NO_MONTHLY_CAVEAT, monthly_expiry_sql
 from bifrost_research.lenses.exhibit_model import ExhibitResponse, freshness_from, iso_date, rollback_quietly
+from bifrost_research.lenses.slope_tenor import SLOPE_DTE_MAX, SLOPE_DTE_MIN, SLOPE_PICK_ORDER, slope_window_sql
 from bifrost_research.api.similar_regime import similar_rows
 from bifrost_research.lenses.registry import LENSES
 from bifrost_research.lenses.similar import summarize_forward_returns
@@ -64,20 +65,30 @@ def _failed(exh: ExhibitResponse, what: str, exc: Exception, conn: Any) -> Exhib
 
 
 def skew_fit_row(conn: Any, symbol: str, before: Any = None) -> tuple[Any, ...] | None:
-    """Nearest-30-DTE SVI fit on the symbol's latest fit date, or the latest date before ``before``."""
+    """The ~30-day SVI fit (lenses/slope_tenor.py) on the symbol's latest date that has one,
+    or the latest such date before ``before``.
+
+    The last column is the symbol's latest fit date at any tenor: when it is later
+    than the reading's, the name was fit since but had no expiry 20–45 DTE out.
+    """
     cut = "AND trade_date < %s::date" if before is not None else ""
-    params = (symbol, symbol) if before is None else (symbol, symbol, before)
+    scope = (symbol,) if before is None else (symbol, before)
+    window = slope_window_sql()
     return _fetch_one(
         conn,
         f"""
-        SELECT trade_date, expiry, dte, atm_vol, atm_slope, fit_rmse, n_points, computed_at
+        SELECT trade_date, expiry, dte, atm_vol, atm_slope, fit_rmse, n_points, computed_at,
+               (SELECT MAX(trade_date) FROM {SURFACE_FIT} WHERE symbol = %s {cut}) AS latest_fit
         FROM {SURFACE_FIT}
         WHERE symbol = %s
-          AND trade_date = (SELECT MAX(trade_date) FROM {SURFACE_FIT} WHERE symbol = %s {cut})
-        ORDER BY ABS(dte - 30) ASC, expiry ASC
+          AND {window}
+          AND trade_date = (
+              SELECT MAX(trade_date) FROM {SURFACE_FIT} WHERE symbol = %s AND {window} {cut}
+          )
+        ORDER BY {SLOPE_PICK_ORDER}
         LIMIT 1
         """,
-        params,
+        (*scope, symbol, *scope),
     )
 
 
@@ -92,10 +103,10 @@ def skew_slope_pctile(conn: Any, symbol: str, trade_date: Any, abs_slope: float 
         FROM (
             SELECT DISTINCT ON (trade_date) trade_date, ABS(atm_slope) AS a
             FROM {SURFACE_FIT}
-            WHERE symbol = %s AND atm_slope IS NOT NULL
+            WHERE symbol = %s AND {slope_window_sql()}
               AND trade_date < %s
               AND trade_date >= %s::date - INTERVAL '252 days'
-            ORDER BY trade_date, ABS(dte - 30) ASC, expiry ASC
+            ORDER BY trade_date, {SLOPE_PICK_ORDER}
         ) s
         """,
         (abs_slope if abs_slope is not None else -1.0, symbol, trade_date, trade_date),
@@ -109,7 +120,7 @@ def exhibit_skew(conn: Any, symbol: str) -> ExhibitResponse:
         today_abs = abs(float(row[4])) if row and row[4] is not None else None
         # C2: the reading is judged against the symbol's own year, not a fixed
         # slope. The percentile is the share of history days whose |slope| sat
-        # below today's — one near-30-DTE fit per day, today excluded.
+        # below today's — one ~30-day fit per day, today excluded.
         hist = skew_slope_pctile(conn, symbol, row[0], today_abs) if row else None
         if row:
             days = int(hist[0] or 0) if hist else 0
@@ -127,12 +138,18 @@ def exhibit_skew(conn: Any, symbol: str) -> ExhibitResponse:
                 "n_points": row[6],
             }
             exh.freshness = freshness_from(row[7], True)
+            latest_fit = row[8] if len(row) > 8 else None
+            if latest_fit is not None and latest_fit != row[0]:
+                exh.caveats.append(
+                    f"Fit on {iso_date(latest_fit)} without an expiry {SLOPE_DTE_MIN}–{SLOPE_DTE_MAX} DTE out — "
+                    f"the ~30-day slope is from {iso_date(row[0])}"
+                )
             if pctile is None:
                 exh.caveats.append("No prior fit days — skew percentile unknown")
             elif days < 60:
                 exh.caveats.append(f"Skew percentile rests on {days} history days — thin")
         else:
-            exh.caveats.append("No SVI fit rows for symbol")
+            exh.caveats.append(f"No SVI fit {SLOPE_DTE_MIN}–{SLOPE_DTE_MAX} DTE out for symbol")
         if hist:
             exh.history_summary = {"days": int(hist[0] or 0), "avg_abs_atm_slope": hist[1]}
     except Exception as exc:

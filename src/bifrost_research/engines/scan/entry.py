@@ -24,6 +24,7 @@ from bifrost_research.db.calendar import (
 )
 from bifrost_research.db.conn import connect
 from bifrost_research.lenses.pin_expiry import monthly_expiry_sql
+from bifrost_research.lenses.slope_tenor import SLOPE_PICK_ORDER, slope_window_sql
 from bifrost_research.db.upsert import batch_upsert
 from bifrost_research.engines.scan.build import build_scan_row
 from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_SCAN_DAILY
@@ -77,8 +78,8 @@ surface_30d AS (
         atm_slope
     FROM features.option_surface_fit_daily
     WHERE trade_date = %s
-      AND atm_slope IS NOT NULL
-    ORDER BY symbol, ABS(dte - 30) ASC, expiry ASC
+      AND {slope_window_sql()}
+    ORDER BY symbol, {SLOPE_PICK_ORDER}
 ),
 nearest_mp AS (
     SELECT DISTINCT ON (m.symbol)
