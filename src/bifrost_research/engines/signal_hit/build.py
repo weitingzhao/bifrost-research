@@ -109,20 +109,35 @@ def magnitude_hit(*, side: str, fwd_return: float | None, threshold: float) -> b
     return None
 
 
+# Which way a directional hit rule expects the price to move, by trigger side.
+# hit_for scores against it and Signal Decay's profit factor is paid by it — one copy.
+_EXPECTED_SIGN: dict[str, dict[str, int]] = {
+    "mean_revert": {"hot": -1, "cold": 1},
+    "follow": {"hot": 1, "cold": -1},
+}
+
+
+def expected_sign(lens_id: str, *, side: str) -> int | None:
+    """+1 when the lens' side expects the price up, -1 down, None when it has no direction.
+
+    Read off the registry's hit rule: mean_revert (hot → down, cold → up) and
+    follow (hot → up, cold → down). A magnitude lens bets on the size of the
+    move, not its direction, so it has no sign; nor does a lens with no rule.
+    """
+    return _EXPECTED_SIGN.get(LENSES[lens_id].hit_rule, {}).get(side)
+
+
+def _directional_hit(sign: int | None, fwd_return: float | None) -> bool | None:
+    if fwd_return is None or sign is None:
+        return None
+    return float(fwd_return) * sign > 0.0
+
+
 def hit_for(lens_id: str, *, side: str, fwd_return: float | None, horizon: int) -> bool | None:
     """The lens' own hit rule from the registry, for a 5- or 20-session forward return."""
     spec = LENSES[lens_id]
-    if spec.hit_rule == "mean_revert":
-        return side_aware_hit(side=side, fwd_return=fwd_return)
-    if spec.hit_rule == "follow":
-        if fwd_return is None:
-            return None
-        fr = float(fwd_return)
-        if side == "hot":
-            return fr > 0.0
-        if side == "cold":
-            return fr < 0.0
-        return None
+    if spec.hit_rule in _EXPECTED_SIGN:
+        return _directional_hit(expected_sign(lens_id, side=side), fwd_return)
     if spec.hit_rule == "magnitude" and spec.move_threshold is not None:
         threshold = spec.move_threshold[1] if horizon >= 20 else spec.move_threshold[0]
         return magnitude_hit(side=side, fwd_return=fwd_return, threshold=threshold)
@@ -131,11 +146,4 @@ def hit_for(lens_id: str, *, side: str, fwd_return: float | None, horizon: int) 
 
 def side_aware_hit(*, side: str, fwd_return: float | None) -> bool | None:
     """Mean-revert: hot expects negative fwd; cold expects positive fwd."""
-    if fwd_return is None:
-        return None
-    fr = float(fwd_return)
-    if side == "hot":
-        return fr < 0.0
-    if side == "cold":
-        return fr > 0.0
-    return None
+    return _directional_hit(_EXPECTED_SIGN["mean_revert"].get(side), fwd_return)

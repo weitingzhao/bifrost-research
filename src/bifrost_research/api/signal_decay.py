@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from bifrost_research.db.conn import connect
+from bifrost_research.engines.signal_hit.build import expected_sign
 from bifrost_research.lenses.registry import decay_lens_ids
 from bifrost_research.schema.schemas import (
     TABLE_STOCK_FORECAST_TERRAIN_DAILY,
@@ -43,7 +44,33 @@ def _connect_or_503() -> Any:
         raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
 
 
-def _side_stats(rows: list[dict[str, Any]], side: str) -> dict[str, Any]:
+def _profit_factor(rows: list[dict[str, Any]], *, lens: str, horizon: int) -> float | None:
+    """Gross directional gain over gross directional loss, on settled rows.
+
+    A row's directional return is its forward return times the sign its side
+    expects (``expected_sign``: mean_revert hot → down, follow hot → up, …), so
+    a gain is a move the way the lens called it. Rows still pending (no forward
+    return yet) do not count. None when nothing has settled or nothing lost —
+    a ratio over zero is not a number — and always None for a magnitude lens
+    (gex_regime): it bets on the size of the move, not its direction, so there
+    is no side to be paid on.
+    """
+    key = f"fwd_return_{horizon}d"
+    gain = loss = 0.0
+    for r in rows:
+        fwd = r.get(key)
+        sign = expected_sign(lens, side=str(r.get("trigger_side")))
+        if fwd is None or sign is None:
+            continue
+        move = float(fwd) * sign
+        if move > 0:
+            gain += move
+        elif move < 0:
+            loss -= move
+    return round(gain / loss, 4) if loss > 0 else None
+
+
+def _side_stats(rows: list[dict[str, Any]], side: str, *, lens: str) -> dict[str, Any]:
     subset = [r for r in rows if r.get("trigger_side") == side]
     n = len(subset)
     hit5 = [r for r in subset if r.get("hit_5d") is True]
@@ -58,10 +85,12 @@ def _side_stats(rows: list[dict[str, Any]], side: str) -> dict[str, Any]:
         "evaluated_5d": eval5,
         "pending_5d": n - eval5,
         "hit_rate_5d": round(len(hit5) / eval5, 4) if eval5 else None,
+        "profit_factor_5d": _profit_factor(subset, lens=lens, horizon=5),
         "hit_20d": len(hit20),
         "evaluated_20d": eval20,
         "pending_20d": n - eval20,
         "hit_rate_20d": round(len(hit20) / eval20, 4) if eval20 else None,
+        "profit_factor_20d": _profit_factor(subset, lens=lens, horizon=20),
     }
 
 
@@ -215,8 +244,8 @@ def signal_decay(
 
     raw = _window_slice(raw, window_days)
     by_side = {
-        "hot": _side_stats(raw, "hot"),
-        "cold": _side_stats(raw, "cold"),
+        "hot": _side_stats(raw, "hot", lens=lens),
+        "cold": _side_stats(raw, "cold", lens=lens),
     }
     overall_n = by_side["hot"]["n"] + by_side["cold"]["n"]
     overall_hit5 = by_side["hot"]["hit_5d"] + by_side["cold"]["hit_5d"]
@@ -253,6 +282,9 @@ def signal_decay(
             "regime": regime_n,
             "trigger_count": overall_n,
             "hit_rate_5d": round(overall_hit5 / overall_eval5, 4) if overall_eval5 else None,
+            # Both sides pooled, each row paid on its own side's sign.
+            "profit_factor_5d": _profit_factor(raw, lens=lens, horizon=5),
+            "profit_factor_20d": _profit_factor(raw, lens=lens, horizon=20),
             "by_side": by_side,
             "trend": _rolling_trend(raw),
             "trend_hot": _rolling_trend(raw, side="hot"),
@@ -414,4 +446,4 @@ def signal_decay_intersect(
     )
 
 
-__all__ = ["router", "VALID_LENSES", "_side_stats", "_parse_lens_pairs", "_hit_rates"]
+__all__ = ["router", "VALID_LENSES", "_side_stats", "_profit_factor", "_parse_lens_pairs", "_hit_rates"]

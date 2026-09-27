@@ -10,6 +10,7 @@ from bifrost_research.engines.signal_hit.build import (
     classify_order_sentiment,
     classify_skew,
     classify_terrain_regime,
+    expected_sign,
     hit_for,
     magnitude_hit,
 )
@@ -82,3 +83,22 @@ def test_wave_i_lenses_keep_the_mean_revert_rule() -> None:
     assert hit_for("momentum", side="hot", fwd_return=0.01, horizon=5) is True
     assert hit_for("momentum", side="hot", fwd_return=-0.01, horizon=5) is False
     assert hit_for("sepa", side="cold", fwd_return=-0.01, horizon=20) is True
+
+
+def test_expected_sign_is_the_direction_hit_for_scores() -> None:
+    assert expected_sign("iv_rank", side="hot") == -1
+    assert expected_sign("iv_rank", side="cold") == 1
+    assert expected_sign("momentum", side="hot") == 1
+    assert expected_sign("order_sentiment", side="cold") == -1
+    # gex_regime bets on the size of the move: no direction, no sign.
+    assert expected_sign("gex_regime", side="hot") is None
+    assert expected_sign("iv_rank", side="neutral") is None
+    # One rule, two readers: every directional decay lens hits exactly when
+    # the move went the sign's way.
+    for lens in decay_lens_ids():
+        for side in ("hot", "cold"):
+            sign = expected_sign(lens, side=side)
+            if sign is None:
+                continue
+            assert hit_for(lens, side=side, fwd_return=0.01 * sign, horizon=5) is True
+            assert hit_for(lens, side=side, fwd_return=-0.01 * sign, horizon=20) is False
