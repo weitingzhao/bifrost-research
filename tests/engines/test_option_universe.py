@@ -18,6 +18,12 @@ D = date(2026, 9, 8)
 def build(**kw):
     base = dict(as_of=D, existing={}, resident={}, liquidity={}, edge_candidates=set())
     base.update(kw)
+    if "fresh" not in kw:
+        # These cases are about tiering, so every symbol they mention has a
+        # recent close. The liveness cases below pass `fresh` explicitly.
+        base["fresh"] = (
+            set(base["existing"]) | set(base["resident"]) | set(base["liquidity"]) | set(base["edge_candidates"])
+        )
     return ou.build_universe(**base)
 
 
@@ -205,3 +211,58 @@ def test_a_watchlist_resident_still_leaves_when_dropped() -> None:
     # The step-down is for the route being narrowed, not a new rule for residents.
     prev = dict(_promoted(), reason="watchlist")
     assert "W" not in build(existing={"W": prev}, liquidity={"W": 1e7})
+
+
+# ── liveness ──────────────────────────────────────────────────────────────
+
+
+def test_a_name_with_no_recent_close_does_not_enter_core() -> None:
+    """Liquidity averages a month of bars, so a name that stopped mid-window still scores."""
+    out = build(liquidity={"LIVE": 5e9, "GONE": 5e9}, fresh={"LIVE"})
+    assert out["LIVE"]["tier"] == "core"
+    assert "GONE" not in out
+
+
+def test_a_name_with_no_recent_close_does_not_enter_edge() -> None:
+    out = build(edge_candidates={"LIVE", "GONE"}, fresh={"LIVE"})
+    assert "LIVE" in out and "GONE" not in out
+
+
+def test_retention_does_not_hold_a_name_whose_closes_stopped() -> None:
+    """The 2026-09-26 case: six delisted names held by retention, five months to run.
+
+    AVB, CRNX, ISSC, SATS and WBS sat at last_seen 2026-09-11 with
+    EDGE_RETENTION_DAYS to go, so they were due to leave on 2027-01-20 — and the
+    Plugin snapshotted their whole chains every session until then, unpriceable.
+    """
+    prev = {
+        "tier": "edge",
+        "entered_on": D - timedelta(days=5),
+        "last_seen": D - timedelta(days=5),
+        "history_months": 12,
+        "reason": "stepped-down:ingested",
+    }
+    out = build(existing={"AVB": dict(prev), "HALO": dict(prev)}, fresh={"HALO"})
+    assert "HALO" in out, "a quiet screen is what retention is for"
+    assert "AVB" not in out, "a stopped listing is not"
+
+
+def test_resident_is_exempt_from_liveness() -> None:
+    """SPX has no row in stock_daily at all, and the watchlist is the Owner's."""
+    out = build(resident={"SPX": "ingested", "AVB": "watchlist"}, fresh=set())
+    assert out["SPX"]["tier"] == "resident"
+    assert out["AVB"]["tier"] == "resident"
+
+
+def test_a_grandfathered_name_steps_down_only_while_it_still_trades() -> None:
+    prev = {
+        "tier": "resident",
+        "entered_on": D - timedelta(days=5),
+        "last_seen": D - timedelta(days=5),
+        "history_months": 24,
+        "reason": "ingested",
+    }
+    out = build(existing={"A": dict(prev), "B": dict(prev)}, fresh={"A"})
+    assert out["A"]["tier"] == "edge" and out["A"]["reason"] == "stepped-down:ingested"
+    assert "B" not in out
+

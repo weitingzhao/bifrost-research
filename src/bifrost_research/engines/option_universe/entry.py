@@ -23,6 +23,22 @@ Tiers, in precedence order:
   after its last appearance so its 20-day hits settle and the 60-session skew
   gate can mature.
 
+Core and edge additionally require a recent close — see LIVENESS_DAYS. Nothing
+did before, so a name the vendor had stopped listing kept its place on the
+strength of the history it left behind: measured 2026-09-26, AVB, CRNX, EA,
+ISSC, SATS and WBS were all in the table with their last bar between June and
+August, all six delisted. The Plugin went on buying their chains every session
+and could not price one of them, because a spot needs a close. Worse than idle:
+a name with no close gets no near-the-money window, so it is snapshotted
+*whole*, which makes losing a listing an upgrade to the most expensive path
+there is. They would have left on their own on 2027-01-20, when retention ran
+out, having been wrong every session until then.
+
+Resident is exempt. It is the names someone asked for, and it carries the index
+roots — SPX has no row in `stock_daily` by design, so a liveness test over
+closes is the wrong question to ask of it. A watchlist name that stops trading
+is the Owner's to remove.
+
 Optionability is not predicted here — `raw_market.ticker` has no such flag.
 A symbol with no contracts drops out at the Plugin's enumeration, which is
 the only place that can know.
@@ -56,6 +72,11 @@ EDGE_PATHS: tuple[str, ...] = ("SETUP", "PIVOT")
 EDGE_RETENTION_DAYS = 130  # calendar days ≈ 90 sessions
 CORE_HISTORY_MONTHS = 24
 EDGE_HISTORY_MONTHS = 12
+#: How stale a symbol's last close may be and still hold a core or edge place.
+#: Calendar days, like the windows above. Two weeks clears a holiday week and a
+#: short halt while catching every name measured stale on 2026-09-26 by a wide
+#: margin — the closest was CRNX at 26 days, and the live names all sat at 1.
+LIVENESS_DAYS = 14
 
 TIER_RANK = {"resident": 0, "core": 1, "edge": 2}
 
@@ -138,6 +159,27 @@ def load_liquidity(conn: Any, as_of: date) -> dict[str, float]:
         return {str(s).upper(): float(v or 0.0) for s, v in (cur.fetchall() or [])}
 
 
+def load_recent_bars(conn: Any, as_of: date) -> set[str]:
+    """Symbols with a close inside LIVENESS_DAYS — the liveness half of the rule.
+
+    Deliberately allowed to raise. ``write_universe`` deletes whatever this run
+    does not re-place, so an empty answer here would empty the table and stop
+    the Plugin collecting 656 chains tonight. A refresh that cannot establish
+    liveness must not write at all, which is what an exception gets us.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT symbol
+            FROM raw_market.stock_daily
+            WHERE bar_date > %s::date - %s::int AND bar_date <= %s::date
+              AND close IS NOT NULL
+            """,
+            (as_of, LIVENESS_DAYS, as_of),
+        )
+        return {str(s).upper() for (s,) in (cur.fetchall() or [])}
+
+
 def load_edge_candidates(conn: Any) -> set[str]:
     """Today's screen survivors: the latest SEPA session, SETUP / PIVOT, score at or above the floor."""
     with conn.cursor() as cur:
@@ -167,8 +209,13 @@ def build_universe(
     resident: dict[str, str],
     liquidity: dict[str, float],
     edge_candidates: set[str],
+    fresh: set[str],
 ) -> dict[str, dict[str, Any]]:
-    """Pure: the next state of the table from its inputs."""
+    """Pure: the next state of the table from its inputs.
+
+    ``fresh`` is the set of symbols with a close inside LIVENESS_DAYS. It gates
+    core and edge, on the way in and on the way out, and never resident.
+    """
     out: dict[str, dict[str, Any]] = {}
 
     def place(symbol: str, tier: str, reason: str, months: int, *, seen: bool) -> None:
@@ -186,7 +233,7 @@ def build_universe(
         place(sym, "resident", reason, CORE_HISTORY_MONTHS, seen=True)
 
     for sym, dv in liquidity.items():
-        if sym in out:
+        if sym in out or sym not in fresh:
             continue
         # A name the old ingested route promoted left core or edge to get there;
         # which one was not recorded, so it keeps core's exit floor on the way
@@ -196,7 +243,7 @@ def build_universe(
             place(sym, "core", f"dollar_volume>={CORE_ENTER_USD:.0e}", CORE_HISTORY_MONTHS, seen=True)
 
     for sym in edge_candidates:
-        if sym not in out:
+        if sym not in out and sym in fresh:
             place(sym, "edge", f"sepa>={EDGE_MIN_SCORE:.0f}", EDGE_HISTORY_MONTHS, seen=True)
 
     # Edge names not seen today stay until their retention runs out. A core
@@ -204,9 +251,11 @@ def build_universe(
     # watchlist, is simply not re-placed and leaves. A name only the old
     # ingested route held steps down to edge instead: dropping it would
     # fragment its IV history over a labelling fault, not a change in the name.
+    # Retention holds a name through a quiet screen, not through a delisting:
+    # a symbol with no recent close leaves now rather than in 130 days.
     cutoff = as_of - timedelta(days=EDGE_RETENTION_DAYS)
     for sym, prev in existing.items():
-        if sym in out or prev["last_seen"] < cutoff:
+        if sym in out or prev["last_seen"] < cutoff or sym not in fresh:
             continue
         if prev["tier"] == "edge":
             out[sym] = dict(prev)
@@ -254,14 +303,23 @@ def run(*, as_of: date | None = None) -> dict[str, Any]:
         resident = load_resident(conn)
         liquidity = load_liquidity(conn, day)
         edge = load_edge_candidates(conn)
+        fresh = load_recent_bars(conn, day)
         rows = build_universe(
-            as_of=day, existing=existing, resident=resident, liquidity=liquidity, edge_candidates=edge
+            as_of=day,
+            existing=existing,
+            resident=resident,
+            liquidity=liquidity,
+            edge_candidates=edge,
+            fresh=fresh,
         )
         stats = write_universe(conn, rows, existing=existing)
     finally:
         conn.close()
     by_tier = {t: sum(1 for r in rows.values() if r["tier"] == t) for t in TIER_RANK}
     entered = sorted(s for s in rows if s not in existing)
+    # Named, not just counted: a name leaving for staleness is a delisting most
+    # of the time, and that is worth reading in the run's own output.
+    stale_exits = sorted(s for s in existing if s not in rows and s not in fresh)
     return {
         "engine": "option_universe",
         "as_of": day.isoformat(),
@@ -269,6 +327,9 @@ def run(*, as_of: date | None = None) -> dict[str, Any]:
         "by_tier": by_tier,
         "entered": entered[:50],
         "entered_count": len(entered),
+        "stale_exits": stale_exits[:50],
+        "stale_exit_count": len(stale_exits),
+        "liveness_days": LIVENESS_DAYS,
         "core_enter_usd": CORE_ENTER_USD,
         "core_exit_usd": CORE_EXIT_USD,
     }
