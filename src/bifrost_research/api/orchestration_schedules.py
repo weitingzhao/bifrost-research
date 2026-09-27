@@ -26,6 +26,7 @@ HUSBANDRY_SCHEDULE_JOBS: tuple[tuple[str, str, str], ...] = (
     ("market_minute_bars_schedule", "market_minute_bars_job", "UTC"),
     ("market_fundamentals_rotate_schedule", "market_fundamentals_rotate_job", "UTC"),
     ("market_fundamentals_market_schedule", "market_fundamentals_market_job", "UTC"),
+    ("market_ratios_market_schedule", "market_ratios_market_job", "UTC"),
     ("market_option_refresh_schedule", "market_option_refresh_job", "UTC"),
     ("market_trim_schedule", "market_trim_job", "UTC"),
     ("market_self_heal_schedule", "market_self_heal_job", "UTC"),

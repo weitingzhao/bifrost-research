@@ -26,6 +26,7 @@ make dagster-ensure-schedule
 | `market_minute_bars_schedule` | `15 23 * * *` UTC | minute-bars |
 | `market_fundamentals_rotate_schedule` | `0 3 * * *` UTC | fundamentals-rotate |
 | `market_fundamentals_market_schedule` | `30 4 * * 2-6` UTC | fundamentals-market — ratios + short data, whole market by date |
+| `market_ratios_market_schedule` | `10 2-20/3 * * *` UTC | ratios-market — ratios alone, every three hours incl. weekends (the endpoint ignores `?date`; this catches a session's ratios the day they appear) |
 | `market_option_refresh_schedule` | `20 */6 * * *` UTC | option-refresh |
 | `market_trim_schedule` | `15 2 * * *` UTC | trim (maintenance Cron) |
 | `market_treasury_schedule` | `0 12 * * 1-5` UTC | treasury yields |
