@@ -128,3 +128,10 @@ TABLE_FORECAST_SESSION = TABLE_STOCK_FORECAST_SESSION
 TABLE_FORECAST_HOURLY = TABLE_STOCK_FORECAST_HOURLY
 TABLE_FORECAST_SETTLEMENT = TABLE_STOCK_BACKTEST_SETTLEMENT
 TABLE_BACKTEST_RESULTS = TABLE_STOCK_BACKTEST_RESULTS_PERIOD
+
+# D-Journal-Stores (Owner 2026-09-27, spine) — the trader's own trail, keyed by
+# research user (Spec §20.5): notes now; memory / visits land with K6. Research
+# is the sole writer; Trade never touches journal.* (feedback lives in
+# ops_feedback.*, owned by trade-api — stated both ways in the spine entry).
+SCHEMA_JOURNAL = "journal"
+TABLE_JOURNAL_NOTE = f"{SCHEMA_JOURNAL}.note"

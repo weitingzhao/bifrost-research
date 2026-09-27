@@ -9,7 +9,7 @@
 | 域 / 载荷 | Research (OLAP) · **第二 payload（决策载荷）**，与 Satellite 平级；库 `bifrost_golden_source`（单实例） |
 | 运行位置 | K3s `research` NS：research-api `:8795` / research-mcp / Dagster / engines CronJob；镜像由集群内 Kaniko 构建 |
 | 发布链 | `bifrost-deliver-research`（mirror-sync → clone → kaniko → rollout）；Argo `bifrost-research` **自动同步 GitHub main** —— 先镜像后 manifest，顺序反了就是 ImagePullBackOff |
-| D13 | 只写 `dw_stock.*` / `features.*`；只读 `raw_market.*`；不写 Trade DB；不触交易执行 |
+| D13 | 只写 `dw_stock.*` / `features.*` / `research.*` / `journal.*`（journal = notes/memory/visits，按 research user 键；D-Journal-Stores 2026-09-27）；只读 `raw_market.*`；不写 Trade DB 与 `ops_feedback.*`；不触交易执行 |
 | 仓库可见性 | GitHub **PUBLIC**（12 个 repo 全部公开）—— `.env`、Secret YAML、dump、kubeconfig、账户内容永不入库 |
 | 硬边界 | D10 交易执行冻结（BLOCKED）· D13 三域边界 · 平台/业务解耦（Flywheel A/B） |
 | 事实基线 | `../AGENT_FACTS.md`（§8c 运行时与安全事实）· 规则 `../CLAUDE.md`（§8 Claude Code 运行配置） |

@@ -45,6 +45,7 @@ from bifrost_research.api.signal_health import router as signal_health_router
 from bifrost_research.api.orchestration import router as orchestration_router
 from bifrost_research.api.similar_regime import router as similar_regime_router
 from bifrost_research.api.vol_surface import router as vol_surface_router
+from bifrost_research.api.journal import router as journal_router
 from bifrost_research.api.vrp import router as vrp_router
 from bifrost_research.api.wave4 import router as wave4_router
 
@@ -86,6 +87,7 @@ def create_app() -> FastAPI:
     app.include_router(policy_template_router)
     app.include_router(order_intents_router)
     app.include_router(vrp_router)
+    app.include_router(journal_router)
     app.include_router(canonical_pnl_router)
     app.include_router(signal_health_router)
     app.include_router(orchestration_router)

@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from bifrost_research.schema.schemas import (
     OPTION_METRIC_PARTITIONED_TABLES,
     SCHEMA_FEATURES,
+    SCHEMA_JOURNAL,
     SCHEMA_RESEARCH,
 )
 
@@ -855,10 +856,66 @@ def apply_research_ddl(conn: _Connection) -> None:
     conn.commit()
 
 
+def apply_journal_ddl(conn: _Connection) -> None:
+    """journal.* — the trader's own trail (D-Journal-Stores, Spec §20).
+
+    K4 creates ``journal.note``. The lock column is here from day one even
+    though nothing writes it until K6: §20.1 says a note is free to edit and
+    delete **until the nightly distillation references it as evidence**, and
+    the API enforces that rule through this column, so the contract cannot be
+    retrofitted onto rows that predate it.
+    """
+    with conn.cursor() as cur:
+        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_JOURNAL}")
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA_JOURNAL}.note (
+                id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+                owner_id            text NOT NULL,
+                body_md             text NOT NULL,
+                page_route          text NOT NULL DEFAULT '',
+                page_label          text NOT NULL DEFAULT '',
+                refs                jsonb NOT NULL DEFAULT '[]'::jsonb,
+                distilled_memory_id text,
+                created_at          timestamptz NOT NULL DEFAULT now(),
+                updated_at          timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_journal_note_owner_created
+            ON {SCHEMA_JOURNAL}.note (owner_id, created_at DESC)
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_journal_note_refs
+            ON {SCHEMA_JOURNAL}.note USING gin (refs jsonb_path_ops)
+            """
+        )
+        _grant_journal_schema_privileges(cur)
+    conn.commit()
+
+
+def _grant_journal_schema_privileges(cur: _Cursor) -> None:
+    """Best-effort GRANT on journal schema (roles may not exist in dev)."""
+    grants = [
+        f"GRANT USAGE ON SCHEMA {SCHEMA_JOURNAL} TO bifrost, analytics_writer",
+        f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {SCHEMA_JOURNAL} TO bifrost, analytics_writer",
+        f"""
+        ALTER DEFAULT PRIVILEGES IN SCHEMA {SCHEMA_JOURNAL}
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO bifrost, analytics_writer
+        """,
+    ]
+    _try_each(cur, grants)
+
+
 def apply_all_ddl(conn: _Connection) -> None:
     """Apply full Feature Store DDL and drop retired legacy view schemas."""
     apply_features_ddl(conn)
     apply_research_workflow_ddl(conn)
+    apply_journal_ddl(conn)
     drop_legacy_feature_schemas(conn)
 
 
