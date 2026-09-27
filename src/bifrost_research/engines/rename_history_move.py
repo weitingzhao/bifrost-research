@@ -50,24 +50,41 @@ Steps, each counting only unless ``--apply``:
 2. purge     — dead-label rows dated on or after the handover. They have no
                correct form: the same contracts are already counted under the
                live label once the recompute runs.
-3. recompute — ATM IV → IV percentile → VRP, then max pain, PCR, vol surface,
-               momentum and scan, session by session oldest first.
+3. recompute — reconstructed IV first, then session by session oldest first:
+               ATM IV → IV percentile → VRP, max pain, PCR, vol surface,
+               vanna/charm, momentum, scan; then the gex, flow and terrain slots;
+               then lens hits.
+4. drop-colliding (``--drop-colliding``) — the dead-label rows on sessions the live
+               symbol already holds. Only ``stock_signal_scan_daily`` is in that
+               state, and it is lossless there: measured 2026-09-26, both symbols'
+               twelve rows for 2026-06-08..06-23 carry a composite score and
+               nothing else — no close, no IV rank, no terrain, no gex on either
+               side. **Measure before using this again**: another collision may
+               have the information on the dead side.
 
-Not covered, and left deliberately rather than half-done: ``option_metric_gex_daily``,
-``option_metric_vanna_charm_daily``, ``option_flow_multi_leg_daily``,
-``option_flow_sentiment_daily``, ``stock_forecast_terrain_daily``,
-``stock_signal_lens_hit_daily``, ``stock_signal_sepa_daily`` and
-``option_iv_reconstructed_daily`` have no per-date compute entry point to call with
-a symbol list. Their dead-label rows are purged, so nothing is double-counted, but
-their live-label rows keep values computed from the torn chain until someone gives
-those engines the same per-date door the others have. ``stock_signal_canonical_pnl_daily``
-is untouched: it has no ``trade_date`` column and its own repair path.
+Every affected table is recomputed. The first version of this said eight of them
+had "no per-date compute entry point", which was looking in the wrong layer: the
+engines expose no ``compute_*_for_date``, but ``scheduler.engines.run_slot`` takes
+an explicit ``symbols`` list and its per-slot runners take ``trading_days``, so gex,
+flow and terrain were scoped all along. Vanna/charm comes from
+``compute_opex_for_date``, reconstructed IV from ``iv_solver.run_cohort``, and lens
+hits from ``signal_hit.run``, which scopes itself from ``RESEARCH_WATCHLIST``.
+
+Order follows the dependencies: reconstructed IV feeds ATM IV, so it goes first;
+gex feeds terrain; lens hits read the tables the rest of the pass writes, so they
+go last.
+
+``stock_signal_sepa_daily`` needs nothing beyond the purge — SEPA is projected from
+the dbt stock marts, not from an option chain, so a torn chain never reached it.
+``stock_signal_canonical_pnl_daily`` is untouched: no ``trade_date`` column and its
+own repair path.
 
 Usage::
 
     python -m bifrost_research.engines.rename_history_move
     python -m bifrost_research.engines.rename_history_move --apply
     python -m bifrost_research.engines.rename_history_move --apply --no-recompute
+    python -m bifrost_research.engines.rename_history_move --apply --drop-colliding
 """
 
 from __future__ import annotations
@@ -235,6 +252,42 @@ def purge(conn: Any, *, apply: bool) -> dict[str, Any]:
     return {"step": "purge", "applied": apply, "rows": removed, "total": sum(removed.values())}
 
 
+def drop_colliding(conn: Any, *, apply: bool) -> dict[str, Any]:
+    """Dead-label rows on sessions the live symbol already holds.
+
+    ``relabel`` leaves these rather than choosing between two rows one primary key
+    cannot hold. Measured 2026-09-26, the only table in that state is
+    ``stock_signal_scan_daily``, and neither side carries more than a composite
+    score for those twelve sessions — no close, no IV rank, no terrain, no gex —
+    so dropping the dead one loses nothing. That measurement is the reason this
+    is a separate flag and not part of relabel: a later collision may hold the
+    information on the dead side, and then this would destroy it.
+    """
+    removed: dict[str, int] = {}
+    for dead, alive in RENAMES:
+        cut = handover(conn, dead, alive)
+        if cut is None:
+            continue
+        for table in AFFECTED_TABLES:
+            sql_where = (
+                f"symbol = %s AND trade_date < %s AND EXISTS ("
+                f"SELECT 1 FROM features.{table} b WHERE b.symbol = %s "
+                f"AND b.trade_date = features.{table}.trade_date)"
+            )
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT count(*) FROM features.{table} WHERE {sql_where}", (dead, cut, alive))
+                n = int((_one(cur) or (0,))[0] or 0)
+                if n == 0:
+                    continue
+                if apply:
+                    cur.execute(f"DELETE FROM features.{table} WHERE {sql_where}", (dead, cut, alive))
+                    n = int(getattr(cur, "rowcount", 0) or 0)
+            if apply:
+                conn.commit()
+            removed[f"{table}:{dead}"] = n
+    return {"step": "drop_colliding", "applied": apply, "rows": removed, "total": sum(removed.values())}
+
+
 def sessions_to_recompute(conn: Any, symbols: Sequence[str], start: date) -> list[date]:
     """Trading days from ``start`` that the live symbols have a close for."""
     with conn.cursor() as cur:
@@ -281,14 +334,20 @@ def recompute(conn: Any, *, apply: bool, from_earliest: bool = False) -> dict[st
     symbol. It replaces relabelled rows with recomputed ones — the same
     contracts, but an answer a later run can reproduce.
     """
+    import os
+
     from bifrost_research.engines.momentum.radar import compute_momentum_for_date
+    from bifrost_research.engines.opex_cycle.entry import compute_opex_for_date
     from bifrost_research.engines.scan.entry import compute_scan_for_date
+    from bifrost_research.engines.signal_hit import entry as signal_hit_entry
     from bifrost_research.engines.vol_surface.entry import compute_vol_surface_for_date
     from bifrost_research.engines.volatility.atm_iv import compute_atm_iv_for_date
     from bifrost_research.engines.volatility.iv_percentile import compute_iv_percentile_for_date
+    from bifrost_research.engines.volatility.iv_solver import run_cohort as iv_solver_cohort
     from bifrost_research.engines.volatility.max_pain import compute_max_pain_for_date
     from bifrost_research.engines.volatility.pcr import compute_pcr_for_date
     from bifrost_research.engines.vrp.compute import compute_vrp_for_date
+    from bifrost_research.scheduler.engines import run_slot
 
     starts: dict[str, date] = {}
     for dead, alive in RENAMES:
@@ -323,9 +382,14 @@ def recompute(conn: Any, *, apply: bool, from_earliest: bool = False) -> dict[st
         }
 
     written: dict[str, int] = {}
+    live_all = sorted(starts)
 
     def add(key: str, result: Any) -> None:
         written[key] = written.get(key, 0) + int((result or {}).get("rows_written") or 0)
+
+    # Reconstructed IV feeds ATM IV, so it is rebuilt before the session loop
+    # rather than after it.
+    add("iv_reconstructed", iv_solver_cohort(conn, symbols=live_all, lookback_days=len(days), as_of=days[-1]))
 
     for td in days:
         syms = sorted(per_day[td])
@@ -344,8 +408,34 @@ def recompute(conn: Any, *, apply: bool, from_earliest: bool = False) -> dict[st
         # vol_surface reports its rows under its own keys, not rows_written, so
         # this counter reads 0 for it; the table is the thing to check.
         add("vol_surface", compute_vol_surface_for_date(conn, trade_date=td, underlyings=syms))
+        add("vanna_charm", compute_opex_for_date(conn, trade_date=td, underlyings=syms))
         add("momentum", compute_momentum_for_date(conn, trade_date=td, symbols=syms))
         add("scan", compute_scan_for_date(conn, trade_date=td, watchlist=syms, symbols_filter=syms))
+
+    # These three take an explicit symbol list through run_slot rather than a
+    # per-date function. gex feeds terrain, so the order is not alphabetical.
+    # None of them deletes, so a session a symbol has no data for is counted as
+    # skipped rather than writing over anything.
+    slots: dict[str, Any] = {}
+    for slot in ("gex", "flow", "terrain"):
+        result = run_slot(slot, symbols=live_all, lookback_days=len(days), as_of=days[-1])
+        slots[slot] = {k: result.get(k) for k in ("rows_written", "symbols_ok", "symbols_failed", "skipped")}
+
+    # Lens hits read what the rest of the pass wrote, so they go last. signal_hit
+    # scopes itself from RESEARCH_WATCHLIST — it takes no symbol argument — and
+    # the explicit lists above are unaffected by the variable being set.
+    prev_watch = os.environ.get("RESEARCH_WATCHLIST")
+    os.environ["RESEARCH_WATCHLIST"] = ",".join(live_all)
+    try:
+        slots["signal_hit"] = {
+            k: signal_hit_entry.run(lookback_days=len(days), as_of=days[-1]).get(k)
+            for k in ("rows_written",)
+        }
+    finally:
+        if prev_watch is None:
+            os.environ.pop("RESEARCH_WATCHLIST", None)
+        else:
+            os.environ["RESEARCH_WATCHLIST"] = prev_watch
     return {
         "step": "recompute",
         "applied": True,
@@ -355,6 +445,7 @@ def recompute(conn: Any, *, apply: bool, from_earliest: bool = False) -> dict[st
         "first": days[0].isoformat(),
         "last": days[-1].isoformat(),
         "rows": written,
+        "slots": slots,
     }
 
 
@@ -362,6 +453,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="write; without it every step only counts")
     parser.add_argument("--no-recompute", action="store_true", help="relabel and purge only")
+    parser.add_argument(
+        "--drop-colliding",
+        action="store_true",
+        help="also delete dead-label rows on sessions the live symbol already has",
+    )
     parser.add_argument(
         "--from-earliest",
         action="store_true",
@@ -380,6 +476,8 @@ def main(argv: list[str] | None = None) -> int:
             },
             "steps": [relabel(conn, apply=args.apply), purge(conn, apply=args.apply)],
         }
+        if args.drop_colliding:
+            out["steps"].append(drop_colliding(conn, apply=args.apply))
         if not args.no_recompute:
             out["steps"].append(
                 recompute(conn, apply=args.apply, from_earliest=args.from_earliest)

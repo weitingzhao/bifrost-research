@@ -216,3 +216,78 @@ def test_from_earliest_never_starts_later_than_the_handover() -> None:
     out = mv.recompute(conn, apply=False, from_earliest=True)
     assert set(out["starts"].values()) == {CUT.isoformat()}
 
+
+# ── the outstanding items ─────────────────────────────────────────────────
+
+
+def test_drop_colliding_removes_only_the_dead_side_of_a_shared_session() -> None:
+    """Measured lossless for the one table in that state: both symbols' twelve
+    scan rows for 2026-06-08..06-23 carry a composite score and nothing else."""
+    conn = _Conn(
+        {("stock_signal_scan_daily", "SATS", True): 12},
+        collisions={("stock_signal_scan_daily", "SATS"): 12},
+    )
+    out = mv.drop_colliding(conn, apply=True)
+    assert out["rows"]["stock_signal_scan_daily:SATS"] == 12
+    delete = next(q for q, _ in conn.statements if q.startswith("DELETE"))
+    assert "EXISTS" in delete, "only where the live symbol already has the session"
+    assert "trade_date < %s" in delete, "before the handover only"
+
+
+def test_drop_colliding_is_off_unless_asked_for() -> None:
+    """relabel must keep leaving them, so the default cannot delete."""
+    conn = _Conn(
+        {("stock_signal_scan_daily", "SATS", True): 12},
+        collisions={("stock_signal_scan_daily", "SATS"): 12},
+    )
+    mv.relabel(conn, apply=True)
+    assert not [q for q, _ in conn.statements if q.startswith("DELETE")]
+
+
+def test_the_recompute_covers_every_affected_table() -> None:
+    """The first version claimed eight tables had no per-date entry point. They
+    did — in the scheduler layer, not the engine layer — so nothing is left
+    carrying values computed from the torn chain."""
+    import inspect
+
+    src = inspect.getsource(mv.recompute)
+    for engine in (
+        "compute_atm_iv_for_date",
+        "compute_iv_percentile_for_date",
+        "compute_vrp_for_date",
+        "compute_max_pain_for_date",
+        "compute_pcr_for_date",
+        "compute_vol_surface_for_date",
+        "compute_opex_for_date",
+        "compute_momentum_for_date",
+        "compute_scan_for_date",
+        "iv_solver_cohort",
+        "signal_hit_entry.run",
+    ):
+        assert engine in src, f"{engine} is not called"
+    for slot in ('"gex"', '"flow"', '"terrain"'):
+        assert slot in src, f"slot {slot} is not recomputed"
+
+
+def test_reconstructed_iv_is_rebuilt_before_atm_iv_reads_it() -> None:
+    import inspect
+
+    src = inspect.getsource(mv.recompute)
+    # The call sites, not the import block — the imports are alphabetical.
+    assert src.index("iv_solver_cohort(conn") < src.index("compute_atm_iv_for_date(conn")
+
+
+def test_gex_is_recomputed_before_terrain_which_reads_it() -> None:
+    import inspect
+
+    src = inspect.getsource(mv.recompute)
+    assert src.index('"gex"') < src.index('"terrain"')
+
+
+def test_the_watchlist_env_is_restored_after_scoping_signal_hit() -> None:
+    """It scopes itself from the environment, so the module must put it back."""
+    import inspect
+
+    src = inspect.getsource(mv.recompute)
+    assert "prev_watch" in src and "finally:" in src
+
