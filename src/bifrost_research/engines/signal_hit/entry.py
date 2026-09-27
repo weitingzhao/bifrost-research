@@ -510,6 +510,11 @@ def run(
         for day in days:
             rows = build_rows_for_day(conn, day, lens_list, symbols=watch or None)
             if rows:
+                # Upsert, never delete: re-walked days (3 nightly, 30 in fwd_fill)
+                # keep rows a changed trigger rule no longer fires beside the rows
+                # it does. Settle a lens's history in the same change as its rule
+                # (rebuild: upsert, then delete that lens's rows computed before the
+                # rebuild started — as opex_pin was on 2026-09-27; see lenses/pin_expiry).
                 batch_upsert(
                     conn,
                     TABLE_STOCK_SIGNAL_LENS_HIT_DAILY,

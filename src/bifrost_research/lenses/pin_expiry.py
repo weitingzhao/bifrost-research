@@ -15,6 +15,13 @@ Weekly names carry their first three expiries in the collected chain, so for
 about two weeks after each OpEx the next monthly is not there yet (2026-09-18:
 289 of 610 names). Those names have no pin reading until it arrives; the pin
 readers do not fall back to a weekly.
+
+The lens's signal-hit record follows this rule over its whole history, not
+only from the change on. b457798's message said past rows would keep the
+30-DTE rule, but the nightly re-walks (3 and 30 sessions, upsert without
+delete) would have left both rules on the same days. So it was rebuilt on
+2026-09-27 (Owner): 926 rows, 2026-07-06 to 09-25, and the 808 rows only the
+30-DTE rule fired were removed.
 """
 
 from __future__ import annotations
