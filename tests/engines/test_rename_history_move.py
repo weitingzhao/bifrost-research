@@ -23,6 +23,9 @@ class _Cur:
     def execute(self, sql: str, params: Any = None) -> None:
         q = " ".join(str(sql).split())
         self.parent.statements.append((q, params))
+        if "FROM raw_market.option_daily" in q:
+            self._rows = [(self.parent.first_option_bar,)]
+            return
         if "min(bar_date)" in q:
             self._rows = [self.parent.handover]
             return
@@ -67,7 +70,9 @@ class _Conn:
         handover: tuple[Any, Any] = (date(2026, 6, 23), CUT),
         sessions: list[date] | None = None,
         collisions: dict[tuple[str, str], int] | None = None,
+        first_option_bar: date | None = None,
     ) -> None:
+        self.first_option_bar = first_option_bar
         self.counts = counts or {}
         self.collisions = collisions or {}
         self.handover = handover
@@ -165,7 +170,7 @@ def test_a_dry_run_recompute_reports_the_window_without_calling_an_engine() -> N
     out = mv.recompute(conn, apply=False)
     assert out["sessions"] == 2 and out["applied"] is False
     assert out["first"] == "2026-06-24" and out["last"] == "2026-06-25"
-    assert sorted(out["symbols"]) == ["ECHO", "IA", "VMRK"]
+    assert sorted(out["starts"]) == ["ECHO", "IA", "VMRK"]
 
 
 def test_every_affected_table_is_visited_for_every_pair() -> None:
@@ -182,3 +187,32 @@ def test_every_affected_table_is_visited_for_every_pair() -> None:
 def test_the_renames_are_the_three_measured_pairs() -> None:
     """A curated list on purpose — SATS has no raw_market.ticker row to derive from."""
     assert mv.RENAMES == (("SATS", "ECHO"), ("ISSC", "IA"), ("EQR", "VMRK"))
+
+
+def test_each_symbol_recomputes_from_its_own_handover() -> None:
+    """The first run took the earliest handover across every pair and applied it
+    to all of them, so IA was recomputed from SATS's 2026-06-24 — seven weeks
+    before its own — and fifteen just-relabelled ATM IV rows were deleted with
+    nothing to write back."""
+    conn = _Conn(sessions=[date(2026, 6, 24)])
+    out = mv.recompute(conn, apply=False)
+    assert out["starts"] == {"ECHO": "2026-06-24", "IA": "2026-06-24", "VMRK": "2026-06-24"}, (
+        "the fake gives every pair the same handover; the point is each symbol carries its own"
+    )
+    asked = [p for q, p in conn.statements if q.startswith("SELECT DISTINCT bar_date")]
+    assert all(len(p[0]) == 1 for p in asked), "one symbol per session query, not the union"
+
+
+def test_from_earliest_starts_at_the_first_option_bar() -> None:
+    """Reachable only because the raw history now sits under the live symbol."""
+    conn = _Conn(sessions=[date(2024, 9, 9)], first_option_bar=date(2024, 9, 9))
+    out = mv.recompute(conn, apply=False, from_earliest=True)
+    assert out["from_earliest"] is True
+    assert set(out["starts"].values()) == {"2024-09-09"}
+
+
+def test_from_earliest_never_starts_later_than_the_handover() -> None:
+    conn = _Conn(sessions=[CUT], first_option_bar=date(2026, 12, 1))
+    out = mv.recompute(conn, apply=False, from_earliest=True)
+    assert set(out["starts"].values()) == {CUT.isoformat()}
+

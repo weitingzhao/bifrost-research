@@ -247,11 +247,39 @@ def sessions_to_recompute(conn: Any, symbols: Sequence[str], start: date) -> lis
     return [r[0] if not hasattr(r, "values") else next(iter(r.values())) for r in rows]
 
 
-def recompute(conn: Any, *, apply: bool) -> dict[str, Any]:
+def earliest_option_bar(conn: Any, symbol: str) -> date | None:
+    """The first session the live symbol has an option bar for.
+
+    Plugin 0.51.0 moved the pre-rename option history onto the successor, so the
+    live symbol now owns the whole series and a recompute can reach all of it —
+    which is better than the relabelled rows it replaces, because the same
+    contracts produce it and a later run reproduces the same answer.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT min(bar_date) FROM raw_market.option_daily WHERE underlying = %s",
+            (symbol,),
+        )
+        row = _one(cur)
+    return row[0] if row and row[0] else None
+
+
+def recompute(conn: Any, *, apply: bool, from_earliest: bool = False) -> dict[str, Any]:
     """Rebuild the live symbols' window from the repaired raw layer, oldest first.
 
     Oldest first because IV percentile ranks a session against the history
     already rebuilt, which is also why relabel has to have run before this.
+
+    **Each symbol gets its own start.** Taking the earliest handover across every
+    pair and applying it to all of them deleted rows one symbol could not
+    reproduce: the first run recomputed IA from 2026-06-24, which is SATS's
+    handover and seven weeks before IA's, so fifteen ATM IV rows that had just
+    been relabelled from ISSC were deleted with nothing to write back.
+
+    ``from_earliest`` starts each symbol at its first option bar instead of at
+    its handover, which is reachable now that the raw history sits under the live
+    symbol. It replaces relabelled rows with recomputed ones — the same
+    contracts, but an answer a later run can reproduce.
     """
     from bifrost_research.engines.momentum.radar import compute_momentum_for_date
     from bifrost_research.engines.scan.entry import compute_scan_for_date
@@ -262,22 +290,33 @@ def recompute(conn: Any, *, apply: bool) -> dict[str, Any]:
     from bifrost_research.engines.volatility.pcr import compute_pcr_for_date
     from bifrost_research.engines.vrp.compute import compute_vrp_for_date
 
-    live: list[str] = []
-    earliest: date | None = None
+    starts: dict[str, date] = {}
     for dead, alive in RENAMES:
         cut = handover(conn, dead, alive)
         if cut is None:
             continue
-        live.append(alive)
-        earliest = cut if earliest is None else min(earliest, cut)
-    if not live or earliest is None:
+        start = cut
+        if from_earliest:
+            first_bar = earliest_option_bar(conn, alive)
+            if first_bar is not None:
+                start = min(start, first_bar)
+        starts[alive] = min(starts[alive], start) if alive in starts else start
+    if not starts:
         return {"step": "recompute", "applied": apply, "sessions": 0}
-    days = sessions_to_recompute(conn, live, earliest)
+
+    # One pass per session over the symbols that session belongs to, so a symbol
+    # is never asked about a date before it existed.
+    per_day: dict[date, list[str]] = {}
+    for alive, start in starts.items():
+        for td in sessions_to_recompute(conn, [alive], start):
+            per_day.setdefault(td, []).append(alive)
+    days = sorted(per_day)
     if not apply:
         return {
             "step": "recompute",
             "applied": False,
-            "symbols": sorted(live),
+            "from_earliest": from_earliest,
+            "starts": {k: v.isoformat() for k, v in sorted(starts.items())},
             "sessions": len(days),
             "first": days[0].isoformat() if days else None,
             "last": days[-1].isoformat() if days else None,
@@ -288,27 +327,30 @@ def recompute(conn: Any, *, apply: bool) -> dict[str, Any]:
     def add(key: str, result: Any) -> None:
         written[key] = written.get(key, 0) + int((result or {}).get("rows_written") or 0)
 
-    # The scan engine wants the watchlist it scores against, not a filter.
     for td in days:
+        syms = sorted(per_day[td])
         with conn.cursor() as cur:
             for table in ("option_metric_atm_iv_daily", "option_metric_iv_percentile_daily"):
                 cur.execute(
                     f"DELETE FROM features.{table} WHERE trade_date = %s AND symbol = ANY(%s)",
-                    (td, live),
+                    (td, syms),
                 )
         conn.commit()
-        add("atm_iv", compute_atm_iv_for_date(conn, trade_date=td, underlyings=live))
-        add("iv_percentile", compute_iv_percentile_for_date(conn, trade_date=td, underlyings=live))
-        add("vrp", compute_vrp_for_date(conn, trade_date=td, underlyings=live))
-        add("max_pain", compute_max_pain_for_date(conn, trade_date=td, underlyings=live))
-        add("pcr", compute_pcr_for_date(conn, trade_date=td, underlyings=live))
-        add("vol_surface", compute_vol_surface_for_date(conn, trade_date=td, underlyings=live))
-        add("momentum", compute_momentum_for_date(conn, trade_date=td, symbols=live))
-        add("scan", compute_scan_for_date(conn, trade_date=td, watchlist=live, symbols_filter=live))
+        add("atm_iv", compute_atm_iv_for_date(conn, trade_date=td, underlyings=syms))
+        add("iv_percentile", compute_iv_percentile_for_date(conn, trade_date=td, underlyings=syms))
+        add("vrp", compute_vrp_for_date(conn, trade_date=td, underlyings=syms))
+        add("max_pain", compute_max_pain_for_date(conn, trade_date=td, underlyings=syms))
+        add("pcr", compute_pcr_for_date(conn, trade_date=td, underlyings=syms))
+        # vol_surface reports its rows under its own keys, not rows_written, so
+        # this counter reads 0 for it; the table is the thing to check.
+        add("vol_surface", compute_vol_surface_for_date(conn, trade_date=td, underlyings=syms))
+        add("momentum", compute_momentum_for_date(conn, trade_date=td, symbols=syms))
+        add("scan", compute_scan_for_date(conn, trade_date=td, watchlist=syms, symbols_filter=syms))
     return {
         "step": "recompute",
         "applied": True,
-        "symbols": sorted(live),
+        "from_earliest": from_earliest,
+        "starts": {k: v.isoformat() for k, v in sorted(starts.items())},
         "sessions": len(days),
         "first": days[0].isoformat(),
         "last": days[-1].isoformat(),
@@ -320,6 +362,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="write; without it every step only counts")
     parser.add_argument("--no-recompute", action="store_true", help="relabel and purge only")
+    parser.add_argument(
+        "--from-earliest",
+        action="store_true",
+        help="recompute each symbol from its first option bar, not from its handover",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -334,7 +381,9 @@ def main(argv: list[str] | None = None) -> int:
             "steps": [relabel(conn, apply=args.apply), purge(conn, apply=args.apply)],
         }
         if not args.no_recompute:
-            out["steps"].append(recompute(conn, apply=args.apply))
+            out["steps"].append(
+                recompute(conn, apply=args.apply, from_earliest=args.from_earliest)
+            )
     finally:
         conn.close()
     print(json.dumps(out, indent=2, default=str))
