@@ -118,7 +118,7 @@ vol_contraction as (
         select symbol, atr_14 from enriched_latest where recency = 1
     ) cur
     left join lateral (
-        select atr_14
+        select e2.atr_14
         from enriched_latest e2
         where e2.symbol = cur.symbol and e2.recency between 48 and 52
         order by e2.recency

@@ -16,7 +16,10 @@ templater = jinja
 # AM03 (added 2026-09-26): an ORDER BY that gives any column a direction gives
 # every column one, so `order by symbol, trade_date desc` cannot be misread as
 # descending on both.
-rules = core,RF02,AM03
+# RF03 (added 2026-09-26): a single-table select qualifies all of its columns or
+# none. It matters most in a correlated subquery, where the other table in play
+# is the outer one: there, qualify every column rather than trust scope.
+rules = core,RF02,AM03,RF03
 # Same width as ruff's line-length.
 max_line_length = 100
 
