@@ -152,8 +152,14 @@ LEFT JOIN (
     FROM features.stock_forecast_terrain_daily
     WHERE trade_date = %s
 ) tr ON tr.symbol = u.symbol
-ORDER BY u.symbol
 """
+
+#: Appended after any filter, never baked into the statement above: a WHERE
+#: cannot follow an ORDER BY, so a ``symbols_filter`` on the end of a statement
+#: that already ordered produced "syntax error at or near WHERE". Nothing had
+#: passed that argument until a scoped recompute did, so the parameter had been
+#: unusable since it was written.
+_ORDER_BY = "\nORDER BY u.symbol\n"
 
 
 def _today_ny() -> date:
@@ -196,6 +202,7 @@ def fetch_scan_source_rows(
     if symbols_filter:
         sql += "\nWHERE u.symbol = ANY(%s)\n"
         params.append([s.strip().upper() for s in symbols_filter])
+    sql += _ORDER_BY
     with conn.cursor() as cur:
         cur.execute(sql, params)
         cols = [d[0] for d in cur.description]

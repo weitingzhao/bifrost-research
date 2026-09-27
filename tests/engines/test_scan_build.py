@@ -75,3 +75,59 @@ def test_build_scan_row_shape() -> None:
     assert row["composite_score"] is not None
     assert isinstance(row["lens_flags"], dict)
     assert row["lens_flags"]["iv_rank"] == "hot"
+
+
+# ── the symbols_filter had never been used ────────────────────────────────
+
+
+class _FilterCur:
+    """Records the statement instead of running it."""
+
+    description = [("symbol",)]
+
+    def __init__(self) -> None:
+        self.sql = ""
+        self.params: object = None
+
+    def execute(self, sql: str, params: object = None) -> None:
+        self.sql = sql
+        self.params = params
+
+    def fetchall(self) -> list[tuple[object, ...]]:
+        return []
+
+    def __enter__(self) -> _FilterCur:
+        return self
+
+    def __exit__(self, *a: object) -> None:
+        return None
+
+
+class _FilterConn:
+    def __init__(self) -> None:
+        self.cur = _FilterCur()
+
+    def cursor(self) -> _FilterCur:
+        return self.cur
+
+
+def test_a_symbols_filter_lands_before_the_order_by() -> None:
+    """A WHERE after an ORDER BY is a syntax error, and this argument had no
+    caller until a scoped recompute passed it — so it had never run at all."""
+    from bifrost_research.engines.scan.entry import fetch_scan_source_rows
+
+    conn = _FilterConn()
+    fetch_scan_source_rows(conn, date(2026, 6, 24), ["ECHO"], symbols_filter=["ECHO"])
+    sql = conn.cur.sql
+    assert "WHERE u.symbol = ANY(%s)" in sql
+    assert sql.index("WHERE u.symbol = ANY(%s)") < sql.index("ORDER BY u.symbol")
+    assert sql.rstrip().endswith("ORDER BY u.symbol")
+
+
+def test_without_a_filter_the_statement_still_orders() -> None:
+    from bifrost_research.engines.scan.entry import fetch_scan_source_rows
+
+    conn = _FilterConn()
+    fetch_scan_source_rows(conn, date(2026, 6, 24), ["ECHO"])
+    assert "WHERE u.symbol = ANY(%s)" not in conn.cur.sql
+    assert conn.cur.sql.rstrip().endswith("ORDER BY u.symbol")
