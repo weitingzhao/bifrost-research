@@ -46,22 +46,34 @@ select
     max(q.eps_yoy_base) filter (where q.q_rank = 1) as eps_q0_yoy_base,
 
     -- Quarterly YoY growth rates for acceleration check
-    max(case when q.q_rank = 1 and q.eps_yoy_base > 0
-        then q.eps / q.eps_yoy_base - 1 end) as eps_g0,
-    max(case when q.q_rank = 2 and q.eps_yoy_base > 0
-        then q.eps / q.eps_yoy_base - 1 end) as eps_g1,
-    max(case when q.q_rank = 3 and q.eps_yoy_base > 0
-        then q.eps / q.eps_yoy_base - 1 end) as eps_g2,
+    max(case
+        when q.q_rank = 1 and q.eps_yoy_base > 0
+            then q.eps / q.eps_yoy_base - 1
+    end) as eps_g0,
+    max(case
+        when q.q_rank = 2 and q.eps_yoy_base > 0
+            then q.eps / q.eps_yoy_base - 1
+    end) as eps_g1,
+    max(case
+        when q.q_rank = 3 and q.eps_yoy_base > 0
+            then q.eps / q.eps_yoy_base - 1
+    end) as eps_g2,
 
     max(q.revenue) filter (where q.q_rank = 1) as rev_q0,
     max(q.rev_yoy_base) filter (where q.q_rank = 1) as rev_q0_yoy_base,
 
-    max(case when q.q_rank = 1 and q.rev_yoy_base > 0
-        then q.revenue / q.rev_yoy_base - 1 end) as rev_g0,
-    max(case when q.q_rank = 2 and q.rev_yoy_base > 0
-        then q.revenue / q.rev_yoy_base - 1 end) as rev_g1,
-    max(case when q.q_rank = 3 and q.rev_yoy_base > 0
-        then q.revenue / q.rev_yoy_base - 1 end) as rev_g2,
+    max(case
+        when q.q_rank = 1 and q.rev_yoy_base > 0
+            then q.revenue / q.rev_yoy_base - 1
+    end) as rev_g0,
+    max(case
+        when q.q_rank = 2 and q.rev_yoy_base > 0
+            then q.revenue / q.rev_yoy_base - 1
+    end) as rev_g1,
+    max(case
+        when q.q_rank = 3 and q.rev_yoy_base > 0
+            then q.revenue / q.rev_yoy_base - 1
+    end) as rev_g2,
 
     -- Annual data for 3Y CAGR + acceleration
     max(a.eps) filter (where a.fy_rank = 1) as eps_fy0,
@@ -70,14 +82,22 @@ select
     max(a.rev_fy_3y_ago) filter (where a.fy_rank = 1) as rev_fy3,
 
     -- Annual YoY for acceleration
-    max(case when a.fy_rank = 1 and a.eps_fy_prev > 0
-        then a.eps / a.eps_fy_prev - 1 end) as eps_fy_g0,
-    max(case when a.fy_rank = 2 and a.eps_fy_prev > 0
-        then a.eps / a.eps_fy_prev - 1 end) as eps_fy_g1,
-    max(case when a.fy_rank = 1 and a.rev_fy_prev > 0
-        then a.revenue / a.rev_fy_prev - 1 end) as rev_fy_g0,
-    max(case when a.fy_rank = 2 and a.rev_fy_prev > 0
-        then a.revenue / a.rev_fy_prev - 1 end) as rev_fy_g1
+    max(case
+        when a.fy_rank = 1 and a.eps_fy_prev > 0
+            then a.eps / a.eps_fy_prev - 1
+    end) as eps_fy_g0,
+    max(case
+        when a.fy_rank = 2 and a.eps_fy_prev > 0
+            then a.eps / a.eps_fy_prev - 1
+    end) as eps_fy_g1,
+    max(case
+        when a.fy_rank = 1 and a.rev_fy_prev > 0
+            then a.revenue / a.rev_fy_prev - 1
+    end) as rev_fy_g0,
+    max(case
+        when a.fy_rank = 2 and a.rev_fy_prev > 0
+            then a.revenue / a.rev_fy_prev - 1
+    end) as rev_fy_g1
 
 from quarterly_ranked q
 left join annual_ranked a using (symbol)

@@ -29,37 +29,37 @@ with fresh as (
     from {{ source('market', 'stock_daily') }} d
     inner join {{ ref('dim_universe') }} u on d.symbol = u.symbol
     {% if is_incremental() %}
-    where d.bar_date > (
-        select max(trade_date) - interval '{{ lookback_days }} days' from {{ this }}
-    )
+        where d.bar_date > (
+            select max(trade_date) - interval '{{ lookback_days }} days' from {{ this }}
+        )
     {% endif %}
 ),
 
 {% if is_incremental() %}
-retained as (
-    select
-        symbol,
-        trade_date,
-        open,
-        high,
-        low,
-        close,
-        volume
-    from {{ this }}
-    where trade_date <= (
-        select max(trade_date) - interval '{{ lookback_days }} days' from {{ this }}
-    )
-),
+    retained as (
+        select
+            symbol,
+            trade_date,
+            open,
+            high,
+            low,
+            close,
+            volume
+        from {{ this }}
+        where trade_date <= (
+            select max(trade_date) - interval '{{ lookback_days }} days' from {{ this }}
+        )
+    ),
 
-source_data as (
-    select * from retained
-    union all
-    select * from fresh
-),
+    source_data as (
+        select * from retained
+        union all
+        select * from fresh
+    ),
 {% else %}
-source_data as (
-    select * from fresh
-),
+    source_data as (
+        select * from fresh
+    ),
 {% endif %}
 
 -- Layer 1: single-pass window functions (lag, row_number, simple aggregates)
@@ -80,24 +80,40 @@ with_prev as (
 
         row_number() over (partition by d.symbol order by d.trade_date) as bar_sequence,
 
-        avg(d.close) over (partition by d.symbol order by d.trade_date
-            rows between 9 preceding and current row) as sma_10,
-        avg(d.close) over (partition by d.symbol order by d.trade_date
-            rows between 19 preceding and current row) as sma_20,
-        avg(d.close) over (partition by d.symbol order by d.trade_date
-            rows between 49 preceding and current row) as sma_50,
-        avg(d.close) over (partition by d.symbol order by d.trade_date
-            rows between 149 preceding and current row) as sma_150,
-        avg(d.close) over (partition by d.symbol order by d.trade_date
-            rows between 199 preceding and current row) as sma_200,
+        avg(d.close) over (
+            partition by d.symbol order by d.trade_date
+            rows between 9 preceding and current row
+        ) as sma_10,
+        avg(d.close) over (
+            partition by d.symbol order by d.trade_date
+            rows between 19 preceding and current row
+        ) as sma_20,
+        avg(d.close) over (
+            partition by d.symbol order by d.trade_date
+            rows between 49 preceding and current row
+        ) as sma_50,
+        avg(d.close) over (
+            partition by d.symbol order by d.trade_date
+            rows between 149 preceding and current row
+        ) as sma_150,
+        avg(d.close) over (
+            partition by d.symbol order by d.trade_date
+            rows between 199 preceding and current row
+        ) as sma_200,
 
-        avg(d.volume) over (partition by d.symbol order by d.trade_date
-            rows between 49 preceding and current row) as volume_ma_50,
+        avg(d.volume) over (
+            partition by d.symbol order by d.trade_date
+            rows between 49 preceding and current row
+        ) as volume_ma_50,
 
-        min(d.low) over (partition by d.symbol order by d.trade_date
-            rows between 251 preceding and current row) as low_52w,
-        max(d.high) over (partition by d.symbol order by d.trade_date
-            rows between 251 preceding and current row) as high_52w
+        min(d.low) over (
+            partition by d.symbol order by d.trade_date
+            rows between 251 preceding and current row
+        ) as low_52w,
+        max(d.high) over (
+            partition by d.symbol order by d.trade_date
+            rows between 251 preceding and current row
+        ) as high_52w
 
     from source_data d
     window w as (partition by d.symbol order by d.trade_date)
@@ -153,7 +169,7 @@ select
     bar_sequence
 from with_atr
 {% if is_incremental() %}
-where trade_date > (
-    select max(trade_date) - interval '{{ lookback_days }} days' from {{ this }}
-)
+    where trade_date > (
+        select max(trade_date) - interval '{{ lookback_days }} days' from {{ this }}
+    )
 {% endif %}

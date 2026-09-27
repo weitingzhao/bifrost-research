@@ -10,5 +10,6 @@ select
     ) * 100 as crs_percentile
 from {{ ref('int_stock_daily_enriched') }} e
 inner join {{ ref('dim_universe') }} u on e.symbol = u.symbol
-where e.return_252d is not null
-  and e.bar_sequence >= 252
+where
+    e.return_252d is not null
+    and e.bar_sequence >= 252

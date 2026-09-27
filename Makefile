@@ -59,7 +59,7 @@ verify-husbandry-schedulers:
 lint:
 	ruff check .
 	@if [ -d "$(DBT_DIR)/models" ]; then \
-		cd $(DBT_DIR) && sqlfluff lint models/ || true; \
+		cd $(DBT_DIR) && sqlfluff lint models/; \
 	fi
 
 test:

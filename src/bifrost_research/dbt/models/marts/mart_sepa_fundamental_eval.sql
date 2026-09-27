@@ -20,7 +20,7 @@ select
     coalesce(
         case
             when f.eps_fy0 > 0 and f.eps_fy3 > 0
-            then power(f.eps_fy0 / f.eps_fy3, 1.0 / 3) - 1 >= 0.15
+                then power(f.eps_fy0 / f.eps_fy3, 1.0 / 3) - 1 >= 0.15
             else false
         end,
         false
@@ -30,7 +30,7 @@ select
     coalesce(
         case
             when f.rev_fy0 > 0 and f.rev_fy3 > 0
-            then power(f.rev_fy0 / f.rev_fy3, 1.0 / 3) - 1 >= 0.15
+                then power(f.rev_fy0 / f.rev_fy3, 1.0 / 3) - 1 >= 0.15
             else false
         end,
         false
@@ -48,12 +48,16 @@ select
         + coalesce(f.rev_g0 >= 0.25, false)::int
         + coalesce(f.eps_g0 > f.eps_g1 and f.eps_g1 > f.eps_g2, false)::int
         + coalesce(f.rev_g0 > f.rev_g1 and f.rev_g1 > f.rev_g2, false)::int
-        + coalesce(case when f.eps_fy0 > 0 and f.eps_fy3 > 0
-            then power(f.eps_fy0 / f.eps_fy3, 1.0 / 3) - 1 >= 0.15
-            else false end, false)::int
-        + coalesce(case when f.rev_fy0 > 0 and f.rev_fy3 > 0
-            then power(f.rev_fy0 / f.rev_fy3, 1.0 / 3) - 1 >= 0.15
-            else false end, false)::int
+        + coalesce(case
+            when f.eps_fy0 > 0 and f.eps_fy3 > 0
+                then power(f.eps_fy0 / f.eps_fy3, 1.0 / 3) - 1 >= 0.15
+            else false
+        end, false)::int
+        + coalesce(case
+            when f.rev_fy0 > 0 and f.rev_fy3 > 0
+                then power(f.rev_fy0 / f.rev_fy3, 1.0 / 3) - 1 >= 0.15
+            else false
+        end, false)::int
         + coalesce(f.eps_fy_g0 > f.eps_fy_g1, false)::int
         + coalesce(f.rev_fy_g0 > f.rev_fy_g1, false)::int
     ) as pass_count,

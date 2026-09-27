@@ -24,7 +24,9 @@ holidays as (
 
 select
     a.calendar_date as trade_date,
-    (extract(dow from a.calendar_date) not in (0, 6)
-     and h.holiday_date is null) as is_trading_day
+    (
+        extract(dow from a.calendar_date) not in (0, 6)
+        and h.holiday_date is null
+    ) as is_trading_day
 from all_dates a
 left join holidays h on a.calendar_date = h.holiday_date

@@ -34,8 +34,8 @@ copilot = [
 dev = [
     "pytest>=8.0",
     "ruff==0.16.9",  # one version for CI and every venv; bump on purpose
-    "sqlfluff>=3.0",
-    "sqlfluff-templater-dbt>=3.0",
+    "sqlfluff==4.3.0",  # same pin as the templater; config in src/bifrost_research/dbt/.sqlfluff
+    "sqlfluff-templater-dbt==4.3.0",
 ]
 
 # Dagster code location (alternative to workspace.yaml)

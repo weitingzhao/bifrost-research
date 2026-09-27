@@ -1,0 +1,18 @@
+[sqlfluff]
+dialect = postgres
+# Jinja with dbt's builtins (ref, source, config, is_incremental, this) and our
+# own macros/, so the lint needs no profile, no database and no `dbt deps`: the
+# same verdict on a laptop and in the CI python gate. The models use nothing
+# from dbt_utils or elementary; a model that does will fail to template here.
+templater = jinja
+# Explicit rule set. sqlfluff's default is `all`, whose auto-fixes include
+# ST06 (reorders SELECT columns, i.e. the materialized table's column order)
+# and ST07 (USING -> ON, which changes `select *`). `core` is sqlfluff's
+# curated set; widen it on purpose, not by upgrade.
+rules = core
+# Same width as ruff's line-length.
+max_line_length = 100
+
+[sqlfluff:templater:jinja]
+apply_dbt_builtins = True
+load_macros_from_path = macros

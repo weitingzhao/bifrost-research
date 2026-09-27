@@ -33,7 +33,9 @@ bb_calc as (
         symbol,
         trade_date,
         sma_20,
-        stddev(close) over (partition by symbol order by trade_date rows between 19 preceding and current row) as bb_stddev,
+        stddev(close)
+            over (partition by symbol order by trade_date rows between 19 preceding and current row)
+            as bb_stddev,
         recency
     from enriched_latest
     where recency <= 50
@@ -42,8 +44,9 @@ bb_calc as (
 bb_latest as (
     select distinct on (symbol)
         symbol,
-        case when sma_20 > 0
-            then (4 * bb_stddev) / sma_20
+        case
+            when sma_20 > 0
+                then (4 * bb_stddev) / sma_20
             else null
         end as bb_width,
         bb_stddev
@@ -66,8 +69,11 @@ bb_avg as (
 adx_calc as (
     select distinct on (symbol)
         symbol,
-        case when atr_14 > 0
-            then abs(close - lag(close, 14) over (partition by symbol order by trade_date)) / atr_14
+        case
+            when atr_14 > 0
+                then
+                    abs(close - lag(close, 14) over (partition by symbol order by trade_date))
+                    / atr_14
             else 0
         end as adx_proxy
     from enriched_latest
@@ -81,11 +87,13 @@ aroon_calc as (
         symbol,
         trade_date,
         recency,
-        case when recency <= 25 then
-            row_number() over (partition by symbol order by high desc)
+        case
+            when recency <= 25 then
+                row_number() over (partition by symbol order by high desc)
         end as high_rank,
-        case when recency <= 25 then
-            row_number() over (partition by symbol order by low asc)
+        case
+            when recency <= 25 then
+                row_number() over (partition by symbol order by low asc)
         end as low_rank
     from enriched_latest
     where recency <= 25

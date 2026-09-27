@@ -73,7 +73,8 @@ scored as (
                 then greatest(0, least(100, 50 + (spot - zero_gamma) / zero_gamma * 5000))
         end as zg_component,
         case
-            when spot is not null
+            when
+                spot is not null
                 and call_wall is not null
                 and put_wall is not null
                 and call_wall > put_wall

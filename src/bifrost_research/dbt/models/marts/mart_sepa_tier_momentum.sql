@@ -33,9 +33,17 @@ rsi_calc as (
         e.symbol,
         e.trade_date,
         avg(case when e.price_change > 0 then e.price_change else 0 end)
-            over (partition by e.symbol order by e.trade_date rows between 13 preceding and current row) as avg_gain,
+            over (
+                partition by e.symbol
+                order by e.trade_date rows between 13 preceding and current row
+            )
+            as avg_gain,
         avg(case when e.price_change < 0 then abs(e.price_change) else 0 end)
-            over (partition by e.symbol order by e.trade_date rows between 13 preceding and current row) as avg_loss
+            over (
+                partition by e.symbol
+                order by e.trade_date rows between 13 preceding and current row
+            )
+            as avg_loss
     from {{ ref('int_stock_daily_enriched') }} e
     inner join {{ ref('dim_universe') }} u on e.symbol = u.symbol
     where e.bar_sequence >= 30
@@ -55,8 +63,18 @@ latest_rsi as (
 macd_calc as (
     select distinct on (e.symbol)
         e.symbol,
-        avg(e.close) over (partition by e.symbol order by e.trade_date rows between 11 preceding and current row) as ema_12_approx,
-        avg(e.close) over (partition by e.symbol order by e.trade_date rows between 25 preceding and current row) as ema_26_approx
+        avg(e.close)
+            over (
+                partition by e.symbol
+                order by e.trade_date rows between 11 preceding and current row
+            )
+            as ema_12_approx,
+        avg(e.close)
+            over (
+                partition by e.symbol
+                order by e.trade_date rows between 25 preceding and current row
+            )
+            as ema_26_approx
     from {{ ref('int_stock_daily_enriched') }} e
     inner join {{ ref('dim_universe') }} u on e.symbol = u.symbol
     where e.bar_sequence >= 252
@@ -74,7 +92,11 @@ spy_return as (
 vol_trend as (
     select distinct on (e.symbol)
         e.symbol,
-        avg(e.volume) over (partition by e.symbol order by e.trade_date rows between 9 preceding and current row) as vol_10,
+        avg(e.volume)
+            over (
+                partition by e.symbol order by e.trade_date rows between 9 preceding and current row
+            )
+            as vol_10,
         e.volume_ma_50
     from {{ ref('int_stock_daily_enriched') }} e
     inner join {{ ref('dim_universe') }} u on e.symbol = u.symbol
