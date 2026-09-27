@@ -38,3 +38,10 @@ max_line_length = 100
 [sqlfluff:templater:jinja]
 apply_dbt_builtins = True
 load_macros_from_path = macros
+
+# CV03 (trailing comma in a select list) is part of `core`, so it has been on
+# since this file was added. Its direction is pinned here rather than left to
+# the default: Postgres rejects `select a, b, from t`, so `require` would demand
+# SQL that cannot run.
+[sqlfluff:rules:convention.select_trailing_comma]
+select_clause_trailing_comma = forbid
