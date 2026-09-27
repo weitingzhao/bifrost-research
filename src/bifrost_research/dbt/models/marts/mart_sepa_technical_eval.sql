@@ -16,7 +16,7 @@ with latest as (
     from {{ ref('int_stock_daily_enriched') }} e
     inner join {{ ref('dim_universe') }} u on e.symbol = u.symbol
     where e.bar_sequence >= 252
-    order by e.symbol, e.trade_date desc
+    order by e.symbol asc, e.trade_date desc
 ),
 
 latest_crs as (
@@ -25,7 +25,7 @@ latest_crs as (
         crs_percentile,
         return_252d
     from {{ ref('int_stock_crs') }}
-    order by symbol, trade_date desc
+    order by symbol asc, trade_date desc
 )
 
 select

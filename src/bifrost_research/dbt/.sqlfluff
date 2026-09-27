@@ -13,7 +13,10 @@ templater = jinja
 # table, scalar subqueries included. An unqualified column there binds to the
 # innermost scope that has it, so if that table ever loses the column it quietly
 # binds to the outer one instead of failing.
-rules = core,RF02
+# AM03 (added 2026-09-26): an ORDER BY that gives any column a direction gives
+# every column one, so `order by symbol, trade_date desc` cannot be misread as
+# descending on both.
+rules = core,RF02,AM03
 # Same width as ruff's line-length.
 max_line_length = 100
 

@@ -25,7 +25,7 @@ with daily_latest as (
     from {{ ref('int_stock_daily_enriched') }} e
     inner join {{ ref('dim_universe') }} u on e.symbol = u.symbol
     where e.bar_sequence >= 252
-    order by e.symbol, e.trade_date desc
+    order by e.symbol asc, e.trade_date desc
 ),
 
 rsi_calc as (
@@ -57,7 +57,7 @@ latest_rsi as (
             else 100 - (100 / (1 + avg_gain / nullif(avg_loss, 0)))
         end as rsi_14
     from rsi_calc
-    order by symbol, trade_date desc
+    order by symbol asc, trade_date desc
 ),
 
 macd_calc as (
@@ -78,7 +78,7 @@ macd_calc as (
     from {{ ref('int_stock_daily_enriched') }} e
     inner join {{ ref('dim_universe') }} u on e.symbol = u.symbol
     where e.bar_sequence >= 252
-    order by e.symbol, e.trade_date desc
+    order by e.symbol asc, e.trade_date desc
 ),
 
 spy_return as (
@@ -101,7 +101,7 @@ vol_trend as (
     from {{ ref('int_stock_daily_enriched') }} e
     inner join {{ ref('dim_universe') }} u on e.symbol = u.symbol
     where e.bar_sequence >= 252
-    order by e.symbol, e.trade_date desc
+    order by e.symbol asc, e.trade_date desc
 )
 
 select

@@ -10,7 +10,7 @@ with iv as (
         symbol,
         iv_percentile_1y as iv_percentile
     from {{ source('features', 'option_metric_iv_percentile_daily') }}
-    order by symbol, trade_date desc
+    order by symbol asc, trade_date desc
 ),
 
 pcr as (
@@ -18,7 +18,7 @@ pcr as (
         symbol,
         pcr_oi
     from {{ source('features', 'option_metric_pcr_daily') }}
-    order by symbol, trade_date desc
+    order by symbol asc, trade_date desc
 ),
 
 gex as (
@@ -29,7 +29,7 @@ gex as (
         major_call_wall as call_wall,
         major_put_wall as put_wall
     from {{ source('features', 'option_metric_gex_levels_daily') }}
-    order by symbol, trade_date desc, expiry asc
+    order by symbol asc, trade_date desc, expiry asc
 ),
 
 joined as (

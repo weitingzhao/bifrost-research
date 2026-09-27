@@ -15,7 +15,7 @@ with latest_si as (
         days_to_cover,
         short_pct_float
     from {{ ref('stg_short_interest') }}
-    order by symbol, period_date desc
+    order by symbol asc, period_date desc
 ),
 
 prev_si as (

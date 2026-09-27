@@ -78,7 +78,7 @@ adx_calc as (
         end as adx_proxy
     from enriched_latest
     where recency <= 20
-    order by symbol, trade_date desc
+    order by symbol asc, trade_date desc
 ),
 
 -- Aroon: position of highest high and lowest low in last 25 days

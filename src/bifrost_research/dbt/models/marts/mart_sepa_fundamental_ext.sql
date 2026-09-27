@@ -25,7 +25,7 @@ with latest_ratios as (
     -- Ratios arrive daily for the whole market, not per filing quarter, so the
     -- latest row per symbol is the answer; the old quarterly filter matched
     -- nothing and left every ratio condition null.
-    order by symbol, period_date desc
+    order by symbol asc, period_date desc
 ),
 
 latest_balance as (
@@ -42,7 +42,7 @@ latest_balance as (
         equity_to_parent
     from {{ ref('stg_balance_sheet') }}
     where period_type = 'quarterly'
-    order by symbol, period_date desc
+    order by symbol asc, period_date desc
 ),
 
 latest_cashflow as (
@@ -54,7 +54,7 @@ latest_cashflow as (
         coalesce(operating_cf + investing_cf, 0) as free_cash_flow
     from {{ ref('stg_cash_flow') }}
     where period_type = 'quarterly'
-    order by symbol, period_date desc
+    order by symbol asc, period_date desc
 ),
 
 latest_income as (
@@ -65,7 +65,7 @@ latest_income as (
         revenue
     from {{ ref('stg_income_stmt') }}
     where period_type = 'quarterly'
-    order by symbol, period_date desc
+    order by symbol asc, period_date desc
 )
 
 select
