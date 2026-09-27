@@ -140,3 +140,157 @@ def note_remove(note_id: str, owner_id: str = Depends(require_owner)) -> dict[st
     if not gone:
         raise HTTPException(status_code=404, detail="note not found")
     return _ok({"deleted": note_id})
+
+
+# ── K6 — memory, visits, hints, the Day view (Spec §20) ─────────────────────
+
+
+class VisitBody(BaseModel):
+    route: str
+    symbol: str = ""
+
+
+class SourceBody(BaseModel):
+    enabled: bool
+
+
+@router.get("/memory")
+def memory_index(
+    include_archived: bool = False,
+    owner_id: str = Depends(require_owner),
+) -> dict[str, Any]:
+    """The You page's payload: memories, the portrait axes (archived rows
+    still back them, §20.3), sources, dismissal counts, the week."""
+    from datetime import datetime
+
+    from bifrost_research.engines.journal_distill import SOURCES
+    from bifrost_research.repositories import journal_memory as mem
+
+    conn = connect()
+    try:
+        all_rows = mem.list_memories(conn, owner_id=owner_id, include_archived=True)
+        visible = [m for m in all_rows if include_archived or not m["archived"]]
+        today = datetime.now().astimezone().date()
+        return _ok(
+            {
+                "memories": visible,
+                "archived_count": sum(1 for m in all_rows if m["archived"]),
+                "axes": mem.portrait_axes(all_rows),
+                "sources": mem.list_sources(conn, owner_id=owner_id, all_sources=SOURCES),
+                "hints": mem.hint_counts(conn, owner_id=owner_id),
+                "week": mem.week_summary(conn, owner_id=owner_id, today=today),
+            }
+        )
+    finally:
+        conn.close()
+
+
+@router.delete("/memory/{mem_id}")
+def memory_forget(mem_id: str, owner_id: str = Depends(require_owner)) -> dict[str, Any]:
+    """§20.2 — Forget is a topic tombstone: gone at once, never rewritten."""
+    from bifrost_research.repositories import journal_memory as mem
+
+    conn = connect()
+    try:
+        topic = mem.forget_memory(conn, owner_id=owner_id, mem_id=mem_id)
+    finally:
+        conn.close()
+    if topic is None:
+        raise HTTPException(status_code=404, detail="memory not found")
+    return _ok({"forgotten": mem_id, "topic": topic})
+
+
+@router.put("/memory/sources/{source}")
+def memory_source_set(
+    source: str,
+    body: SourceBody,
+    owner_id: str = Depends(require_owner),
+) -> dict[str, Any]:
+    from bifrost_research.engines.journal_distill import SOURCES
+    from bifrost_research.repositories import journal_memory as mem
+
+    if source not in SOURCES:
+        raise HTTPException(status_code=400, detail=f"source must be one of {SOURCES}")
+    conn = connect()
+    try:
+        mem.set_source(conn, owner_id=owner_id, source=source, enabled=body.enabled)
+        return _ok({"sources": mem.list_sources(conn, owner_id=owner_id, all_sources=SOURCES)})
+    finally:
+        conn.close()
+
+
+@router.post("/visits")
+def visit_create(body: VisitBody, owner_id: str = Depends(require_owner)) -> dict[str, Any]:
+    """The shell's beacon — one row per page dwell; raw rows roll 90 days."""
+    route = (body.route or "").strip()[:300]
+    if not route.startswith("/"):
+        raise HTTPException(status_code=400, detail="route must start with /")
+    from bifrost_research.repositories import journal_memory as mem
+
+    conn = connect()
+    try:
+        mem.insert_visit(conn, owner_id=owner_id, route=route, symbol=(body.symbol or "")[:12])
+        return _ok({"recorded": True})
+    finally:
+        conn.close()
+
+
+@router.get("/memory/hint")
+def memory_hint(symbol: str, owner_id: str = Depends(require_owner)) -> dict[str, Any]:
+    """The Plans page's memory hint for one name; quiet past the threshold."""
+    from bifrost_research.repositories import journal_memory as mem
+
+    conn = connect()
+    try:
+        hint = mem.hint_for_symbol(conn, owner_id=owner_id, symbol=symbol)
+        return _ok({"hint": hint})
+    finally:
+        conn.close()
+
+
+@router.post("/memory/hint/{topic}/dismiss")
+def memory_hint_dismiss(topic: str, owner_id: str = Depends(require_owner)) -> dict[str, Any]:
+    """§20.6 — Not relevant. The count lives in the store; the You page shows
+    it, and at HINT_QUIET_AT the hint stops offering itself."""
+    from bifrost_research.repositories import journal_memory as mem
+
+    conn = connect()
+    try:
+        count = mem.dismiss_hint(conn, owner_id=owner_id, topic=topic[:120])
+        return _ok({"topic": topic[:120], "count": count, "quiet": count >= mem.HINT_QUIET_AT})
+    finally:
+        conn.close()
+
+
+@router.get("/day")
+def day_index(date: str | None = None, owner_id: str = Depends(require_owner)) -> dict[str, Any]:
+    """The Journal's Day view: the raw trail of one trading day plus that
+    day's memory changes. The end-of-day prose summary is owed by name."""
+    from datetime import date as date_t, datetime
+
+    from bifrost_research.repositories import journal_memory as mem
+
+    if date:
+        try:
+            day = date_t.fromisoformat(date)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD") from exc
+    else:
+        day = datetime.now().astimezone().date()
+    conn = connect()
+    try:
+        return _ok(mem.day_view(conn, owner_id=owner_id, day=day))
+    finally:
+        conn.close()
+
+
+@router.post("/memory/distill")
+def memory_distill_run(owner_id: str = Depends(require_owner)) -> dict[str, Any]:
+    """Manual distill (the nightly schedule is the normal writer)."""
+    from bifrost_research.engines.journal_distill import run_distill
+
+    conn = connect()
+    try:
+        return _ok(run_distill(conn))
+    finally:
+        conn.close()

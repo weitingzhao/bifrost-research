@@ -894,6 +894,79 @@ def apply_journal_ddl(conn: _Connection) -> None:
             ON {SCHEMA_JOURNAL}.note USING gin (refs jsonb_path_ops)
             """
         )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA_JOURNAL}.memory (
+                id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+                mem_no              bigint GENERATED ALWAYS AS IDENTITY,
+                owner_id            text NOT NULL,
+                topic               text NOT NULL,
+                kind                text NOT NULL,
+                axis                text,
+                value               text NOT NULL DEFAULT '',
+                sub                 text NOT NULL DEFAULT '',
+                text_md             text NOT NULL DEFAULT '',
+                evidence            jsonb NOT NULL DEFAULT '[]'::jsonb,
+                strength            real NOT NULL DEFAULT 0,
+                change              text NOT NULL DEFAULT 'new',
+                archived            boolean NOT NULL DEFAULT false,
+                first_seen          date NOT NULL DEFAULT CURRENT_DATE,
+                last_seen           date NOT NULL DEFAULT CURRENT_DATE,
+                created_at          timestamptz NOT NULL DEFAULT now(),
+                updated_at          timestamptz NOT NULL DEFAULT now(),
+                UNIQUE (owner_id, topic)
+            )
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA_JOURNAL}.memory_tombstone (
+                owner_id   text NOT NULL,
+                topic      text NOT NULL,
+                created_at timestamptz NOT NULL DEFAULT now(),
+                PRIMARY KEY (owner_id, topic)
+            )
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA_JOURNAL}.visit (
+                visit_id  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                owner_id  text NOT NULL,
+                route     text NOT NULL,
+                symbol    text NOT NULL DEFAULT '',
+                at        timestamptz NOT NULL DEFAULT now(),
+                evidence  boolean NOT NULL DEFAULT false
+            )
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_journal_visit_owner_at
+            ON {SCHEMA_JOURNAL}.visit (owner_id, at DESC)
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA_JOURNAL}.hint_dismissal (
+                owner_id   text NOT NULL,
+                hint_topic text NOT NULL,
+                count      integer NOT NULL DEFAULT 0,
+                last_at    timestamptz NOT NULL DEFAULT now(),
+                PRIMARY KEY (owner_id, hint_topic)
+            )
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA_JOURNAL}.source_setting (
+                owner_id text NOT NULL,
+                source   text NOT NULL,
+                enabled  boolean NOT NULL DEFAULT true,
+                PRIMARY KEY (owner_id, source)
+            )
+            """
+        )
         _grant_journal_schema_privileges(cur)
     conn.commit()
 

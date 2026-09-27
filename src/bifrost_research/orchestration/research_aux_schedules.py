@@ -262,6 +262,27 @@ agents_eod_review = _run_asset(
     deps=[AssetKey(["engines", "candidate_outcome"])],
 )
 
+def _run_journal_distill() -> dict:
+    """K6 — the nightly memory distillation (journal.memory, Spec §20)."""
+    from bifrost_research.db.conn import connect
+    from bifrost_research.engines.journal_distill import run_distill
+
+    conn = connect()
+    try:
+        return run_distill(conn)
+    finally:
+        conn.close()
+
+
+# §20: after the close the trader's own trail (fills, notes, visits, Inbox
+# answers) distils into journal.memory — measured, never invented.
+agents_journal_distill = _run_asset(
+    key_path=["agents", "journal_distill"],
+    group=GROUP_AGENTS,
+    description="Journal memory distill — the trader's own trail → journal.memory (§20)",
+    fn=_run_journal_distill,
+)
+
 maint_ensure_partitions = _run_asset(
     key_path=["maintenance", "ensure_partitions"],
     group=GROUP_MAINT,
@@ -511,6 +532,16 @@ _specs: list[tuple[str, str, list[Any], str, str, str]] = [
         "0 22 * * 0",
         "UTC",
         "weekly-policy-review",
+    ),
+    # §20: distill after eod-review has settled and Flex fills have landed;
+    # 23:55 UTC sits after settlement (23:45) on the same calendar.
+    (
+        "research_memory_distill_schedule",
+        "research_memory_distill_job",
+        [agents_journal_distill],
+        "55 23 * * 1-5",
+        "UTC",
+        "journal-memory-distill",
     ),
     (
         "research_ensure_partitions_schedule",
