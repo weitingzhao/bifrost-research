@@ -99,3 +99,33 @@ def test_track_record_falls_back_to_all_symbols_and_says_so() -> None:
     tr = fetch_track_record(_Conn([("hot", True, None)] * 2, [("hot", False, False)] * 4), "vrp", "XYZ")
     assert tr is not None and tr["symbol_scoped"] is False and tr["n"] == 4
     assert fetch_track_record(_Conn([], []), "vrp", "XYZ") is None
+
+
+def test_similar_reads_the_column_its_knn_compares(monkeypatch: Any) -> None:
+    """Skew finds neighbours on the ATM slope, not the percentile it is judged on;
+    the categorical lenses get their similar lens's own number or regime."""
+    from bifrost_research.lenses import exhibit_lenses as el
+    from bifrost_research.lenses.exhibit_model import ExhibitResponse
+
+    asked: list[tuple[str, Any]] = []
+
+    def fake_similar_rows(conn: Any, *, lens: str, symbol: str, value: Any, k: int, horizon: int):
+        asked.append((lens, value))
+        return [], "fake", value
+
+    monkeypatch.setattr(el, "similar_rows", fake_similar_rows)
+    monkeypatch.setattr(el, "fetch_track_record", lambda *a, **kw: None)
+
+    skew = ExhibitResponse(lens="skew", symbol="PLTR", readings={"slope_pctile_252d": 45.0, "atm_slope": -0.021})
+    el.enrich_exhibit(None, skew, lens_id="skew", value=45.0)
+    gex = ExhibitResponse(lens="gex_regime", symbol="PLTR", readings={"regime": "positive", "total_net_gex": 2.9e8})
+    el.enrich_exhibit(None, gex, lens_id="gex_regime", value="positive")
+    terrain = ExhibitResponse(lens="terrain_regime", symbol="PLTR", readings={"regime": "range"})
+    el.enrich_exhibit(None, terrain, lens_id="terrain_regime", value="range")
+    vrp = ExhibitResponse(lens="vrp", symbol="PLTR", readings={"vrp_pct_252d": 13.0})
+    el.enrich_exhibit(None, vrp, lens_id="vrp", value=13.0)
+
+    assert asked == [("term_slope", -0.021), ("gex_notional", 2.9e8), ("regime", "range"), ("vrp", 13.0)]
+    # The value rides on the summary, so a page can ask the same k-NN for the whole card.
+    assert skew.similar is not None and skew.similar["lens"] == "term_slope" and skew.similar["value"] == -0.021
+    assert terrain.similar is not None and terrain.similar["value"] == "range"

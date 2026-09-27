@@ -586,18 +586,20 @@ def enrich_exhibit(
     else:
         exh.caveats.append("No settled track record for this lens yet")
 
-    if spec.similar_lens and spec.kind != "categorical" and value is not None:
+    sim_value = exh.readings.get(SIMILAR_INPUT[lens_id]) if lens_id in SIMILAR_INPUT else value
+    if spec.similar_lens and sim_value is not None:
         try:
-            rows, source, _ = similar_rows(
+            rows, source, used = similar_rows(
                 conn,
                 lens=spec.similar_lens,
                 symbol=exh.symbol,
-                value=float(value),
+                value=str(sim_value) if spec.similar_lens == "regime" else float(sim_value),
                 k=SIMILAR_K,
                 horizon=SIMILAR_HORIZON,
             )
             summary = summarize_forward_returns(rows, horizon=SIMILAR_HORIZON)
             summary["lens"] = spec.similar_lens
+            summary["value"] = used
             summary["source"] = source
             exh.similar = summary
         except Exception as exc:  # noqa: BLE001 — degrade to a caveat
@@ -606,6 +608,17 @@ def enrich_exhibit(
             exh.caveats.append("Similar-regime summary unavailable")
     return exh
 
+
+# The reading the k-NN compares when it is not the one the verdict is judged on.
+# Skew is judged on its slope's percentile, but ``term_slope`` finds neighbours
+# on the ATM slope itself — handed the percentile (0–100) it matched the steepest
+# slopes on file. The two categorical lenses carry no number to judge, yet their
+# similar lenses have one each: GEX on net notional, terrain on the regime.
+SIMILAR_INPUT: dict[str, str] = {
+    "skew": "atm_slope",
+    "gex_regime": "total_net_gex",
+    "terrain_regime": "regime",
+}
 
 # Which reading a lens is judged on, and whether a [0, 1] value is a fraction of percent.
 VERDICT_INPUT: dict[str, tuple[str, bool]] = {

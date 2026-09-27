@@ -167,7 +167,9 @@ def test_gex_regime_is_categorical_on_the_sign_of_net_gamma() -> None:
     exh = build_exhibit(_Conn(routes), "gex_regime", "NVDA")
     assert exh.readings["regime"] == "negative" and exh.readings["spot_vs_zero_gamma"] == "below"
     assert exh.verdict is not None and exh.verdict["band"] == "hot"
-    assert exh.similar is None  # categorical lenses carry no k-NN summary
+    # Categorical on its verdict, but its similar lens has a number: net notional.
+    assert exh.similar is not None and exh.similar["lens"] == "gex_notional"
+    assert exh.similar["value"] == -5.0e8
 
 
 def test_terrain_alias_answers_with_the_name_asked_for() -> None:
