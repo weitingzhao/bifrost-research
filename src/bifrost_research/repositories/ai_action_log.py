@@ -9,7 +9,10 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Protocol
 
-from bifrost_research.schema.schemas import TABLE_RESEARCH_AI_ACTION_LOG
+from bifrost_research.schema.schemas import (
+    TABLE_RESEARCH_AI_ACTION_LOG,
+    TABLE_RESEARCH_COPILOT_SESSION,
+)
 
 _ALLOWED_STATUSES = frozenset(
     {"proposed", "approved", "rejected", "executed", "error", "expired"}
@@ -355,6 +358,139 @@ def list_actions(
         cur.execute(sql, tuple(params))
         rows = cur.fetchall() or []
     return [_row_to_dict(r) for r in rows]
+
+
+def _row_value(row: Any, i: int) -> Any:
+    return list(row.values())[i] if isinstance(row, Mapping) else row[i]
+
+
+def _source_window(
+    *,
+    action_source: str,
+    kinds: list[str] | tuple[str, ...],
+    approved_by: str | None,
+    since_day: str | None = None,
+    until_day: str | None = None,
+    alias: str = "",
+) -> tuple[str, list[Any]]:
+    """WHERE body for one source's rows of the given kinds, optionally bounded
+    by UTC days (``since_day`` inclusive, ``until_day`` exclusive)."""
+    p = f"{alias}." if alias else ""
+    clauses = [f"{p}action_source = %s", f"{p}action_kind = ANY(%s)"]
+    params: list[Any] = [action_source, list(kinds)]
+    if approved_by:
+        clauses.append(f"{p}approved_by = %s")
+        params.append(approved_by)
+    if since_day:
+        clauses.append(f"{p}created_at >= (%s::date AT TIME ZONE 'UTC')")
+        params.append(since_day)
+    if until_day:
+        clauses.append(f"{p}created_at < (%s::date AT TIME ZONE 'UTC')")
+        params.append(until_day)
+    return " AND ".join(clauses), params
+
+
+def count_by_status(
+    conn: _Connection,
+    *,
+    action_source: str,
+    kinds: list[str] | tuple[str, ...],
+    since_day: str,
+    until_day: str,
+    approved_by: str | None = None,
+) -> dict[str, int]:
+    """Rows per status for one source and kind set inside a UTC-day window.
+
+    Counted in SQL: a count taken from a limited list is a floor, not a count.
+    """
+    where, params = _source_window(
+        action_source=action_source,
+        kinds=kinds,
+        approved_by=approved_by,
+        since_day=since_day,
+        until_day=until_day,
+    )
+    sql = f"""
+        SELECT status, COUNT(*)::int
+        FROM {TABLE_RESEARCH_AI_ACTION_LOG}
+        WHERE {where}
+        GROUP BY status
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall() or []
+    return {str(_row_value(r, 0)): int(_row_value(r, 1) or 0) for r in rows}
+
+
+def list_with_thread(
+    conn: _Connection,
+    *,
+    action_source: str,
+    kinds: list[str] | tuple[str, ...],
+    since_day: str,
+    owner_id: str,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """One source's rows since a UTC day, newest first, each with the title of
+    the Copilot thread it came from (the Owner's own threads only).
+
+    Returns ``rows``, ``total`` (counted, not taken from the page),
+    ``truncated`` and ``last_at`` — the newest row of that source and kind set
+    at any age, so an empty window can say when the last one was.
+    """
+    where, params = _source_window(
+        action_source=action_source,
+        kinds=kinds,
+        approved_by=owner_id,
+        since_day=since_day,
+        alias="a",
+    )
+    cols = ", ".join(f"a.{c}" for c in _COLUMNS)
+    sql = f"""
+        SELECT {cols}, s.title, s.status
+        FROM {TABLE_RESEARCH_AI_ACTION_LOG} a
+        LEFT JOIN {TABLE_RESEARCH_COPILOT_SESSION} s
+          ON s.id::text = a.session_id AND s.owner_id = %s
+        WHERE {where}
+        ORDER BY a.created_at DESC
+        LIMIT %s
+    """
+    count_sql = f"""
+        SELECT COUNT(*)::int
+        FROM {TABLE_RESEARCH_AI_ACTION_LOG} a
+        WHERE {where}
+    """
+    last_where, last_params = _source_window(
+        action_source=action_source, kinds=kinds, approved_by=owner_id
+    )
+    last_sql = f"""
+        SELECT MAX(created_at)
+        FROM {TABLE_RESEARCH_AI_ACTION_LOG}
+        WHERE {last_where}
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (owner_id, *params, int(limit)))
+        raw = cur.fetchall() or []
+        cur.execute(count_sql, tuple(params))
+        total_row = cur.fetchone()
+        cur.execute(last_sql, tuple(last_params))
+        last_row = cur.fetchone()
+    rows: list[dict[str, Any]] = []
+    n = len(_COLUMNS)
+    for r in raw:
+        values = list(r.values()) if isinstance(r, Mapping) else list(r)
+        row = _row_to_dict(values[:n])
+        row["thread_title"] = values[n] if len(values) > n else None
+        row["thread_status"] = values[n + 1] if len(values) > n + 1 else None
+        rows.append(row)
+    total = int(_row_value(total_row, 0) or 0) if total_row is not None else len(rows)
+    last_at = _iso(_row_value(last_row, 0)) if last_row is not None else None
+    return {
+        "rows": rows,
+        "total": total,
+        "truncated": total > len(rows),
+        "last_at": last_at,
+    }
 
 
 def spend_today_by_provider(

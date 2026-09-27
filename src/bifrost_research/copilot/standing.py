@@ -86,25 +86,18 @@ def sessions_today(conn: Any, owner_id: str, today: str) -> dict[str, Any]:
     }
 
 
-def approvals_today(conn: Any, today: str) -> dict[str, int]:
+def approvals_today(conn: Any, today: str, owner_id: str | None = None) -> dict[str, int]:
     """Chat-originated writes by ledger status, today: what the Copilot asked
-    to do, what was allowed, what ran."""
-    from bifrost_research.repositories import ai_action_log as log_repo
+    to do, what was allowed, what ran.
 
-    out = {"proposed": 0, "approved": 0, "executed": 0, "rejected": 0, "error": 0}
-    for status in out:
-        try:
-            rows = log_repo.list_actions(
-                conn,
-                status=status,
-                limit=100,
-                exclude_kinds=log_repo._NON_WRITE_KINDS,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("copilot standing: action log (%s) failed: %s", status, exc)
-            continue
-        out[status] = sum(1 for r in rows if _is_today(r.get("created_at"), today))
-    return out
+    Only write tools from the chat count. Until 0.133.0 this counted every
+    ledger row but the spend ledger and guardrail trips, so the scheduled
+    agents' drafts (30–50 a day, re-measured 2026-09-26) stood in for chat
+    writes; and it counted a 100-row page, which is a floor.
+    """
+    from bifrost_research.copilot.writes import chat_write_counts
+
+    return chat_write_counts(conn, day=today, owner_id=owner_id)
 
 
 def usage_today(conn: Any, owner_id: str) -> dict[str, Any]:
@@ -151,7 +144,7 @@ def copilot_standing(conn: Any, *, owner_id: str) -> dict[str, Any]:
         "day_utc": today,
         "brief": brief_today(conn, today),
         "sessions": sessions_today(conn, owner_id, today),
-        "approvals": approvals_today(conn, today),
+        "approvals": approvals_today(conn, today, owner_id),
         "usage": usage_today(conn, owner_id),
     }
 

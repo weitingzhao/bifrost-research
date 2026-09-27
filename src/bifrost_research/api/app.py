@@ -16,6 +16,7 @@ from bifrost_research.api.canonical_pnl import router as canonical_pnl_router
 from bifrost_research.api.candidates import router as candidates_router
 from bifrost_research.api.copilot import router as copilot_router
 from bifrost_research.api.copilot_sessions import router as copilot_sessions_router
+from bifrost_research.api.copilot_writes import router as copilot_writes_router
 from bifrost_research.api.docs import router as docs_router
 from bifrost_research.api.elementary import router as elementary_router
 from bifrost_research.api.exhibit import router as exhibit_router
@@ -105,6 +106,7 @@ def create_app() -> FastAPI:
     app.include_router(copilot_router)
     app.include_router(symbol_verdicts_router)
     app.include_router(copilot_sessions_router)
+    app.include_router(copilot_writes_router)
     app.include_router(playbook_router)
     app.include_router(agent_persona_router)
     app.include_router(agents_router)
