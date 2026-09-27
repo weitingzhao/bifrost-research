@@ -227,3 +227,31 @@ def test_gex_intraday_is_quiet_on_a_closed_day() -> None:
          patch.object(sched, "fetch_recent_trading_days", return_value=[date(2026, 11, 25)]):
         result = sched.run_gex_intraday(conn, trading_days=[], symbols=["PLTR"])
     assert result["symbols"] == 0 and result["symbols_ok"] == 0
+
+
+def test_terrain_intraday_stands_on_the_sessions_inputs_where_the_chain_observed_the_name() -> None:
+    """Every snapshot used to restate the prior close; a chain name now reads its session."""
+    daily_gex = {"zero_gamma": 174.47, "major_call_wall": 190.0, "major_put_wall": 190.0, "total_net_gex": 2.9e8, "spot": 192.59}
+    session_gex = {"zero_gamma": 176.0, "major_call_wall": 195.0, "major_put_wall": 180.0, "total_net_gex": 3.4e8, "spot": 191.97}
+    written: list = []
+
+    def upsert(conn, rows):
+        written.extend(rows)
+        return len(rows)
+
+    with patch.object(sched, "_today_ny", return_value=date(2026, 9, 28)), \
+         patch.object(sched, "_intraday_chain_symbols", return_value=["PLTR"]), \
+         patch.object(sched, "load_upstream_signals", return_value=(192.59, daily_gex, {"score": 62.2}, {"iv_rank_1y": 15.8})), \
+         patch.object(sched, "fetch_spot_reading", return_value=(191.97, "parity", date(2026, 9, 28))), \
+         patch.object(sched, "_session_gex", return_value=session_gex), \
+         patch("bifrost_research.engines.forecast.terrain.upsert_terrain_intraday", side_effect=upsert), \
+         patch("bifrost_research.engines.forecast.playbook.emit_triggers_for_terrain_intraday"):
+        result = sched.run_terrain_intraday(MagicMock(), trading_days=[], symbols=["PLTR", "AAPL"])
+
+    by = {t.symbol: t for t in written}
+    assert by["PLTR"].spot == 191.97
+    assert by["PLTR"].inputs_json["spot_source"] == "parity" and by["PLTR"].inputs_json["gex_source"] == "intraday"
+    assert by["PLTR"].inputs_json["gex"]["zero_gamma"] == 176.0
+    assert by["AAPL"].spot == 192.59
+    assert by["AAPL"].inputs_json["spot_source"] == "prior_close" and by["AAPL"].inputs_json["gex_source"] == "daily"
+    assert result["rows_written"] == 2 and result["rows_on_session_inputs"] == 1

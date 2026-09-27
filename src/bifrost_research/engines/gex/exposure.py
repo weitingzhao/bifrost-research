@@ -318,6 +318,7 @@ def fetch_spot_reading(
     trade_date: date,
     *,
     prior_close_days: int = 0,
+    session_parity: bool = False,
 ) -> tuple[float, str, date] | None:
     """Spot for ``trade_date`` with where it came from: ``(spot, source, as_of)``.
 
@@ -332,6 +333,12 @@ def fetch_spot_reading(
     each half hour and reported success (terrain met the same wall on 09-02,
     b79773b). The daily path keeps the exact match — a stale close there would
     hide a missing bar.
+
+    ``session_parity`` prices any name off its own chain before the prior close
+    (``parity_spot`` on the day's newest snapshot): the session's level, not
+    yesterday's. Measured 2026-09-22…25 on eight names at the intraday chain's
+    10:30 / 13:00 / 15:30 snapshots, 69 of 72 fell inside the hour's bar, median
+    0.11% off its midpoint, where the prior close sat 0.55% off.
     """
     sym = symbol.strip().upper()
     # Index options: OI stored as SPX; spot may live as SPX or Polygon I:SPX.
@@ -355,6 +362,11 @@ def fetch_spot_reading(
                 f = _first_positive(cur.fetchone())
                 if f is not None:
                     return f, source, trade_date
+
+    if session_parity:
+        f = parity_spot(conn, "SPX" if sym in ("SPX", "I:SPX") else sym.removeprefix("I:"), trade_date)
+        if f is not None:
+            return f, "parity", trade_date
 
     if prior_close_days > 0:
         with conn.cursor() as cur:
@@ -646,11 +658,15 @@ def compute_gex_intraday(
 ) -> dict[str, Any]:
     """Compute intraday GEX snapshot and write to features.option_metric_gex_intraday.
 
-    Spot is the newest close up to a week back when the session has none yet
-    (``spot_source`` says which); OI and gamma are the session's own, from the
-    plugin's intraday chain.
+    Spot is the session's own level by put–call parity on the plugin's intraday
+    chain, and the newest close up to a week back only when the chain prices
+    none (``spot_source`` says which); OI and gamma are the session's own. Until
+    0.137.0 a stock stood on the prior close all session (2026-09-26 option A),
+    so its gamma moved through the day and its spot did not.
     """
-    reading = fetch_spot_reading(conn, symbol, trade_date, prior_close_days=INTRADAY_PRIOR_CLOSE_DAYS)
+    reading = fetch_spot_reading(
+        conn, symbol, trade_date, prior_close_days=INTRADAY_PRIOR_CLOSE_DAYS, session_parity=True
+    )
     if reading is None:
         return {"ok": False, "error": "No spot price", "symbol": symbol.strip().upper()}
     spot, spot_source, spot_date = reading

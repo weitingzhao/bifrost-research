@@ -38,7 +38,12 @@ from bifrost_research.engines.backtest.settlement import (
     settle_forecast,
     upsert_settlement,
 )
-from bifrost_research.engines.gex.exposure import compute_gex_for_symbol, compute_gex_intraday
+from bifrost_research.engines.gex.exposure import (
+    INTRADAY_PRIOR_CLOSE_DAYS,
+    compute_gex_for_symbol,
+    compute_gex_intraday,
+    fetch_spot_reading,
+)
 from bifrost_research.engines.momentum.radar import compute_momentum_for_date
 from bifrost_research.engines.volatility.surface import compute_iv_surface_for_symbol
 
@@ -241,12 +246,42 @@ def run_forecast(
     }
 
 
+def _session_gex(conn: Any, symbol: str, day: date) -> dict[str, Any] | None:
+    """The newest intraday GEX row ``day`` holds for ``symbol``, in the daily row's keys."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT zero_gamma, major_call_wall, major_put_wall, total_net_gex, spot
+            FROM features.option_metric_gex_intraday
+            WHERE symbol = %s AND trade_date = %s
+            ORDER BY asof_ts DESC
+            LIMIT 1
+            """,
+            (symbol, day),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    keys = ("zero_gamma", "major_call_wall", "major_put_wall", "total_net_gex", "spot")
+    return dict(row) if isinstance(row, Mapping) else dict(zip(keys, row, strict=False))
+
+
 def run_terrain_intraday(
     conn: Any,
     *,
     trading_days: Sequence[date],
     symbols: Sequence[str],
 ) -> dict[str, Any]:
+    """Hourly terrain with the session's own inputs where the session has any.
+
+    Every input used to come from the nightly tables (``load_upstream_signals``
+    stands on the newest row at or before today), so all seven snapshots of a
+    session were the prior close restated — every name, 2026-09-10…25. A name
+    the plugin's intraday chain observed now stands on the session's parity spot
+    and the intraday GEX row this job's gex step wrote just before it; momentum
+    and IV stay daily. The rest keep the nightly inputs, and ``inputs_json``
+    says which each row stood on.
+    """
     from bifrost_research.engines.forecast.terrain import (
         compute_terrain_intraday,
         upsert_terrain_intraday,
@@ -255,9 +290,23 @@ def run_terrain_intraday(
     now_utc = datetime.now(timezone.utc)
     written = 0
     skipped = 0
+    live = 0
     today = _today_ny()
+    observed = set(_intraday_chain_symbols(conn, today))
     for sym in symbols:
         spot, gex, momentum, iv = load_upstream_signals(conn, sym, today)
+        spot_source, gex_source = "prior_close", "daily"
+        if sym.strip().upper() in observed:
+            reading = fetch_spot_reading(
+                conn, sym, today, prior_close_days=INTRADAY_PRIOR_CLOSE_DAYS, session_parity=True
+            )
+            if reading is not None:
+                spot, spot_source = reading[0], reading[1]
+            session_gex = _session_gex(conn, sym.strip().upper(), today)
+            if session_gex is not None:
+                gex, gex_source = session_gex, "intraday"
+            if spot_source == "parity" or gex_source == "intraday":
+                live += 1
         if spot <= 0:
             skipped += 1
             continue
@@ -270,6 +319,8 @@ def run_terrain_intraday(
             momentum=momentum or None,
             iv=iv or None,
         )
+        terrain.inputs_json["spot_source"] = spot_source
+        terrain.inputs_json["gex_source"] = gex_source
         written += upsert_terrain_intraday(conn, [terrain])
         try:
             from bifrost_research.engines.forecast.playbook import (
@@ -295,6 +346,7 @@ def run_terrain_intraday(
     return {
         "slot": "terrain-intraday",
         "rows_written": written,
+        "rows_on_session_inputs": live,
         "skipped_no_spot": skipped,
         "symbols": len(symbols),
         "asof_ts": now_utc.isoformat(),
@@ -350,12 +402,15 @@ def run_gex_intraday(
     ok = 0
     failures: dict[str, str] = {}
     prior_close = 0
+    parity = 0
     for sym in observed:
         result = compute_gex_intraday(conn, symbol=sym, trade_date=today, asof_ts=now_utc)
         if result.get("ok"):
             ok += 1
             if result.get("spot_source") == "prior_close":
                 prior_close += 1
+            elif result.get("spot_source") == "parity":
+                parity += 1
         else:
             failures[sym] = str(result.get("error") or "failed")
     summary = {
@@ -364,6 +419,7 @@ def run_gex_intraday(
         "symbols_failed": len(failures),
         "symbols": len(observed),
         "spot_prior_close": prior_close,
+        "spot_parity": parity,
         "failures": dict(sorted(failures.items())[:20]),
         "asof_ts": now_utc.isoformat(),
     }

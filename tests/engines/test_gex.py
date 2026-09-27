@@ -140,3 +140,23 @@ def test_index_spot_is_priced_by_parity_before_the_max_oi_strike() -> None:
     assert reading == (7745.4, "parity", date(2026, 9, 25))
     _, params = next(c for c in conn.cur.calls if "c.strike + c.px - p.px" in c[0])
     assert params[0] == "SPX" and params[3] == date(2026, 9, 25)
+
+
+def test_session_parity_prices_a_stock_before_the_prior_close() -> None:
+    # PLTR 2026-09-25 at the 13:00 intraday chain: parity 191.97 against the hour's
+    # bar at 191.86, where the prior close stood at 192.59.
+    fwds = [(191.9,), (192.1,), (191.97,), (191.8,), (192.0,)]
+    conn = _SpotConn({"c.strike + c.px - p.px": fwds, "bar_date < %s": (192.59, date(2026, 9, 24))})
+    assert fetch_spot_reading(conn, "PLTR", date(2026, 9, 25), prior_close_days=7) == (
+        192.59,
+        "prior_close",
+        date(2026, 9, 24),
+    )
+    reading = fetch_spot_reading(conn, "PLTR", date(2026, 9, 25), prior_close_days=7, session_parity=True)
+    assert reading == (191.97, "parity", date(2026, 9, 25))
+
+
+def test_session_parity_falls_back_to_the_prior_close_without_a_chain() -> None:
+    conn = _SpotConn({"bar_date < %s": (192.59, date(2026, 9, 24))})
+    reading = fetch_spot_reading(conn, "PLTR", date(2026, 9, 25), prior_close_days=7, session_parity=True)
+    assert reading == (192.59, "prior_close", date(2026, 9, 24))

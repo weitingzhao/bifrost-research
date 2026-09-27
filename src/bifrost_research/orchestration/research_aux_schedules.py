@@ -165,17 +165,20 @@ engines_settlement = _run_asset(
 
 # Re-use existing canonical_pnl asset from engine_assets — schedule it separately.
 # Wave 5
-engines_terrain_intraday = _run_asset(
-    key_path=["engines", "terrain_intraday"],
-    group=GROUP_INTRADAY,
-    description="Terrain intraday",
-    fn=lambda: engine_sched.run_slot("terrain-intraday"),
-)
 engines_gex_intraday = _run_asset(
     key_path=["engines", "gex_intraday"],
     group=GROUP_INTRADAY,
     description="GEX intraday",
     fn=lambda: engine_sched.run_slot("gex-intraday"),
+)
+# After gex: a name the intraday chain observed stands on the GEX row this tick
+# just wrote (0.137.0); run side by side it read the previous hour's.
+engines_terrain_intraday = _run_asset(
+    key_path=["engines", "terrain_intraday"],
+    group=GROUP_INTRADAY,
+    description="Terrain intraday",
+    fn=lambda: engine_sched.run_slot("terrain-intraday"),
+    deps=[AssetKey(["engines", "gex_intraday"])],
 )
 engines_event_radar_sched = _run_asset(
     key_path=["engines", "event_radar_cron"],
