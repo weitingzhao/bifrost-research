@@ -45,3 +45,10 @@ load_macros_from_path = macros
 # SQL that cannot run.
 [sqlfluff:rules:convention.select_trailing_comma]
 select_clause_trailing_comma = forbid
+
+# CV04 (how rows are counted) is in `core` too, on since this file was added.
+# Pinned to count(*): the models use it 49 times and count(1) / count(0) never.
+# All three count the same rows in Postgres; this only keeps one spelling.
+[sqlfluff:rules:convention.count_rows]
+prefer_count_1 = False
+prefer_count_0 = False
