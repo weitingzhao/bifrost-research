@@ -56,9 +56,22 @@ sv_recent as (
 
 select
     u.symbol,
-    current_date as eval_date,
+    si.shares_short,
 
     -- Short interest signals (declining SI = bullish squeeze potential)
+    si.days_to_cover,
+    si.short_pct_float,
+    psi.prev_shares_short,
+    sv.sv_ratio_latest,
+
+    -- Short volume signals
+    sv.sv_ratio_5d,
+    sv.sv_ratio_20d,
+
+    -- Sentiment score (normalized 0-1)
+    current_date as eval_date,
+
+    -- Raw metrics
     coalesce(
         si.shares_short < psi.prev_shares_short,
         false
@@ -69,12 +82,8 @@ select
         si.short_pct_float < psi.prev_short_pct_float,
         false
     ) as short_float_declining,
-
-    -- Short volume signals
     coalesce(sv.sv_ratio_latest < 0.30, false) as low_short_volume,
     coalesce(sv.sv_ratio_5d < sv.sv_ratio_20d, false) as sv_ratio_declining,
-
-    -- Sentiment score (normalized 0-1)
     (
         coalesce(si.shares_short < psi.prev_shares_short, false)::int
         + coalesce(si.short_pct_float < 0.10, false)::int
@@ -82,16 +91,7 @@ select
         + coalesce(si.short_pct_float < psi.prev_short_pct_float, false)::int
         + coalesce(sv.sv_ratio_latest < 0.30, false)::int
         + coalesce(sv.sv_ratio_5d < sv.sv_ratio_20d, false)::int
-    )::numeric / 6.0 as sentiment_score,
-
-    -- Raw metrics
-    si.shares_short,
-    si.days_to_cover,
-    si.short_pct_float,
-    psi.prev_shares_short,
-    sv.sv_ratio_latest,
-    sv.sv_ratio_5d,
-    sv.sv_ratio_20d
+    )::numeric / 6.0 as sentiment_score
 
 from {{ ref('dim_universe') }} as u
 left join latest_si as si on u.symbol = si.symbol

@@ -13,9 +13,9 @@
 select
     symbol,
     period_date,
+    null::numeric as short_pct_float,
+    fetched_at,
     (data ->> 'short_interest')::numeric as shares_short,
     (data ->> 'days_to_cover')::numeric as days_to_cover,
-    (data ->> 'avg_daily_volume')::numeric as avg_daily_volume,
-    null::numeric as short_pct_float,
-    fetched_at
+    (data ->> 'avg_daily_volume')::numeric as avg_daily_volume
 from {{ source('market', 'short_interest') }}

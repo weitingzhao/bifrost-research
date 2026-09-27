@@ -6,9 +6,9 @@ select
     period_type,
     fiscal_year,
     fiscal_quarter,
+    fetched_at,
     (data -> 'net_cash_flow_from_operating_activities' ->> 'value')::numeric as operating_cf,
     (data -> 'net_cash_flow_from_investing_activities' ->> 'value')::numeric as investing_cf,
     (data -> 'net_cash_flow_from_financing_activities' ->> 'value')::numeric as financing_cf,
-    (data -> 'net_cash_flow' ->> 'value')::numeric as net_cash_flow,
-    fetched_at
+    (data -> 'net_cash_flow' ->> 'value')::numeric as net_cash_flow
 from {{ source('market', 'cash_flow') }}

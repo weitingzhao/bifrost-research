@@ -30,13 +30,26 @@ latest_crs as (
 
 select
     l.symbol,
-    current_date as eval_date,
     l.trade_date as price_date,
+    l.close,
 
     -- 11 core conditions
+    l.sma_50,
+    l.sma_150,
+    l.sma_200,
+    l.volume_ma_50,
+    l.low_52w,
+    l.high_52w,
+    c.crs_percentile,
+    c.return_252d,
+    current_date as eval_date,
     coalesce(l.volume_ma_50 > 100000, false) as avg_volume_50_gt_threshold,
     coalesce(l.close >= l.low_52w * 1.3, false) as close_ge_low52_x_1_3,
+
+    -- Pass count summary
     coalesce(l.close >= l.high_52w * 0.75, false) as close_ge_high52_x_0_75,
+
+    -- Raw metrics for inspector
     coalesce(l.sma_50 > l.sma_150, false) as sma50_gt_sma150,
     coalesce(l.sma_50 > l.sma_200, false) as sma50_gt_sma200,
     coalesce(l.sma_150 > l.sma_200, false) as sma150_gt_sma200,
@@ -45,8 +58,6 @@ select
     coalesce(l.close > l.sma_150, false) as price_gt_sma150,
     coalesce(l.close > l.sma_200, false) as price_gt_sma200,
     coalesce(c.crs_percentile >= 70, false) as crs_ge_70,
-
-    -- Pass count summary
     (
         coalesce(l.volume_ma_50 > 100000, false)::int
         + coalesce(l.close >= l.low_52w * 1.3, false)::int
@@ -59,18 +70,7 @@ select
         + coalesce(l.close > l.sma_150, false)::int
         + coalesce(l.close > l.sma_200, false)::int
         + coalesce(c.crs_percentile >= 70, false)::int
-    ) as pass_count,
-
-    -- Raw metrics for inspector
-    l.close,
-    l.sma_50,
-    l.sma_150,
-    l.sma_200,
-    l.volume_ma_50,
-    l.low_52w,
-    l.high_52w,
-    c.crs_percentile,
-    c.return_252d
+    ) as pass_count
 
 from latest as l
 left join latest_crs as c on l.symbol = c.symbol

@@ -164,11 +164,11 @@ select
     high_52w,
     atr_14,
     sma_200_20d_ago,
+    bar_sequence,
     close - prev_close as price_change,
     (close / nullif(close_10d_ago, 0) - 1) as roc_10,
     (close / nullif(close_21d_ago, 0) - 1) as roc_21,
-    (close / nullif(close_252d_ago, 0) - 1) as return_252d,
-    bar_sequence
+    (close / nullif(close_252d_ago, 0) - 1) as return_252d
 from with_atr
 {% if is_incremental() %}
     where trade_date > (

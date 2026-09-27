@@ -92,12 +92,12 @@ spy_return as (
 vol_trend as (
     select distinct on (e.symbol)
         e.symbol,
+        e.volume_ma_50,
         avg(e.volume)
             over (
                 partition by e.symbol order by e.trade_date rows between 9 preceding and current row
             )
-            as vol_10,
-        e.volume_ma_50
+            as vol_10
     from {{ ref('int_stock_daily_enriched') }} as e
     inner join {{ ref('dim_universe') }} as u on e.symbol = u.symbol
     where e.bar_sequence >= 252
@@ -106,35 +106,40 @@ vol_trend as (
 
 select
     d.symbol,
-    current_date as eval_date,
+    r.rsi_14,
 
     -- RSI signals
-    coalesce(r.rsi_14 > 50, false) as rsi_above_50,
-    coalesce(r.rsi_14 between 40 and 70, false) as rsi_healthy_range,
+    d.roc_10,
+    d.roc_21,
 
     -- MACD signal
+    current_date as eval_date,
+    coalesce(r.rsi_14 > 50, false) as rsi_above_50,
+
+    -- ROC signals
+    coalesce(r.rsi_14 between 40 and 70, false) as rsi_healthy_range,
     coalesce(m.ema_12_approx > m.ema_26_approx, false) as macd_bullish,
+
+    -- RS vs SPY (JOIN instead of correlated subquery)
     coalesce(
         (m.ema_12_approx - m.ema_26_approx) / nullif(d.close, 0) > 0.01,
         false
     ) as macd_strong,
 
-    -- ROC signals
+    -- Volume trend signals
     coalesce(d.roc_10 > 0, false) as roc_10_positive,
     coalesce(d.roc_21 > 0, false) as roc_21_positive,
 
-    -- RS vs SPY (JOIN instead of correlated subquery)
+    -- Price above SMA10 (from pre-joined daily_latest)
     coalesce(d.return_252d > (select spy.spy_252d_return from spy_return as spy), false)
         as rs_gt_spy,
 
-    -- Volume trend signals
-    coalesce(v.vol_10 > v.volume_ma_50, false) as volume_expanding,
-    coalesce(v.vol_10 > v.volume_ma_50 * 1.5, false) as volume_surge,
-
-    -- Price above SMA10 (from pre-joined daily_latest)
-    coalesce(d.close > d.sma_10, false) as price_gt_sma10,
-
     -- Momentum score (all 10 signals normalized 0-1)
+    coalesce(v.vol_10 > v.volume_ma_50, false) as volume_expanding,
+
+    -- Raw metrics
+    coalesce(v.vol_10 > v.volume_ma_50 * 1.5, false) as volume_surge,
+    coalesce(d.close > d.sma_10, false) as price_gt_sma10,
     (
         coalesce(r.rsi_14 > 50, false)::int
         + coalesce(r.rsi_14 between 40 and 70, false)::int
@@ -147,12 +152,7 @@ select
         + coalesce(v.vol_10 > v.volume_ma_50 * 1.5, false)::int
         + coalesce(d.close > d.sma_10, false)::int
     )::numeric / 10.0 as momentum_score,
-
-    -- Raw metrics
-    r.rsi_14,
-    m.ema_12_approx - m.ema_26_approx as macd_line,
-    d.roc_10,
-    d.roc_21
+    m.ema_12_approx - m.ema_26_approx as macd_line
 
 from daily_latest as d
 left join latest_rsi as r on d.symbol = r.symbol

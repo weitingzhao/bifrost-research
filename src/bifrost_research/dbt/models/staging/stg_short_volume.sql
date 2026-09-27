@@ -18,6 +18,7 @@
 select
     symbol,
     period_date,
+    fetched_at,
     (data ->> 'short_volume')::numeric as short_volume,
     (data ->> 'total_volume')::numeric as total_volume,
     (data ->> 'exempt_volume')::numeric as exempt_volume,
@@ -27,6 +28,5 @@ select
         / nullif((data ->> 'total_volume')::numeric, 0),
         (data ->> 'short_volume_ratio')::numeric / 100.0
     ) as short_volume_ratio,
-    (data ->> 'short_volume_ratio')::numeric as short_volume_pct,
-    fetched_at
+    (data ->> 'short_volume_ratio')::numeric as short_volume_pct
 from {{ source('market', 'short_volume') }}

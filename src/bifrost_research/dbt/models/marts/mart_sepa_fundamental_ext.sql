@@ -37,9 +37,9 @@ latest_balance as (
         noncurrent_liabilities as total_debt,
         current_assets,
         current_liabilities,
-        coalesce(current_assets - current_liabilities, 0) as net_working_capital,
         fixed_assets,
-        equity_to_parent
+        equity_to_parent,
+        coalesce(current_assets - current_liabilities, 0) as net_working_capital
     from {{ ref('stg_balance_sheet') }}
     where period_type = 'quarterly'
     order by symbol asc, period_date desc

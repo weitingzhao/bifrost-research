@@ -6,9 +6,8 @@ dialect = postgres
 # from dbt_utils or elementary; a model that does will fail to template here.
 templater = jinja
 # Explicit rule set. sqlfluff's default is `all`, whose auto-fixes include
-# ST06 (reorders SELECT columns, i.e. the materialized table's column order)
-# and ST07 (USING -> ON, which changes `select *`). `core` is sqlfluff's
-# curated set; widen it on purpose, not by upgrade.
+# ST07 (USING -> ON, which changes `select *`). `core` is sqlfluff's curated
+# set; widen it on purpose, not by upgrade.
 # RF02 (added 2026-09-26): qualify columns wherever a select sees more than one
 # table, scalar subqueries included. An unqualified column there binds to the
 # innermost scope that has it, so if that table ever loses the column it quietly
@@ -21,7 +20,13 @@ templater = jinja
 # is the outer one: there, qualify every column rather than trust scope.
 # AL01 (added 2026-09-26): table aliases say `as` (`from t as d`), so an alias
 # cannot be mistaken for a table name or a missing comma.
-rules = core,RF02,AM03,RF03,AL01
+# ST06 (added 2026-09-26): select targets go wildcards, then plain columns, then
+# calculations. Its fix reorders columns, and a model's final select IS the
+# table's column order: adding it reordered 14 tables (and screening_ranked,
+# which selects * from composite_score). Every reader found then goes by column
+# name. Before relying on column position anywhere (a UNION of `select *`, a
+# tuple index, a view over `*`), expect this rule to have moved things.
+rules = core,RF02,AM03,RF03,AL01,ST06
 # Same width as ruff's line-length.
 max_line_length = 100
 
