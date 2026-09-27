@@ -152,3 +152,19 @@ def test_schedule_and_whitelist_wired() -> None:
     assert msh.market_self_heal_schedule in RESEARCH_SCHEDULES
     assert msh.market_self_heal_job in RESEARCH_JOBS
     assert ("market_self_heal_schedule", "market_self_heal_job", "UTC") in HUSBANDRY_SCHEDULE_JOBS
+
+
+def test_a_second_pass_follows_fundamentals_market() -> None:
+    """00:45 runs before ratios and short volume exist; the late pass sees them."""
+    from bifrost_research.api.orchestration_schedules import HUSBANDRY_SCHEDULE_JOBS
+    from bifrost_research.orchestration.market_slot_schedules import MARKET_SCHEDULES
+    from bifrost_research.orchestration.schedules import RESEARCH_SCHEDULES
+
+    late = msh.market_self_heal_late_schedule
+    assert late.cron_schedule == "30 5 * * 2-6"
+    assert late.job is msh.market_self_heal_job
+    assert late in RESEARCH_SCHEDULES
+    assert ("market_self_heal_late_schedule", "market_self_heal_job", "UTC") in HUSBANDRY_SCHEDULE_JOBS
+    fundamentals = next(s for s in MARKET_SCHEDULES if s.name == "market_fundamentals_market_schedule")
+    fund_h, late_h = int(fundamentals.cron_schedule.split()[1]), int(late.cron_schedule.split()[1])
+    assert late_h > fund_h

@@ -30,6 +30,11 @@ from bifrost_research.orchestration.plugin_http import env, get_json, meta, post
 # 00:45 UTC Tue–Sat = 20:45 EDT / 19:45 EST on the trading day: after the EOD
 # chain (22:00 UTC) and the Plugin doctor's 19:30 New York session cutoff.
 SELF_HEAL_CRON = "45 0 * * 2-6"
+# 05:30 UTC Tue–Sat, an hour after fundamentals-market (04:30). The 00:45 pass
+# runs before ratios and short volume exist, so a partial publication was only
+# ever seen the next night — and ratios cannot be asked for again once the
+# vendor issues the next date. Same asset, same doctor; this pass sees them.
+SELF_HEAL_LATE_CRON = "30 5 * * 2-6"
 DEFAULT_WAIT_SEC = 900
 POLL_SEC = 30
 
@@ -160,4 +165,13 @@ market_self_heal_schedule = ScheduleDefinition(
     execution_timezone="UTC",
     default_status=DefaultScheduleStatus.RUNNING,
     description="Massive doctor → heal → recheck (UTC) — the nightly self-heal",
+)
+
+market_self_heal_late_schedule = ScheduleDefinition(
+    name="market_self_heal_late_schedule",
+    job=market_self_heal_job,
+    cron_schedule=SELF_HEAL_LATE_CRON,
+    execution_timezone="UTC",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description="Massive doctor → heal → recheck after fundamentals-market (UTC)",
 )
