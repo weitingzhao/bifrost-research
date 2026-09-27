@@ -12,7 +12,7 @@ models:
         description: "Always true — filter applied at source"
 
   - name: dim_trading_calendar
-    description: "Calendar of all dates with is_trading_day boolean (excludes weekends + holidays)"
+    description: "Calendar of all dates from 2020 (where us_market_holiday begins) with is_trading_day — weekends and closed days excluded; early-close days trade"
     columns:
       - name: trade_date
         tests:

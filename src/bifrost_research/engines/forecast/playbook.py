@@ -5,6 +5,8 @@ D10 BLOCKED — structures are advisory; no order placement.
 
 from __future__ import annotations
 
+import contextlib
+import json
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Mapping, Sequence
@@ -443,9 +445,31 @@ def upsert_hourly_sessions(conn: Any, session: ForecastSession) -> int:
     )
 
 
+def _session_exists(conn: Any, session_id: str) -> bool:
+    """Whether ``session_id`` is already stored — a failed lookup counts as yes,
+    so a doubt costs a trigger row rather than duplicating one."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM features.stock_forecast_session WHERE session_id = %s LIMIT 1",
+                (session_id,),
+            )
+            return cur.fetchone() is not None
+    except Exception:  # noqa: BLE001 — any failure is a doubt, and a doubt skips the trigger
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        return True
+
+
 def upsert_forecast_session(conn: Any, session: ForecastSession) -> int:
     n = session.scenarios.normalized()
     now = datetime.now(timezone.utc)
+    # A session id is its symbol and date (0.126.0), and the forecast slot
+    # recomputes the last two dates every night. A recomputation revises the
+    # session; it is not something the market did, so it writes no trigger —
+    # until 2026-09-26 each one wrote a fresh snapshot stamped the night after
+    # (PLTR 09-24: «bull → rangy» at 09-26 03:00), 2,162 such rows on DEV.
+    rerun = _session_exists(conn, session.session_id)
     batch_upsert(
         conn,
         "features.stock_forecast_session",
@@ -498,6 +522,8 @@ def upsert_forecast_session(conn: Any, session: ForecastSession) -> int:
         set_fetched_at=False,
     )
     upsert_hourly_sessions(conn, session)
+    if rerun:
+        return 1 + len(hourly_rows)
     try:
         emit_triggers_for_session(conn, session)
     except Exception:
@@ -697,7 +723,14 @@ def emit_triggers_for_session(
     *,
     trigger_at: datetime | None = None,
 ) -> int:
-    """Compare session scenarios to latest prior trigger / session and upsert events."""
+    """Compare the session's scenarios to the date's latest logged state and upsert events.
+
+    The previous state is the trigger log's own newest row for the symbol and
+    date — the intraday terrain's, when it ran — so the session adds only what
+    changed. It had compared against another session of the same date, which
+    since deterministic ids (0.126.0) never exists: every call logged a fresh
+    snapshot beside the intraday one.
+    """
     at = trigger_at or datetime.now(timezone.utc)
     prev_dominant: str | None = None
     prev_probs: dict[str, float] | None = None
@@ -705,30 +738,20 @@ def emit_triggers_for_session(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT regime, prob_rangy, prob_bull, prob_bear, prob_squeeze
-                FROM features.stock_forecast_session
-                WHERE symbol = %s AND trade_date = %s AND session_id <> %s
-                ORDER BY computed_at DESC
+                SELECT condition_snapshot -> 'probs'
+                FROM features.stock_signal_playbook_trigger_intraday
+                WHERE symbol = %s AND trade_date = %s AND condition_snapshot ? 'probs'
+                ORDER BY trigger_at DESC
                 LIMIT 1
                 """,
-                (session.symbol, session.trade_date, session.session_id),
+                (session.symbol, session.trade_date),
             )
             row = cur.fetchone()
-            if row is not None:
-                if isinstance(row, Mapping):
-                    prev_probs = {
-                        "rangy": float(row.get("prob_rangy") or 0),
-                        "bull": float(row.get("prob_bull") or 0),
-                        "bear": float(row.get("prob_bear") or 0),
-                        "squeeze": float(row.get("prob_squeeze") or 0),
-                    }
-                else:
-                    prev_probs = {
-                        "rangy": float(row[1] or 0),
-                        "bull": float(row[2] or 0),
-                        "bear": float(row[3] or 0),
-                        "squeeze": float(row[4] or 0),
-                    }
+            raw = (next(iter(row.values()), None) if isinstance(row, Mapping) else row[0]) if row else None
+            if isinstance(raw, str):
+                raw = json.loads(raw)
+            if isinstance(raw, Mapping):
+                prev_probs = {k: float(raw.get(k) or 0) for k in _SCENARIO_KEYS}
                 prev_dominant = max(prev_probs, key=lambda k: prev_probs[k])
     except Exception:
         try:

@@ -36,10 +36,13 @@ def fetch_closed_holiday_dates(
     and settlement paired Friday 09-04's session with the holiday instead of
     09-08. Two sources now, because neither covers both directions:
 
-    - ``raw_market.us_market_holiday`` (the plugin's vendor feed) lists upcoming
-      holidays only — it covers today and later; ``early-close`` days trade;
+    - ``raw_market.us_market_holiday`` (the plugin's vendor feed) for today and
+      later; ``early-close`` days trade. It also holds 2020 on (loaded once,
+      2026-05-04), but early closes only as they come up — corrected here
+      2026-09-26, the note had said it lists upcoming holidays only;
     - before today, a weekday on which none of SPY, QQQ and IWM has a daily bar
-      was not a session (2026-07-01…09-25 on DEV: exactly 07-03 and 09-07).
+      was not a session (2026-07-01…09-25 on DEV: exactly 07-03 and 09-07), which
+      reads what actually traded rather than what was announced.
     """
     closed: set[date] = set()
     today = datetime.now(_NY).date()
