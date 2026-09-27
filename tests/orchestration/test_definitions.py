@@ -220,6 +220,20 @@ def test_the_ratios_schedule_polls_daily_outside_the_collection_window() -> None
     assert 4 not in hours, "must not collide with the 04:30 fundamentals-market run"
 
 
+def test_the_option_depth_schedule_is_weekly_on_sunday_morning() -> None:
+    """New universe names get their option history without an Owner firing a one-off."""
+    from bifrost_research.orchestration.market_slot_schedules import (
+        ENQUEUE_RETRY,
+        MARKET_SCHEDULES,
+        market_option_depth,
+    )
+
+    sched = {s.name: s for s in MARKET_SCHEDULES}["market_option_depth_schedule"]
+    assert sched.cron_schedule == "30 7 * * 0"
+    assert sched.execution_timezone == "UTC"
+    assert market_option_depth.op.retry_policy is ENQUEUE_RETRY
+
+
 def test_the_corporate_backfill_schedule_is_monthly_and_out_of_the_collection_window() -> None:
     """History is a monthly errand; the -7/+60 day window is the nightly one."""
     from bifrost_research.orchestration.market_slot_schedules import MARKET_SCHEDULES

@@ -181,6 +181,16 @@ market_corporate_backfill = _make_slot_asset(
     "UTC 07:00 on the 1st — corporate-backfill (full dividend / split history per "
     "symbol; the daily corporate slot only covers -7/+60 days)",
 )
+# Weekly. Nothing scheduled the option history one-off, so the ~230 names the
+# universe gained on 2026-09-10 had no option_daily before 2026-09-08 until an
+# Owner noticed. The plugin's `option-depth` slot (0.56.0) plans only names
+# short of their tier's depth and only the months they are short, so once the
+# universe is at depth a run is near zero jobs.
+market_option_depth = _make_slot_asset(
+    "market_option_depth",
+    ("option-depth",),
+    "UTC 07:30 Sunday — option history for universe names short of their depth target",
+)
 
 MARKET_SCHEDULE_ASSETS = [
     market_snapshot,
@@ -200,6 +210,7 @@ MARKET_SCHEDULE_ASSETS = [
     market_treasury,
     market_ticker_details,
     market_corporate_backfill,
+    market_option_depth,
 ]
 
 _MARKET_SPECS: list[tuple[str, str, Any, str, str]] = [
@@ -288,6 +299,16 @@ _MARKET_SPECS: list[tuple[str, str, Any, str, str]] = [
         market_corporate_backfill,
         "0 7 1 * *",
         "corporate-backfill (monthly full history)",
+    ),
+    # Sunday morning: the queue is idle and no collection slot runs. Weekly, not
+    # daily: a recently listed name can never reach its depth, and each run
+    # re-plans its oldest few months.
+    (
+        "market_option_depth_schedule",
+        "market_option_depth_job",
+        market_option_depth,
+        "30 7 * * 0",
+        "option-depth (weekly history top-up)",
     ),
 ]
 
