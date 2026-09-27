@@ -84,7 +84,8 @@ def extremes(
     limit: int = Query(20, ge=1, le=200),
 ) -> dict[str, Any]:
     """The latest session ranked by ``vrp_pct_252d``; ``excluded`` names whose
-    freshest percentile is older, with the date and the reason."""
+    freshest percentile is older, with the date and the reason; ``retired_count``
+    the retired listings kept off that list."""
     conn = _connect_or_503()
     try:
         data = repo.extremes_payload(conn, bucket=bucket, limit=limit)

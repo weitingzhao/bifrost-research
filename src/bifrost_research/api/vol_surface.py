@@ -136,7 +136,8 @@ def skew_extremes(
     limit: int = Query(20, ge=1, le=200),
 ) -> dict[str, Any]:
     """The latest fit session ranked by |atm_slope|; ``excluded`` names whose
-    freshest ~30-day fit is older, with the date and the reason."""
+    freshest ~30-day fit is older, with the date and the reason; ``retired_count``
+    the retired listings kept off that list."""
     conn = _connect_or_503()
     try:
         data = repo.skew_extremes_payload(conn, limit=limit)

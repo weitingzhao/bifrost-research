@@ -45,7 +45,8 @@ def register(mcp: FastMCP) -> None:
         name="research.vrp.get_extremes",
         description=(
             "Cross-symbol VRP extremes (bucket=high|low) on the latest session (as_of); "
-            "excluded lists names whose last percentile is older, with the date and reason. "
+            "excluded lists names whose last percentile is older, with the date and reason; "
+            "retired_count counts retired listings, which are left out of that list. "
             f"{READ_ONLY_SUFFIX}"
         ),
     )

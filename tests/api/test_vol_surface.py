@@ -230,18 +230,21 @@ def test_skew_left_out_names_the_reason() -> None:
 
     conn = _ScriptedConn(
         [
-            ("AMD", date(2026, 8, 24), True),
-            ("INTC", date(2026, 8, 12), False),
+            ("AMD", date(2026, 8, 24), True, False),
+            ("INTC", date(2026, 8, 12), False, False),
+            ("ZZQ", date(2026, 7, 9), False, True),
         ]
     )
     out = repo.get_skew_left_out(conn, as_of=date(2026, 8, 25))
     assert out == [
         {"symbol": "AMD", "trade_date": "2026-08-24", "reason": "no_30d_fit"},
         {"symbol": "INTC", "trade_date": "2026-08-12", "reason": "not_fit"},
+        {"symbol": "ZZQ", "trade_date": "2026-07-09", "reason": "retired"},
     ]
     sql, params = conn.calls[0]
     assert "l.trade_date < %s" in sql
-    assert params == (date(2026, 8, 25), date(2026, 8, 25))
+    assert "t.active IS FALSE" in sql and "s.bar_date > %s" in sql
+    assert params == (date(2026, 8, 25), date(2026, 8, 11), date(2026, 8, 25))
 
 
 def test_skew_payload_reads_one_session() -> None:
@@ -250,14 +253,17 @@ def test_skew_payload_reads_one_session() -> None:
     conn = _ScriptedConn(
         [(date(2026, 8, 25),)],
         [("TSLA", date(2026, 8, 25), date(2026, 9, 26), 32)],
-        [("AMD", date(2026, 8, 24), False)],
+        [("AMD", date(2026, 8, 24), False, False), ("ZZQ", date(2026, 7, 9), False, True)],
         [(41,)],
     )
     d = repo.skew_extremes_payload(conn, limit=5)
     assert d["as_of"] == "2026-08-25"
     assert [r["symbol"] for r in d["rows"]] == ["TSLA"]
     assert d["ranked"] == 41
+    # A retired listing is counted, not listed: nothing bounds how far back the
+    # left-out read looks, so a listed one would stay on the list for good.
     assert d["excluded_count"] == 1 and d["excluded"][0]["reason"] == "not_fit"
+    assert d["retired_count"] == 1
     assert all(p[0] == date(2026, 8, 25) for _, p in conn.calls[1:])
 
 

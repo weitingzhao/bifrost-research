@@ -10,6 +10,7 @@ from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
 from bifrost_research.lenses.slope_tenor import SLOPE_PICK_ORDER, slope_window_sql
+from bifrost_research.repositories.listing_status import liveness_floor, retired_sql, split_retired
 
 
 _FIT_COLUMNS: tuple[str, ...] = (
@@ -215,8 +216,10 @@ def count_skew_names(conn: Any, *, as_of: date) -> int:
 def get_skew_left_out(conn: Any, *, as_of: date) -> list[dict[str, Any]]:
     """Names with a ~30-day fit before ``as_of`` but none on it, newest first.
 
-    ``reason``: ``not_fit`` — no surface fit for the name that session at all;
-    ``no_30d_fit`` — fit that session, but no expiry in 20–45 DTE fit with a slope.
+    ``reason``: ``retired`` — the listing no longer trades (see
+    ``repositories/listing_status.py``); ``not_fit`` — no surface fit for the name
+    that session at all; ``no_30d_fit`` — fit that session, but no expiry in
+    20–45 DTE fit with a slope.
     """
     sql = f"""
         WITH last_reading AS (
@@ -231,24 +234,23 @@ def get_skew_left_out(conn: Any, *, as_of: date) -> list[dict[str, Any]]:
             EXISTS (
                 SELECT 1 FROM features.option_surface_fit_daily AS f
                 WHERE f.symbol = l.symbol AND f.trade_date = %s
-            ) AS fit_on_as_of
+            ) AS fit_on_as_of,
+            {retired_sql("l.symbol")} AS retired
         FROM last_reading AS l
         WHERE l.trade_date < %s
         ORDER BY l.trade_date DESC, l.symbol ASC
     """
     with conn.cursor() as cur:
-        cur.execute(sql, (as_of, as_of))
+        cur.execute(sql, (as_of, liveness_floor(as_of), as_of))
         rows = cur.fetchall() or []
     out: list[dict[str, Any]] = []
     for r in rows:
-        d = _row_to_dict(r, ("symbol", "trade_date", "fit_on_as_of"))
-        out.append(
-            {
-                "symbol": d.get("symbol"),
-                "trade_date": d.get("trade_date"),
-                "reason": "no_30d_fit" if d.get("fit_on_as_of") else "not_fit",
-            }
-        )
+        d = _row_to_dict(r, ("symbol", "trade_date", "fit_on_as_of", "retired"))
+        if d.get("retired"):
+            reason = "retired"
+        else:
+            reason = "no_30d_fit" if d.get("fit_on_as_of") else "not_fit"
+        out.append({"symbol": d.get("symbol"), "trade_date": d.get("trade_date"), "reason": reason})
     return out
 
 
@@ -257,7 +259,7 @@ def skew_extremes_payload(conn: Any, *, limit: int = 20) -> dict[str, Any]:
     as_of = latest_trade_date(conn)
     session = date.fromisoformat(as_of) if as_of else None
     rows = get_skew_extremes(conn, as_of=session, limit=limit) if session else []
-    left_out = get_skew_left_out(conn, as_of=session) if session else []
+    left_out, retired = split_retired(get_skew_left_out(conn, as_of=session) if session else [])
     return {
         "rows": rows,
         "count": len(rows),
@@ -266,6 +268,7 @@ def skew_extremes_payload(conn: Any, *, limit: int = 20) -> dict[str, Any]:
         "ranked": count_skew_names(conn, as_of=session) if session else 0,
         "excluded": left_out,
         "excluded_count": len(left_out),
+        "retired_count": retired,
     }
 
 

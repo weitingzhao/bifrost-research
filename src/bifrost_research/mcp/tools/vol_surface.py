@@ -84,7 +84,8 @@ def register(mcp: FastMCP) -> None:
         name="research.vol_surface.get_skew_extremes",
         description=(
             "Cross-symbol skew extremes from surface fits on the latest fit session (as_of); "
-            "excluded lists names whose last ~30-day fit is older, with the date and reason. "
+            "excluded lists names whose last ~30-day fit is older, with the date and reason; "
+            "retired_count counts retired listings, which are left out of that list. "
             f"{READ_ONLY_SUFFIX}"
         ),
     )

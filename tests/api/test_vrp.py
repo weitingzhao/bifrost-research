@@ -158,6 +158,7 @@ def test_extremes_without_any_row(monkeypatch) -> None:
     d = r.json()["data"]
     assert (d["rows"], d["ranked"], d["excluded"], d["as_of"]) == ([], 0, [], None)
     assert seen == {}
+    assert d["retired_count"] == 0
 
 
 def test_extremes_rejects_unknown_bucket() -> None:
@@ -284,16 +285,35 @@ def test_left_out_names_the_reason() -> None:
 
     conn = _ScriptedConn(
         [
-            ("AMD", date(2026, 8, 21), True),
-            ("INTC", date(2026, 7, 30), False),
+            ("AMD", date(2026, 8, 21), True, False),
+            ("INTC", date(2026, 7, 30), False, False),
+            ("ZZQ", date(2026, 6, 2), False, True),
         ]
     )
     out = repo.get_left_out(conn, as_of=date(2026, 8, 25))
     assert out == [
         {"symbol": "AMD", "trade_date": "2026-08-21", "reason": "no_percentile"},
         {"symbol": "INTC", "trade_date": "2026-07-30", "reason": "not_computed"},
+        {"symbol": "ZZQ", "trade_date": "2026-06-02", "reason": "retired"},
     ]
-    assert conn.calls[0][1] == (date(2026, 8, 25), date(2026, 8, 25))
+    sql, params = conn.calls[0]
+    # Retired asks the ticker flag and the closes together, as of the session.
+    assert "t.active IS FALSE" in sql and "s.bar_date > %s" in sql
+    assert params == (date(2026, 8, 25), date(2026, 8, 11), date(2026, 8, 25))
+
+
+def test_extremes_keep_retired_listings_off_the_list(monkeypatch) -> None:
+    left_out = [
+        {"symbol": "ZZR", "trade_date": "2026-08-20", "reason": "not_computed"},
+        {"symbol": "ZZQ", "trade_date": "2026-06-02", "reason": "retired"},
+        {"symbol": "ZZS", "trade_date": "2026-05-11", "reason": "retired"},
+    ]
+    _patch(monkeypatch, extremes=[], left_out=left_out, ranked=4)
+    with _client() as c:
+        d = c.get("/research/vrp/extremes?bucket=high").json()["data"]
+    assert [e["symbol"] for e in d["excluded"]] == ["ZZR"]
+    assert d["excluded_count"] == 1
+    assert d["retired_count"] == 2
 
 
 def test_extremes_payload_rejects_unknown_bucket() -> None:

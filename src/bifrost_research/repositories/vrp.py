@@ -8,6 +8,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Mapping, Protocol, Sequence
 
+from bifrost_research.repositories.listing_status import liveness_floor, retired_sql, split_retired
+
 
 class _Connection(Protocol):
     def cursor(self) -> Any: ...
@@ -141,10 +143,12 @@ def count_ranked(conn: _Connection, *, as_of: date) -> int:
 def get_left_out(conn: _Connection, *, as_of: date) -> list[dict[str, Any]]:
     """Names with a percentile before ``as_of`` but none on it, newest first.
 
-    ``reason``: ``not_computed`` — no VRP row for the name that session;
-    ``no_percentile`` — a row that session, but without its 252-day percentile.
+    ``reason``: ``retired`` — the listing no longer trades (see
+    ``repositories/listing_status.py``); ``not_computed`` — no VRP row for the name
+    that session; ``no_percentile`` — a row that session, but without its 252-day
+    percentile.
     """
-    sql = """
+    sql = f"""
         WITH last_reading AS (
             SELECT DISTINCT ON (symbol) symbol, trade_date
             FROM features.stock_signal_vrp_daily
@@ -157,24 +161,23 @@ def get_left_out(conn: _Connection, *, as_of: date) -> list[dict[str, Any]]:
             EXISTS (
                 SELECT 1 FROM features.stock_signal_vrp_daily AS v
                 WHERE v.symbol = l.symbol AND v.trade_date = %s
-            ) AS row_on_as_of
+            ) AS row_on_as_of,
+            {retired_sql("l.symbol")} AS retired
         FROM last_reading AS l
         WHERE l.trade_date < %s
         ORDER BY l.trade_date DESC, l.symbol ASC
     """
     with conn.cursor() as cur:
-        cur.execute(sql, (as_of, as_of))
+        cur.execute(sql, (as_of, liveness_floor(as_of), as_of))
         rows = cur.fetchall() or []
     out: list[dict[str, Any]] = []
     for r in rows:
-        d = _row_to_dict(r, ("symbol", "trade_date", "row_on_as_of"))
-        out.append(
-            {
-                "symbol": d.get("symbol"),
-                "trade_date": d.get("trade_date"),
-                "reason": "no_percentile" if d.get("row_on_as_of") else "not_computed",
-            }
-        )
+        d = _row_to_dict(r, ("symbol", "trade_date", "row_on_as_of", "retired"))
+        if d.get("retired"):
+            reason = "retired"
+        else:
+            reason = "no_percentile" if d.get("row_on_as_of") else "not_computed"
+        out.append({"symbol": d.get("symbol"), "trade_date": d.get("trade_date"), "reason": reason})
     return out
 
 
@@ -190,7 +193,7 @@ def extremes_payload(
     as_of = latest_trade_date(conn)
     session = date.fromisoformat(as_of) if as_of else None
     rows = get_extremes(conn, as_of=session, bucket=bucket, limit=limit) if session else []
-    left_out = get_left_out(conn, as_of=session) if session else []
+    left_out, retired = split_retired(get_left_out(conn, as_of=session) if session else [])
     return {
         "rows": rows,
         "count": len(rows),
@@ -200,6 +203,7 @@ def extremes_payload(
         "ranked": count_ranked(conn, as_of=session) if session else 0,
         "excluded": left_out,
         "excluded_count": len(left_out),
+        "retired_count": retired,
     }
 
 
