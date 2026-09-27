@@ -82,12 +82,14 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="research.vol_surface.get_skew_extremes",
-        description=f"Cross-symbol skew extremes from surface fits. {READ_ONLY_SUFFIX}",
+        description=(
+            "Cross-symbol skew extremes from surface fits on the latest fit session (as_of); "
+            "excluded lists names whose last ~30-day fit is older, with the date and reason. "
+            f"{READ_ONLY_SUFFIX}"
+        ),
     )
     def get_skew_extremes(limit: int = 20) -> dict[str, Any]:
         def _run(conn: Any) -> dict[str, Any]:
-            rows = repo.get_skew_extremes(conn, limit=limit)
-            as_of = repo.latest_trade_date(conn)
-            return ok({"rows": rows, "count": len(rows), "limit": limit, "as_of": as_of})
+            return ok(repo.skew_extremes_payload(conn, limit=limit))
 
         return with_conn(_run)

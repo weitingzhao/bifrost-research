@@ -83,10 +83,11 @@ def extremes(
     bucket: str = Query("high", pattern="^(high|low)$"),
     limit: int = Query(20, ge=1, le=200),
 ) -> dict[str, Any]:
+    """The latest session ranked by ``vrp_pct_252d``; ``excluded`` names whose
+    freshest percentile is older, with the date and the reason."""
     conn = _connect_or_503()
     try:
-        rows = repo.get_extremes(conn, bucket=bucket, limit=limit)
-        as_of = repo.latest_trade_date(conn)
+        data = repo.extremes_payload(conn, bucket=bucket, limit=limit)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -97,15 +98,7 @@ def extremes(
             conn.close()
         except Exception:
             pass
-    return _ok(
-        {
-            "rows": rows,
-            "count": len(rows),
-            "bucket": bucket,
-            "limit": limit,
-            "as_of": as_of,
-        }
-    )
+    return _ok(data)
 
 
 __all__ = ["router"]

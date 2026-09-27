@@ -135,10 +135,11 @@ def residuals(
 def skew_extremes(
     limit: int = Query(20, ge=1, le=200),
 ) -> dict[str, Any]:
+    """The latest fit session ranked by |atm_slope|; ``excluded`` names whose
+    freshest ~30-day fit is older, with the date and the reason."""
     conn = _connect_or_503()
     try:
-        rows = repo.get_skew_extremes(conn, limit=limit)
-        as_of = repo.latest_trade_date(conn)
+        data = repo.skew_extremes_payload(conn, limit=limit)
     except Exception as exc:
         logger.exception("vol-surface/skew-extremes failed")
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -147,14 +148,7 @@ def skew_extremes(
             conn.close()
         except Exception:
             pass
-    return _ok(
-        {
-            "rows": rows,
-            "count": len(rows),
-            "limit": limit,
-            "as_of": as_of,
-        }
-    )
+    return _ok(data)
 
 
 __all__ = ["router"]

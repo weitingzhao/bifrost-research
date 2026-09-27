@@ -44,22 +44,13 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool(
         name="research.vrp.get_extremes",
         description=(
-            "Cross-symbol VRP extremes (bucket=high|low). "
+            "Cross-symbol VRP extremes (bucket=high|low) on the latest session (as_of); "
+            "excluded lists names whose last percentile is older, with the date and reason. "
             f"{READ_ONLY_SUFFIX}"
         ),
     )
     def get_extremes(bucket: str = "high", limit: int = 20) -> dict[str, Any]:
         def _run(conn: Any) -> dict[str, Any]:
-            rows = repo.get_extremes(conn, bucket=bucket, limit=limit)
-            as_of = repo.latest_trade_date(conn)
-            return ok(
-                {
-                    "rows": rows,
-                    "count": len(rows),
-                    "bucket": bucket,
-                    "limit": limit,
-                    "as_of": as_of,
-                }
-            )
+            return ok(repo.extremes_payload(conn, bucket=bucket, limit=limit))
 
         return with_conn(_run)

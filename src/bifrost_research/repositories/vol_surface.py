@@ -162,27 +162,109 @@ def get_residuals(
     return [_row_to_dict(r, _RESIDUAL_COLUMNS) for r in rows]
 
 
-def get_skew_extremes(conn: Any, *, limit: int = 20) -> list[dict[str, Any]]:
-    """Top-N symbols with the most extreme ATM skew (|atm_slope|)."""
+# The ~30-day read: the fit nearest 30 DTE inside 20–45, with a slope.
+_SKEW_WINDOW = "atm_slope IS NOT NULL AND dte BETWEEN 20 AND 45"
+
+
+def get_skew_extremes(conn: Any, *, as_of: date, limit: int = 20) -> list[dict[str, Any]]:
+    """Top-N symbols by |atm_slope| on the ``as_of`` session only.
+
+    A name whose freshest ~30-day fit predates ``as_of`` is not ranked here —
+    see :func:`get_skew_left_out`.
+    """
     lim = max(1, min(int(limit), 200))
-    sql = """
-        WITH latest_per_symbol AS (
-            SELECT DISTINCT ON (symbol) symbol, trade_date, expiry, dte,
-                   svi_a, svi_b, svi_rho, svi_m, svi_sigma,
-                   atm_vol, atm_slope, fit_rmse, n_points, computed_at
+    sql = f"""
+        WITH session_fits AS (
+            SELECT DISTINCT ON (symbol) {_cols(_FIT_COLUMNS)}
             FROM features.option_surface_fit_daily
-            WHERE atm_slope IS NOT NULL
-              AND dte BETWEEN 20 AND 45
-            ORDER BY symbol, trade_date DESC, ABS(dte - 30) ASC
+            WHERE trade_date = %s
+              AND {_SKEW_WINDOW}
+            ORDER BY symbol, ABS(dte - 30) ASC, expiry ASC
         )
-        SELECT * FROM latest_per_symbol
-        ORDER BY ABS(atm_slope) DESC NULLS LAST
+        SELECT * FROM session_fits
+        ORDER BY ABS(atm_slope) DESC, symbol
         LIMIT %s
     """
     with conn.cursor() as cur:
-        cur.execute(sql, (lim,))
+        cur.execute(sql, (as_of, lim))
         rows = cur.fetchall() or []
     return [_row_to_dict(r, _FIT_COLUMNS) for r in rows]
+
+
+def count_skew_names(conn: Any, *, as_of: date) -> int:
+    """How many names have a ~30-day fit on the ``as_of`` session."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT COUNT(DISTINCT symbol)
+            FROM features.option_surface_fit_daily
+            WHERE trade_date = %s
+              AND {_SKEW_WINDOW}
+            """,
+            (as_of,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return 0
+    v = row[0] if not isinstance(row, Mapping) else next(iter(row.values()), None)
+    return int(v or 0)
+
+
+def get_skew_left_out(conn: Any, *, as_of: date) -> list[dict[str, Any]]:
+    """Names with a ~30-day fit before ``as_of`` but none on it, newest first.
+
+    ``reason``: ``not_fit`` — no surface fit for the name that session at all;
+    ``no_30d_fit`` — fit that session, but no expiry in 20–45 DTE fit with a slope.
+    """
+    sql = f"""
+        WITH last_reading AS (
+            SELECT DISTINCT ON (symbol) symbol, trade_date
+            FROM features.option_surface_fit_daily
+            WHERE {_SKEW_WINDOW}
+            ORDER BY symbol ASC, trade_date DESC
+        )
+        SELECT
+            l.symbol,
+            l.trade_date,
+            EXISTS (
+                SELECT 1 FROM features.option_surface_fit_daily AS f
+                WHERE f.symbol = l.symbol AND f.trade_date = %s
+            ) AS fit_on_as_of
+        FROM last_reading AS l
+        WHERE l.trade_date < %s
+        ORDER BY l.trade_date DESC, l.symbol ASC
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (as_of, as_of))
+        rows = cur.fetchall() or []
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d = _row_to_dict(r, ("symbol", "trade_date", "fit_on_as_of"))
+        out.append(
+            {
+                "symbol": d.get("symbol"),
+                "trade_date": d.get("trade_date"),
+                "reason": "no_30d_fit" if d.get("fit_on_as_of") else "not_fit",
+            }
+        )
+    return out
+
+
+def skew_extremes_payload(conn: Any, *, limit: int = 20) -> dict[str, Any]:
+    """The skew-extremes read: the latest fit session ranked, and who it left out."""
+    as_of = latest_trade_date(conn)
+    session = date.fromisoformat(as_of) if as_of else None
+    rows = get_skew_extremes(conn, as_of=session, limit=limit) if session else []
+    left_out = get_skew_left_out(conn, as_of=session) if session else []
+    return {
+        "rows": rows,
+        "count": len(rows),
+        "limit": limit,
+        "as_of": as_of,
+        "ranked": count_skew_names(conn, as_of=session) if session else 0,
+        "excluded": left_out,
+        "excluded_count": len(left_out),
+    }
 
 
 def latest_trade_date(conn: Any) -> str | None:

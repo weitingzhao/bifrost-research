@@ -23,7 +23,10 @@ def _patch(
     term_rows=None,
     residual_rows=None,
     skew_rows=None,
+    left_out=None,
+    ranked=0,
     as_of="2026-08-25",
+    seen=None,
 ):
     monkeypatch.setattr(vol_surface_api, "_connect_or_503", lambda: _StubConn())
     from bifrost_research.repositories import vol_surface as repo
@@ -39,7 +42,14 @@ def _patch(
         "get_residuals",
         lambda _c, _s, _exp, trade_date=None: list(residual_rows or []),
     )
-    monkeypatch.setattr(repo, "get_skew_extremes", lambda _c, *, limit=20: list(skew_rows or []))
+    def _skew(_c, *, as_of, limit=20):
+        if seen is not None:
+            seen["as_of"] = as_of
+        return list(skew_rows or [])
+
+    monkeypatch.setattr(repo, "get_skew_extremes", _skew)
+    monkeypatch.setattr(repo, "get_skew_left_out", lambda _c, *, as_of: list(left_out or []))
+    monkeypatch.setattr(repo, "count_skew_names", lambda _c, *, as_of: ranked)
     monkeypatch.setattr(repo, "latest_trade_date", lambda _c: as_of)
 
 
@@ -140,13 +150,115 @@ def test_skew_extremes(monkeypatch) -> None:
         {"symbol": "TSLA", "atm_slope": -0.35, "dte": 30, "atm_vol": 0.45, "trade_date": "2026-08-25"},
         {"symbol": "NVDA", "atm_slope": 0.30, "dte": 30, "atm_vol": 0.35, "trade_date": "2026-08-25"},
     ]
-    _patch(monkeypatch, skew_rows=rows)
+    left_out = [
+        {"symbol": "AMD", "trade_date": "2026-08-24", "reason": "no_30d_fit"},
+        {"symbol": "INTC", "trade_date": "2026-08-12", "reason": "not_fit"},
+    ]
+    seen: dict[str, Any] = {}
+    _patch(monkeypatch, skew_rows=rows, left_out=left_out, ranked=37, seen=seen)
     with _client() as c:
         r = c.get("/research/vol-surface/skew-extremes?limit=5")
     assert r.status_code == 200
-    j = r.json()
-    assert j["data"]["count"] == 2
-    assert j["data"]["as_of"] == "2026-08-25"
+    d = r.json()["data"]
+    assert d["count"] == 2
+    assert d["limit"] == 5
+    assert d["as_of"] == "2026-08-25"
+    # Ranked on the as_of session, handed down as a date.
+    assert seen["as_of"] == date(2026, 8, 25)
+    assert d["ranked"] == 37
+    assert d["excluded_count"] == 2
+    assert [e["reason"] for e in d["excluded"]] == ["no_30d_fit", "not_fit"]
+
+
+def test_skew_extremes_without_any_fit(monkeypatch) -> None:
+    seen: dict[str, Any] = {}
+    _patch(monkeypatch, skew_rows=[{"symbol": "TSLA"}], as_of=None, seen=seen)
+    with _client() as c:
+        r = c.get("/research/vol-surface/skew-extremes")
+    d = r.json()["data"]
+    assert (d["rows"], d["ranked"], d["excluded"], d["as_of"]) == ([], 0, [], None)
+    assert seen == {}
+
+
+class _ScriptedCur:
+    """Answers each execute with the next scripted result; records SQL + params."""
+
+    def __init__(self, conn: "_ScriptedConn") -> None:
+        self._conn = conn
+        self._rows: list[Any] = []
+
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
+        self._conn.calls.append((sql, params))
+        self._rows = self._conn.results.pop(0) if self._conn.results else []
+
+    def fetchall(self) -> list[Any]:
+        return list(self._rows)
+
+    def fetchone(self) -> Any:
+        return self._rows[0] if self._rows else None
+
+    def __enter__(self) -> "_ScriptedCur":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+
+class _ScriptedConn:
+    def __init__(self, *results: list[Any]) -> None:
+        self.results = list(results)
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    def cursor(self) -> _ScriptedCur:
+        return _ScriptedCur(self)
+
+
+def test_skew_extremes_ranks_one_session_only() -> None:
+    from bifrost_research.repositories import vol_surface as repo
+
+    conn = _ScriptedConn([("TSLA", date(2026, 8, 25), date(2026, 9, 26), 32)])
+    rows = repo.get_skew_extremes(conn, as_of=date(2026, 8, 25), limit=500)
+    assert rows[0]["symbol"] == "TSLA" and rows[0]["trade_date"] == "2026-08-25"
+    sql, params = conn.calls[0]
+    assert "trade_date = %s" in sql
+    assert "dte BETWEEN 20 AND 45" in sql
+    assert params == (date(2026, 8, 25), 200)
+
+
+def test_skew_left_out_names_the_reason() -> None:
+    from bifrost_research.repositories import vol_surface as repo
+
+    conn = _ScriptedConn(
+        [
+            ("AMD", date(2026, 8, 24), True),
+            ("INTC", date(2026, 8, 12), False),
+        ]
+    )
+    out = repo.get_skew_left_out(conn, as_of=date(2026, 8, 25))
+    assert out == [
+        {"symbol": "AMD", "trade_date": "2026-08-24", "reason": "no_30d_fit"},
+        {"symbol": "INTC", "trade_date": "2026-08-12", "reason": "not_fit"},
+    ]
+    sql, params = conn.calls[0]
+    assert "l.trade_date < %s" in sql
+    assert params == (date(2026, 8, 25), date(2026, 8, 25))
+
+
+def test_skew_payload_reads_one_session() -> None:
+    from bifrost_research.repositories import vol_surface as repo
+
+    conn = _ScriptedConn(
+        [(date(2026, 8, 25),)],
+        [("TSLA", date(2026, 8, 25), date(2026, 9, 26), 32)],
+        [("AMD", date(2026, 8, 24), False)],
+        [(41,)],
+    )
+    d = repo.skew_extremes_payload(conn, limit=5)
+    assert d["as_of"] == "2026-08-25"
+    assert [r["symbol"] for r in d["rows"]] == ["TSLA"]
+    assert d["ranked"] == 41
+    assert d["excluded_count"] == 1 and d["excluded"][0]["reason"] == "not_fit"
+    assert all(p[0] == date(2026, 8, 25) for _, p in conn.calls[1:])
 
 
 def _collect_paths(app) -> set[str]:
@@ -210,5 +322,7 @@ def test_repository_returns_empty_when_no_data(monkeypatch) -> None:
     assert repo.get_fit(_Conn(None), "NVDA") == []
     assert repo.get_term_structure(_Conn(None), "NVDA") == []
     assert repo.get_residuals(_Conn(None), "NVDA", date(2026, 9, 19)) == []
-    assert repo.get_skew_extremes(_Conn([]), limit=5) == []
+    assert repo.get_skew_extremes(_Conn([]), as_of=date(2026, 8, 25), limit=5) == []
+    assert repo.get_skew_left_out(_Conn([]), as_of=date(2026, 8, 25)) == []
+    assert repo.count_skew_names(_Conn(None), as_of=date(2026, 8, 25)) == 0
     assert repo.latest_trade_date(_Conn(None)) is None

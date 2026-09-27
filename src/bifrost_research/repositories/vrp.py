@@ -88,34 +88,119 @@ def get_history(
 def get_extremes(
     conn: _Connection,
     *,
+    as_of: date,
     bucket: str = "high",
     limit: int = 20,
 ) -> list[dict[str, Any]]:
-    """Top-N most recent trade_date rows with extreme ``vrp_pct_252d``.
+    """Top-N rows of the ``as_of`` session with extreme ``vrp_pct_252d``.
 
     ``bucket``:
       - ``"high"``: highest percentiles (sell-vol candidates)
       - ``"low"``:  lowest percentiles (buy-vol candidates)
+
+    A name whose freshest percentile predates ``as_of`` is not ranked here —
+    see :func:`get_left_out`.
     """
     if bucket not in ("high", "low"):
         raise ValueError("bucket must be 'high' or 'low'")
     order_dir = "DESC" if bucket == "high" else "ASC"
     lim = max(1, min(int(limit), 200))
     sql = f"""
-        WITH latest AS (
-            SELECT DISTINCT ON (symbol) {_cols()}
-            FROM features.stock_signal_vrp_daily
-            WHERE vrp_pct_252d IS NOT NULL
-            ORDER BY symbol, trade_date DESC
-        )
-        SELECT * FROM latest
-        ORDER BY vrp_pct_252d {order_dir} NULLS LAST, symbol
+        SELECT {_cols()}
+        FROM features.stock_signal_vrp_daily
+        WHERE trade_date = %s
+          AND vrp_pct_252d IS NOT NULL
+        ORDER BY vrp_pct_252d {order_dir}, symbol
         LIMIT %s
     """
     with conn.cursor() as cur:
-        cur.execute(sql, (lim,))
+        cur.execute(sql, (as_of, lim))
         rows = cur.fetchall() or []
     return [_row_to_dict(r) for r in rows]
+
+
+def count_ranked(conn: _Connection, *, as_of: date) -> int:
+    """How many names carry a 252-day percentile on the ``as_of`` session."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM features.stock_signal_vrp_daily
+            WHERE trade_date = %s
+              AND vrp_pct_252d IS NOT NULL
+            """,
+            (as_of,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return 0
+    v = row[0] if not isinstance(row, Mapping) else next(iter(row.values()), None)
+    return int(v or 0)
+
+
+def get_left_out(conn: _Connection, *, as_of: date) -> list[dict[str, Any]]:
+    """Names with a percentile before ``as_of`` but none on it, newest first.
+
+    ``reason``: ``not_computed`` — no VRP row for the name that session;
+    ``no_percentile`` — a row that session, but without its 252-day percentile.
+    """
+    sql = """
+        WITH last_reading AS (
+            SELECT DISTINCT ON (symbol) symbol, trade_date
+            FROM features.stock_signal_vrp_daily
+            WHERE vrp_pct_252d IS NOT NULL
+            ORDER BY symbol ASC, trade_date DESC
+        )
+        SELECT
+            l.symbol,
+            l.trade_date,
+            EXISTS (
+                SELECT 1 FROM features.stock_signal_vrp_daily AS v
+                WHERE v.symbol = l.symbol AND v.trade_date = %s
+            ) AS row_on_as_of
+        FROM last_reading AS l
+        WHERE l.trade_date < %s
+        ORDER BY l.trade_date DESC, l.symbol ASC
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (as_of, as_of))
+        rows = cur.fetchall() or []
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d = _row_to_dict(r, ("symbol", "trade_date", "row_on_as_of"))
+        out.append(
+            {
+                "symbol": d.get("symbol"),
+                "trade_date": d.get("trade_date"),
+                "reason": "no_percentile" if d.get("row_on_as_of") else "not_computed",
+            }
+        )
+    return out
+
+
+def extremes_payload(
+    conn: _Connection,
+    *,
+    bucket: str = "high",
+    limit: int = 20,
+) -> dict[str, Any]:
+    """The VRP-extremes read: the latest session ranked, and who it left out."""
+    if bucket not in ("high", "low"):
+        raise ValueError("bucket must be 'high' or 'low'")
+    as_of = latest_trade_date(conn)
+    session = date.fromisoformat(as_of) if as_of else None
+    rows = get_extremes(conn, as_of=session, bucket=bucket, limit=limit) if session else []
+    left_out = get_left_out(conn, as_of=session) if session else []
+    return {
+        "rows": rows,
+        "count": len(rows),
+        "bucket": bucket,
+        "limit": limit,
+        "as_of": as_of,
+        "ranked": count_ranked(conn, as_of=session) if session else 0,
+        "excluded": left_out,
+        "excluded_count": len(left_out),
+    }
 
 
 def latest_trade_date(conn: _Connection) -> str | None:

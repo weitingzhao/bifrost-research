@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from bifrost_research.api import vrp as vrp_api
@@ -15,7 +17,17 @@ class _StubConn:
         return None
 
 
-def _patch(monkeypatch, *, latest=None, history=None, extremes=None, as_of="2026-08-25"):
+def _patch(
+    monkeypatch,
+    *,
+    latest=None,
+    history=None,
+    extremes=None,
+    left_out=None,
+    ranked=0,
+    as_of="2026-08-25",
+    seen=None,
+):
     monkeypatch.setattr(vrp_api, "_connect_or_503", lambda: _StubConn())
 
     from bifrost_research.repositories import vrp as repo
@@ -23,10 +35,14 @@ def _patch(monkeypatch, *, latest=None, history=None, extremes=None, as_of="2026
     monkeypatch.setattr(repo, "get_latest", lambda _c, _s: latest)
     monkeypatch.setattr(repo, "get_history", lambda _c, _s, days=252: list(history or []))
 
-    def _extremes(_c, *, bucket, limit):
+    def _extremes(_c, *, as_of, bucket, limit):
+        if seen is not None:
+            seen["as_of"] = as_of
         return list(extremes or [])
 
     monkeypatch.setattr(repo, "get_extremes", _extremes)
+    monkeypatch.setattr(repo, "get_left_out", lambda _c, *, as_of: list(left_out or []))
+    monkeypatch.setattr(repo, "count_ranked", lambda _c, *, as_of: ranked)
     monkeypatch.setattr(repo, "latest_trade_date", lambda _c: as_of)
 
 
@@ -115,7 +131,9 @@ def test_extremes_high_bucket(monkeypatch) -> None:
         {"symbol": "TSLA", "vrp_pct_252d": 95.0, "trade_date": "2026-08-25"},
         {"symbol": "NVDA", "vrp_pct_252d": 92.0, "trade_date": "2026-08-25"},
     ]
-    _patch(monkeypatch, extremes=rows)
+    left_out = [{"symbol": "AMD", "trade_date": "2026-07-30", "reason": "not_computed"}]
+    seen: dict[str, Any] = {}
+    _patch(monkeypatch, extremes=rows, left_out=left_out, ranked=58, seen=seen)
     with _client() as c:
         r = c.get("/research/vrp/extremes?bucket=high&limit=2")
     assert r.status_code == 200
@@ -125,6 +143,21 @@ def test_extremes_high_bucket(monkeypatch) -> None:
     assert j["data"]["limit"] == 2
     assert j["data"]["as_of"] == "2026-08-25"
     assert len(j["data"]["rows"]) == 2
+    # Ranked on the as_of session, handed down as a date.
+    assert seen["as_of"] == date(2026, 8, 25)
+    assert j["data"]["ranked"] == 58
+    assert j["data"]["excluded"] == left_out
+    assert j["data"]["excluded_count"] == 1
+
+
+def test_extremes_without_any_row(monkeypatch) -> None:
+    seen: dict[str, Any] = {}
+    _patch(monkeypatch, extremes=[{"symbol": "TSLA"}], as_of=None, seen=seen)
+    with _client() as c:
+        r = c.get("/research/vrp/extremes?bucket=low")
+    d = r.json()["data"]
+    assert (d["rows"], d["ranked"], d["excluded"], d["as_of"]) == ([], 0, [], None)
+    assert seen == {}
 
 
 def test_extremes_rejects_unknown_bucket() -> None:
@@ -195,5 +228,78 @@ def test_repository_returns_none_or_list(monkeypatch) -> None:
 
     assert repo.get_latest(_Conn(None), "NVDA") is None
     assert repo.get_history(_Conn([]), "NVDA", days=5) == []
-    assert repo.get_extremes(_Conn([]), bucket="high", limit=5) == []
+    assert repo.get_extremes(_Conn([]), as_of=date(2026, 8, 25), bucket="high", limit=5) == []
+    assert repo.get_left_out(_Conn([]), as_of=date(2026, 8, 25)) == []
+    assert repo.count_ranked(_Conn(None), as_of=date(2026, 8, 25)) == 0
     assert repo.latest_trade_date(_Conn(None)) is None
+
+
+class _ScriptedCur:
+    """Answers each execute with the next scripted result; records SQL + params."""
+
+    def __init__(self, conn: "_ScriptedConn") -> None:
+        self._conn = conn
+        self._rows: list[Any] = []
+
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
+        self._conn.calls.append((sql, params))
+        self._rows = self._conn.results.pop(0) if self._conn.results else []
+
+    def fetchall(self) -> list[Any]:
+        return list(self._rows)
+
+    def fetchone(self) -> Any:
+        return self._rows[0] if self._rows else None
+
+    def __enter__(self) -> "_ScriptedCur":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+
+class _ScriptedConn:
+    def __init__(self, *results: list[Any]) -> None:
+        self.results = list(results)
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    def cursor(self) -> _ScriptedCur:
+        return _ScriptedCur(self)
+
+
+def test_extremes_rank_one_session_only() -> None:
+    from bifrost_research.repositories import vrp as repo
+
+    conn = _ScriptedConn([("NVDA", date(2026, 8, 25))])
+    rows = repo.get_extremes(conn, as_of=date(2026, 8, 25), bucket="low", limit=3)
+    assert rows[0]["trade_date"] == "2026-08-25"
+    sql, params = conn.calls[0]
+    assert "trade_date = %s" in sql
+    assert "ORDER BY vrp_pct_252d ASC" in sql
+    assert params == (date(2026, 8, 25), 3)
+
+
+def test_left_out_names_the_reason() -> None:
+    from bifrost_research.repositories import vrp as repo
+
+    conn = _ScriptedConn(
+        [
+            ("AMD", date(2026, 8, 21), True),
+            ("INTC", date(2026, 7, 30), False),
+        ]
+    )
+    out = repo.get_left_out(conn, as_of=date(2026, 8, 25))
+    assert out == [
+        {"symbol": "AMD", "trade_date": "2026-08-21", "reason": "no_percentile"},
+        {"symbol": "INTC", "trade_date": "2026-07-30", "reason": "not_computed"},
+    ]
+    assert conn.calls[0][1] == (date(2026, 8, 25), date(2026, 8, 25))
+
+
+def test_extremes_payload_rejects_unknown_bucket() -> None:
+    from bifrost_research.repositories import vrp as repo
+
+    conn = _ScriptedConn()
+    with pytest.raises(ValueError):
+        repo.extremes_payload(conn, bucket="middle")
+    assert conn.calls == []
