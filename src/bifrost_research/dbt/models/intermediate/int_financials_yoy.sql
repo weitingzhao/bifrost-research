@@ -100,6 +100,6 @@ select
     end) as rev_fy_g1
 
 from quarterly_ranked as q
-left join annual_ranked as a using (symbol)
+left join annual_ranked as a on q.symbol = a.symbol
 where q.q_rank <= 4
 group by q.symbol

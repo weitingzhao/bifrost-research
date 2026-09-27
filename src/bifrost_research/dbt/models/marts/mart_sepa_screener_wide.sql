@@ -58,6 +58,6 @@ select
     u.primary_exchange
 
 from {{ ref('mart_sepa_screening_ranked') }} as r
-inner join {{ ref('mart_sepa_fundamental_eval') }} as f using (symbol)
-inner join {{ ref('mart_sepa_technical_eval') }} as t using (symbol)
-inner join {{ ref('dim_universe') }} as u using (symbol)
+inner join {{ ref('mart_sepa_fundamental_eval') }} as f on r.symbol = f.symbol
+inner join {{ ref('mart_sepa_technical_eval') }} as t on r.symbol = t.symbol
+inner join {{ ref('dim_universe') }} as u on r.symbol = u.symbol

@@ -21,7 +21,7 @@ select
     ) as composite_score
 
 from {{ ref('mart_sepa_fundamental_eval') }} as f
-inner join {{ ref('mart_sepa_technical_eval') }} as t using (symbol)
-left join {{ ref('mart_sepa_tier_momentum') }} as m using (symbol)
-left join {{ ref('mart_sepa_tier_options') }} as o using (symbol)
-left join {{ ref('mart_sepa_tier_sentiment') }} as se using (symbol)
+inner join {{ ref('mart_sepa_technical_eval') }} as t on f.symbol = t.symbol
+left join {{ ref('mart_sepa_tier_momentum') }} as m on f.symbol = m.symbol
+left join {{ ref('mart_sepa_tier_options') }} as o on f.symbol = o.symbol
+left join {{ ref('mart_sepa_tier_sentiment') }} as se on f.symbol = se.symbol

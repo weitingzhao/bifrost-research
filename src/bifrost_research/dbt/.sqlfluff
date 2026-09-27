@@ -5,9 +5,8 @@ dialect = postgres
 # same verdict on a laptop and in the CI python gate. The models use nothing
 # from dbt_utils or elementary; a model that does will fail to template here.
 templater = jinja
-# Explicit rule set. sqlfluff's default is `all`, whose auto-fixes include
-# ST07 (USING -> ON, which changes `select *`). `core` is sqlfluff's curated
-# set; widen it on purpose, not by upgrade.
+# Explicit rule set: sqlfluff's curated `core` plus the rules listed below,
+# each added on purpose; widen it the same way, not by upgrade.
 # RF02 (added 2026-09-26): qualify columns wherever a select sees more than one
 # table, scalar subqueries included. An unqualified column there binds to the
 # innermost scope that has it, so if that table ever loses the column it quietly
@@ -26,7 +25,13 @@ templater = jinja
 # which selects * from composite_score). Every reader found then goes by column
 # name. Before relying on column position anywhere (a UNION of `select *`, a
 # tuple index, a view over `*`), expect this rule to have moved things.
-rules = core,RF02,AM03,RF03,AL01,ST06
+# ST07 (added 2026-09-26): joins name their keys with ON, not USING. Fix by
+# hand: USING merges the key into one column, so the rewrite must keep what
+# `select *`, an unqualified key and a FULL JOIN (coalesced key) would see.
+# The 11 USING joins then were inner/left chains on symbol with every select
+# qualified; each became `on <first table>.symbol = <joined>.symbol`, and
+# EXPLAIN (VERBOSE) on the replica gave byte-identical plans before and after.
+rules = core,RF02,AM03,RF03,AL01,ST06,ST07
 # Same width as ruff's line-length.
 max_line_length = 100
 
