@@ -221,3 +221,19 @@ def test_definitions_include_the_failure_sensor() -> None:
     ):
         defs = build_definitions()
     assert "bifrost_run_failure_alert" in {s.name for s in defs.sensors}
+
+
+def test_every_whitelisted_job_resolves_its_assets() -> None:
+    """A schedule can be declared while its asset never joins the assets list.
+
+    2026-09-27: research_memory_distill_schedule shipped with its asset
+    missing from RESEARCH_AUX_ASSETS — the whitelist test passed (the
+    schedule was declared) and the daemon then failed every tick with
+    DagsterInvalidSubsetError. Resolving each whitelisted job here is the
+    same resolution the daemon performs.
+    """
+    from bifrost_research.api.orchestration_schedules import HUSBANDRY_SCHEDULE_JOBS
+    from bifrost_research.orchestration.definitions import defs
+
+    for _sched, job_name, _tz in HUSBANDRY_SCHEDULE_JOBS:
+        defs.get_job_def(job_name)  # raises DagsterInvalidSubsetError on drift

@@ -407,6 +407,7 @@ RESEARCH_AUX_ASSETS = [
     agents_daily_digest,
     agents_weekly_policy_review,
     agents_eod_review,
+    agents_journal_distill,
     maint_ensure_partitions,
     maint_vol_weekly_backfill,
     maint_terrain_backfill,
