@@ -115,3 +115,17 @@ def test_resolve_change_and_the_archive_floor() -> None:
     # A same-day re-run keeps the morning's verdict
     same_day = {"strength": 0.5, "last_seen": today, "change": "stronger"}
     assert resolve_change(same_day, 0.51, today=today)[0] == "stronger"
+
+
+def test_owner_universe_includes_the_auth_registry(monkeypatch) -> None:
+    """A trader who has never written a note still gets fills-based memories."""
+    from bifrost_research.auth.bearer import known_owner_ids, token_to_owner_map
+
+    token_to_owner_map.cache_clear()
+    monkeypatch.setenv("RESEARCH_USERS", "alice:tok_a,bob:tok_b")
+    assert known_owner_ids() == ("alice", "bob")
+    token_to_owner_map.cache_clear()
+    monkeypatch.delenv("RESEARCH_USERS", raising=False)
+    monkeypatch.delenv("RESEARCH_API_TOKEN", raising=False)
+    assert known_owner_ids() == ("owner",)
+    token_to_owner_map.cache_clear()

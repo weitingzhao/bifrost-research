@@ -47,9 +47,18 @@ def default_owner_when_auth_disabled() -> str:
     return os.environ.get("RESEARCH_DEFAULT_OWNER", "owner").strip() or "owner"
 
 
+def known_owner_ids() -> tuple[str, ...]:
+    """Every configured research user (K6: the distiller's owner universe —
+    a trader who has never written a note still gets fills-based memories).
+    Auth disabled means one implicit owner, same as require_owner resolves."""
+    owners = sorted(set(token_to_owner_map().values()))
+    return tuple(owners) if owners else (default_owner_when_auth_disabled(),)
+
+
 __all__ = [
     "auth_required",
     "default_owner_when_auth_disabled",
+    "known_owner_ids",
     "resolve_owner_from_token",
     "token_to_owner_map",
 ]

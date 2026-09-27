@@ -321,7 +321,13 @@ def run_distill(conn: Any, *, today: date | None = None) -> dict[str, Any]:
             ) o
             """
         )
-        owners = [r["owner_id"] for r in cur.fetchall()]
+        journal_owners = {r["owner_id"] for r in cur.fetchall()}
+    # A trader who has never written a note still gets fills-based memories:
+    # the owner universe is the auth registry ∪ anyone with journal presence.
+    from bifrost_research.auth.bearer import known_owner_ids
+
+    owners = sorted(journal_owners | set(known_owner_ids()))
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """
             SELECT contract_key, symbol, sec_type, side, quantity, price, exec_time
