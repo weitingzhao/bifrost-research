@@ -200,23 +200,65 @@ def hint_for_symbol(conn: Any, *, owner_id: str, symbol: str) -> dict[str, Any] 
     sym = (symbol or "").strip().upper()
     if not sym:
         return None
+    mem: dict[str, Any] | None = None
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             f"""
             SELECT * FROM {TABLE_JOURNAL_MEMORY}
             WHERE owner_id = %s AND NOT archived
-              AND (value = %s OR kind = 'tension')
-              AND axis = 'trigger'
+              AND value = %s AND axis = 'trigger'
             ORDER BY strength DESC LIMIT 1
             """,
             (owner_id, sym),
         )
         row = cur.fetchone()
-    if row is None or (row.get("value") or "").upper() != sym:
+        if row is not None:
+            mem = _mem_row(dict(row))
+    if mem is None:
+        # The prototype's second trigger: a print inside 3 days, spoken by the
+        # earnings weak-spot memory when the book has earned one. The estimate
+        # is the 8-K rule's own (repositories.earnings_filings.expected_next).
+        days = _days_to_print(conn, sym)
+        if days is not None and 0 <= days <= 3:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    f"""
+                    SELECT * FROM {TABLE_JOURNAL_MEMORY}
+                    WHERE owner_id = %s AND NOT archived
+                      AND topic = 'axis-trigger-earnings'
+                    LIMIT 1
+                    """,
+                    (owner_id,),
+                )
+                row = cur.fetchone()
+            if row is not None:
+                mem = _mem_row(dict(row))
+                mem["text"] = f"{mem['text']} {sym} reports in {days} day{'s' if days != 1 else ''}."
+    # The first-visit-today trigger stays owed: its memory topic needs
+    # visits×fills history, and visits only started accumulating 2026-09-27.
+    if mem is None:
         return None
-    mem = _mem_row(dict(row))
     count = hint_counts(conn, owner_id=owner_id).get(mem["topic"], 0)
     return {**mem, "dismissals": count, "quiet": count >= HINT_QUIET_AT}
+
+
+def _days_to_print(conn: Any, symbol: str) -> int | None:
+    """days_away of the estimated next print, by the 8-K rule; None = no read."""
+    try:
+        from bifrost_research.repositories.earnings_filings import (
+            expected_next,
+            fetch_item_202,
+            split_releases,
+        )
+
+        releases = split_releases(fetch_item_202(conn, symbol))[0]
+        est = expected_next(releases, as_of=date.today())
+    except Exception:  # noqa: BLE001 — a hint must never take the sheet down
+        return None
+    if not est:
+        return None
+    days = est.get("days_away")
+    return int(days) if isinstance(days, int) else None
 
 
 # ── the Journal's Day view (the raw trail; prose summary is owed) ────────────
@@ -353,7 +395,19 @@ def week_summary(conn: Any, *, owner_id: str, today: date) -> dict[str, Any]:
             (owner_id, monday),
         )
         moved = int(cur.fetchone()["n"])
-    return {"range": f"{monday.isoformat()} → {today.isoformat()}", "moved": moved}
+        cur.execute(
+            f"""
+            SELECT count(*) AS n FROM {TABLE_JOURNAL_MEMORY_TOMBSTONE}
+            WHERE owner_id = %s AND created_at >= %s
+            """,
+            (owner_id, monday),
+        )
+        forgot = int(cur.fetchone()["n"])
+    return {
+        "range": f"{monday.isoformat()} → {today.isoformat()}",
+        "moved": moved,
+        "forgot": forgot,
+    }
 
 
 __all__ = [

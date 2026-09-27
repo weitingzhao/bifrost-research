@@ -231,6 +231,55 @@ def candidates_from_pairs(pairs: list[dict[str, Any]]) -> list[Candidate]:
     return out
 
 
+def candidates_from_earnings(
+    pairs: list[dict[str, Any]],
+    prints_by_sym: dict[str, list[date]],
+    *,
+    window_days: int = 3,
+) -> list[Candidate]:
+    """Opens inside ±window_days of a results 8-K → the earnings weak spot.
+
+    The design's M-38: positions opened against a print, and what they cost.
+    Measured from the book's own opens joined to each name's distinct result
+    prints (repositories.earnings_filings); absent below 3 samples, and only a
+    net loss is a weak spot — a profitable habit is not a warning.
+    """
+    hits: list[dict[str, Any]] = []
+    for p in pairs:
+        prints = prints_by_sym.get(p["symbol"]) or []
+        if not prints or not p.get("closed"):
+            continue
+        od = p["opened"].date()
+        near = min(abs((od - d).days) for d in prints)
+        if near <= window_days:
+            hits.append(p)
+    if len(hits) < 3:
+        return []
+    total = sum(p["realized"] for p in hits)
+    if total >= 0:
+        return []
+    losses = [p for p in hits if p["realized"] < 0]
+    return [
+        Candidate(
+            topic="axis-trigger-earnings",
+            kind="tension",
+            axis="trigger",
+            value="Earnings week",
+            sub=f"{len(losses)} of {len(hits)} lost · {_usd(total)}",
+            text_md=(
+                f"Positions opened inside {window_days} days of an earnings print: "
+                f"{len(hits)} closed, net {_usd(total)} ({len(losses)} carried the loss)."
+            ),
+            strength=min(1.0, len(hits) / 8),
+            symbols=tuple(sorted({p["symbol"] for p in losses})),
+            evidence=[
+                _ev("fills", p["closed"], f"{p['symbol']} opened {p['opened'].date().isoformat()} · {_usd(p['realized'])}")
+                for p in sorted(hits, key=lambda x: x["closed"], reverse=True)[:3]
+            ],
+        )
+    ]
+
+
 def candidates_from_decisions(counts: dict[str, int], *, today: date) -> list[Candidate]:
     """ai_draft status counts (30d) → how the Inbox is being answered."""
     decided = counts.get("approved", 0) + counts.get("dismissed", 0)
@@ -345,6 +394,20 @@ def run_distill(conn: Any, *, today: date | None = None) -> dict[str, Any]:
         )
         decision_counts = {r["status"]: int(r["n"]) for r in cur.fetchall()}
     pairs = pair_option_fills(fills)
+    # The earnings weak spot needs each traded name's result prints — fetched
+    # once here (the book is shared), joined in a pure function.
+    prints_by_sym: dict[str, list[date]] = {}
+    try:
+        from bifrost_research.repositories.earnings_filings import (
+            distinct_prints,
+            fetch_item_202,
+            split_releases,
+        )
+
+        for sym in sorted({p["symbol"] for p in pairs if p["symbol"]}):
+            prints_by_sym[sym] = distinct_prints(split_releases(fetch_item_202(conn, sym))[0])
+    except Exception:  # noqa: BLE001 — filings missing must not sink the distill
+        logger.warning("journal distill: earnings prints unavailable", exc_info=True)
 
     written = 0
     locked_notes = 0
@@ -375,6 +438,7 @@ def run_distill(conn: Any, *, today: date | None = None) -> dict[str, Any]:
         cands: list[Candidate] = []
         if enabled["fills"]:
             cands += candidates_from_pairs(pairs)
+            cands += candidates_from_earnings(pairs, prints_by_sym)
         if enabled["decisions"]:
             cands += candidates_from_decisions(decision_counts, today=today)
         if enabled["visits"]:

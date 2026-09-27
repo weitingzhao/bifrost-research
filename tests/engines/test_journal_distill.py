@@ -129,3 +129,32 @@ def test_owner_universe_includes_the_auth_registry(monkeypatch) -> None:
     monkeypatch.delenv("RESEARCH_API_TOKEN", raising=False)
     assert known_owner_ids() == ("owner",)
     token_to_owner_map.cache_clear()
+
+
+def test_earnings_weak_spot_needs_samples_and_a_net_loss() -> None:
+    from bifrost_research.engines.journal_distill import candidates_from_earnings
+
+    def pairs(n: int, realized: float) -> list[dict]:
+        out = []
+        for i in range(n):
+            opened = T0 + timedelta(days=30 * i)
+            out.append(
+                {
+                    "symbol": "ZZTM",
+                    "opened": opened,
+                    "closed": opened + timedelta(days=5),
+                    "realized": realized,
+                }
+            )
+        return out
+    prints = {"ZZTM": [(T0 + timedelta(days=30 * i, hours=30)).date() for i in range(6)]}
+    # two samples — absent
+    assert candidates_from_earnings(pairs(2, -100), prints) == []
+    # three samples but net positive — a profitable habit is not a warning
+    assert candidates_from_earnings(pairs(3, 100), prints) == []
+    (c,) = candidates_from_earnings(pairs(3, -100), prints)
+    assert c.topic == "axis-trigger-earnings" and c.value == "Earnings week"
+    assert "3 closed" in c.text_md and c.symbols == ("ZZTM",)
+    # opens far from any print — absent
+    far = {"ZZTM": [(T0 - timedelta(days=300)).date()]}
+    assert candidates_from_earnings(pairs(3, -100), far) == []
