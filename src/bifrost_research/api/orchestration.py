@@ -130,18 +130,8 @@ def _probe_last_run(conn: Any) -> tuple[ProbeKind, dict[str, Any] | None, str | 
         if not bool((cur.fetchone() or [False])[0]):
             return "schema_missing", None, None
 
-        cur.execute(
-            """
-            SELECT EXISTS (
-              SELECT 1 FROM pg_catalog.pg_class c
-              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-              WHERE n.nspname = 'ops_dagster' AND c.relname = 'runs' AND c.relkind = 'r'
-            )
-            """
-        )
-        # pg_class may hide relations without privileges on some setups; fall through to SELECT.
-        table_visible = bool((cur.fetchone() or [False])[0])
-
+        # No pg_class existence check: pg_class may hide relations without privileges
+        # on some setups, so the column read and SELECT below are what decide.
         try:
             cur.execute(
                 """

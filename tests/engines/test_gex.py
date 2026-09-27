@@ -61,10 +61,10 @@ def test_levels_empty() -> None:
 
 # ─── 2026-09-26: intraday spot stands on the latest close ───
 
-from datetime import date
-from typing import Self
+from datetime import date  # noqa: E402
+from typing import Self  # noqa: E402
 
-from bifrost_research.engines.gex.exposure import fetch_spot, fetch_spot_reading
+from bifrost_research.engines.gex.exposure import fetch_spot, fetch_spot_reading  # noqa: E402
 
 
 class _SpotCursor:

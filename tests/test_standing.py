@@ -24,10 +24,11 @@ def test_next_run_is_the_next_weekday_1330_utc():
 
 
 def test_headline_matches_the_drawer_word_for_word():
-    r = lambda sym, action, conv, agreement="agree", blocked=False, validate="caution": {
-        "symbol": sym, "action": action, "conviction": conv, "grade": "A",
-        "inputs": {"agreement": agreement, "blocked": blocked, "validate": validate},
-    }
+    def r(sym, action, conv, agreement="agree", blocked=False, validate="caution"):
+        return {
+            "symbol": sym, "action": action, "conviction": conv, "grade": "A",
+            "inputs": {"agreement": agreement, "blocked": blocked, "validate": validate},
+        }
     ratings = [r("NVDA", "hold_no_add", 2, "dissent"), r("BG", "avoid", 1, blocked=True), r("LPG", "watch", 2)]
     s = rating_summary(ratings, considered=3475)
     assert s["headline"] == "3 candidates from 3,475. None above ★★ — nothing actionable yet. judges split on 1, validate blocked 1."

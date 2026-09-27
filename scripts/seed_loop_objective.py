@@ -19,7 +19,7 @@ _SRC = _ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from bifrost_research.copilot.harness.policy_schema import default_stock_composite_policy
+from bifrost_research.copilot.harness.policy_schema import default_stock_composite_policy  # noqa: E402
 
 DEFAULT_SCAN_POLICY: dict[str, object] = {
     "universe_mode": "scan_legacy",

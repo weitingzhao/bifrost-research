@@ -376,7 +376,7 @@ def global_signal_decay_summary(
     Fails soft: on any DB error returns entries with n=0.
     """
     window_days = max(1, min(int(window_days or 30), 400))
-    normalized = tuple(l for l in lenses if l in VALID_LENSES) or ("iv_rank",)
+    normalized = tuple(lens for lens in lenses if lens in VALID_LENSES) or ("iv_rank",)
 
     result: dict[str, dict[str, Any]] = {
         lens: {"n": 0, "hit_rate_5d": None, "hit_rate_20d": None} for lens in normalized

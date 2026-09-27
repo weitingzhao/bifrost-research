@@ -205,7 +205,7 @@ def test_hourly_closes_key_each_bar_by_the_hour_it_ends() -> None:
 
 # ─── 2026-09-26: a settlement drawn from a faulty input scores that input ───
 
-from bifrost_research.engines.backtest.settlement import (
+from bifrost_research.engines.backtest.settlement import (  # noqa: E402
     forecast_result_sql,
     input_fault_count_sql,
 )

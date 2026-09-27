@@ -362,8 +362,7 @@ def _unsanitize_tool_name(raw: str, known: set[str]) -> str:
         return raw
     # research_hypothesis_list_active → try progressive dots
     if raw.startswith("research_"):
-        candidate = "research." + raw[len("research_") :].replace("_", ".", 1)
-        # Better: match against known by normalizing
+        # Match against known names by normalizing
         norm = raw.replace(".", "_")
         for name in known:
             if name.replace(".", "_") == norm:

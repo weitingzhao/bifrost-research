@@ -7,11 +7,8 @@ from typing import Any
 from unittest.mock import MagicMock
 
 from bifrost_research.copilot.harness.policy_schema import (
-    EventsLayerPolicy,
     LoopPolicy,
-    MomentumLayerPolicy,
     OptionOverlayPolicy,
-    SepaLayerPolicy,
 )
 from bifrost_research.copilot.harness.policy_schema import (
     default_stock_composite_policy,

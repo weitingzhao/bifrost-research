@@ -33,9 +33,9 @@ _SRC = Path(__file__).resolve().parents[1] / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from bifrost_research.db.conn import connect
-from bifrost_research.engines.candidate_outcome import entry as settlement
-from bifrost_research.schema.schemas import TABLE_RESEARCH_CANDIDATE_OUTCOME
+from bifrost_research.db.conn import connect  # noqa: E402
+from bifrost_research.engines.candidate_outcome import entry as settlement  # noqa: E402
+from bifrost_research.schema.schemas import TABLE_RESEARCH_CANDIDATE_OUTCOME  # noqa: E402
 
 _UNJUDGEABLE = "hit IS NULL AND benchmark_return IS NULL"
 

@@ -24,13 +24,13 @@ def _uptrend_bars(n: int = 260, *, start: float = 50.0, drift: float = 0.004) ->
         o = px
         c = px * (1 + drift)
         h = max(o, c) * 1.01
-        l = min(o, c) * 0.99
+        lo = min(o, c) * 0.99
         out.append(
             DailyBar(
                 bar_date=d0 + timedelta(days=i),
                 open=o,
                 high=h,
-                low=l,
+                low=lo,
                 close=c,
                 volume=1_000_000,
             )
@@ -47,13 +47,13 @@ def _downtrend_bars(n: int = 260, *, start: float = 100.0) -> list[DailyBar]:
         o = px
         c = px * (1 - 0.003)
         h = max(o, c) * 1.005
-        l = min(o, c) * 0.99
+        lo = min(o, c) * 0.99
         out.append(
             DailyBar(
                 bar_date=d0 + timedelta(days=i),
                 open=o,
                 high=h,
-                low=l,
+                low=lo,
                 close=c,
                 volume=1_000_000,
             )

@@ -87,7 +87,6 @@ def fetch_sepa_symbols(
     clauses = ["trade_date = %s"]
     params: list[Any] = [trade_date]
 
-    paths = layer.stage  # stage field in API is stage enum; path is SETUP/PIVOT
     # layer.stage holds path values SETUP/PIVOT per LS-1 schema (Explorer path filter)
     path_values = [p.strip().upper() for p in layer.stage if p.strip()]
     if path_values:

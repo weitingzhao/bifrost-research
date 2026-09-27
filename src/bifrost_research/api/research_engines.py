@@ -712,7 +712,7 @@ def sepa_candidates(
                 )
         with conn.cursor() as cur:
             cur.execute(
-                f"""
+                """
                 SELECT
                     symbol,
                     eval_date AS trade_date,

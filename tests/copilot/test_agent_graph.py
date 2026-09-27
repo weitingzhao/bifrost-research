@@ -13,7 +13,6 @@ from bifrost_research.copilot.agents.graph import (
     build_verdict_agent,
     build_write_agent,
 )
-from bifrost_research.copilot.models import ModelConfigError
 
 
 @pytest.fixture(autouse=True)

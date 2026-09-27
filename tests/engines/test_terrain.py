@@ -203,7 +203,7 @@ def test_load_upstream_signals_keeps_the_levels_spot_over_an_older_close() -> No
 
 # ─── 2026-09-26: walls that never reached the price bound nothing ───
 
-from bifrost_research.engines.forecast.terrain import (
+from bifrost_research.engines.forecast.terrain import (  # noqa: E402
     terrain_input_fault,
     walls_reach_spot,
 )

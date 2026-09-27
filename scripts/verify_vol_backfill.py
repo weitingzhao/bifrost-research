@@ -42,12 +42,6 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = connect()
     try:
-        raw_dates = _distinct_trade_dates(
-            conn,
-            "raw_market",
-            "option_snapshot",
-            "snapshot_ts",
-        )
         # NY session day from snapshot_ts for apples-to-apples with trade_date
         with conn.cursor() as cur:
             cur.execute(

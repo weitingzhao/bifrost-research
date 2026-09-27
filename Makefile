@@ -57,7 +57,7 @@ verify-husbandry-schedulers:
 	bash scripts/verify_husbandry_schedulers.sh
 
 lint:
-	ruff check src/ tests/ || true
+	ruff check .
 	@if [ -d "$(DBT_DIR)/models" ]; then \
 		cd $(DBT_DIR) && sqlfluff lint models/ || true; \
 	fi

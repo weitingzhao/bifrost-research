@@ -33,9 +33,9 @@ _SRC = Path(__file__).resolve().parents[1] / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from bifrost_research.db.conn import connect
-from bifrost_research.repositories import ai_draft as draft_repo
-from bifrost_research.repositories import candidate_pool as cand_repo
+from bifrost_research.db.conn import connect  # noqa: E402
+from bifrost_research.repositories import ai_draft as draft_repo  # noqa: E402
+from bifrost_research.repositories import candidate_pool as cand_repo  # noqa: E402
 
 
 def plan(conn: Any, *, limit: int) -> list[dict[str, Any]]:

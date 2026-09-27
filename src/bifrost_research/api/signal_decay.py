@@ -431,7 +431,7 @@ def signal_decay_intersect(
 
     return _ok(
         {
-            "lens_pairs": [f"{l}:{s}" for l, s in pairs],
+            "lens_pairs": [f"{lens}:{side}" for lens, side in pairs],
             "window_days": window_days,
             "symbol": sym,
             "regime": regime_n,

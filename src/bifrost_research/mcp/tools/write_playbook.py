@@ -13,7 +13,6 @@ from bifrost_research.mcp.tools._write_common import (
     diff_preview,
     executed_ok,
     require_approval_or_error,
-    safe_err,
 )
 from bifrost_research.repositories import ai_draft as draft_repo
 

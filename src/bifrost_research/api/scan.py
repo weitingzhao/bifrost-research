@@ -135,7 +135,6 @@ def load_adaptive_weights(conn: Any, *, window_days: int = 30) -> dict[str, floa
 
     Maps opex_pin → pin weight; terrain keeps a small floor so composite stays defined.
     """
-    from datetime import timedelta
 
     sql = f"""
         SELECT lens, trigger_side, hit_5d

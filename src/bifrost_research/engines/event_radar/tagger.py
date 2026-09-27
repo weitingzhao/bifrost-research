@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
-from typing import Any
 
 from bifrost_research.engines.event_radar.pipeline import RawEvent, TaggedEvent, step_tag
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 
 from bifrost_research.auth.bearer import (
     auth_required,

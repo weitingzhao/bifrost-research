@@ -26,14 +26,14 @@ def _bars(
         o = px
         c = px * (1 + drift)
         h = max(o, c) * 1.01
-        l = min(o, c) * 0.99
+        lo = min(o, c) * 0.99
         vwap = (o + c) / 2
         out.append(
             DailyBar(
                 bar_date=d0 + timedelta(days=i),
                 open=o,
                 high=h,
-                low=l,
+                low=lo,
                 close=c,
                 volume=volume * (1.0 + 0.01 * (i % 5)),
                 vwap=vwap,
