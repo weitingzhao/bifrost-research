@@ -28,6 +28,7 @@ from datetime import date, timedelta
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from bifrost_research.engines.backtest.settlement import forecast_result_sql
+from bifrost_research.lenses.pin_expiry import monthly_expiry_sql
 from bifrost_research.lenses.registry import LENSES, classify, classify_category
 
 logger = logging.getLogger(__name__)
@@ -139,16 +140,25 @@ def _order_sentiment_sql() -> str:
 def _opex_pin_sql() -> str:
     """Pin distance = (close − max pain) / close, on the newest max-pain date.
 
-    The expiry nearest 30 days out is the one the exhibit reads, so the screen
-    reads the same one.
+    The next monthly expiry (``lenses.pin_expiry``) is the one the exhibit
+    reads, so the screen reads the same one — on the symbol's newest date only,
+    so a name whose monthly has not entered the collected chain reads nothing
+    rather than an older date's.
     """
-    return """
-        WITH latest AS (
-            SELECT DISTINCT ON (symbol) symbol, trade_date, expiry, max_pain_strike
+    return f"""
+        WITH newest AS (
+            SELECT symbol, MAX(trade_date) AS trade_date
             FROM features.option_metric_max_pain_daily
             WHERE symbol = ANY(%(symbols)s) AND trade_date >= %(since)s
-              AND max_pain_strike IS NOT NULL
-            ORDER BY symbol, trade_date DESC, ABS((expiry - trade_date) - 30) ASC, expiry ASC
+            GROUP BY symbol
+        ),
+        latest AS (
+            SELECT DISTINCT ON (m.symbol) m.symbol, m.trade_date, m.expiry, m.max_pain_strike
+            FROM features.option_metric_max_pain_daily m
+            JOIN newest n ON n.symbol = m.symbol AND n.trade_date = m.trade_date
+            WHERE m.max_pain_strike IS NOT NULL
+              AND {monthly_expiry_sql("m.expiry", "m.trade_date")}
+            ORDER BY m.symbol, m.expiry ASC
         )
         SELECT l.symbol,
                (s.close - l.max_pain_strike) / NULLIF(s.close, 0) AS value,

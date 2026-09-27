@@ -14,6 +14,7 @@ import logging
 from typing import Any
 
 from bifrost_research.engines.backtest.settlement import forecast_result_sql
+from bifrost_research.lenses.pin_expiry import NO_MONTHLY_CAVEAT, monthly_expiry_sql
 from bifrost_research.lenses.exhibit_model import ExhibitResponse, freshness_from, iso_date, rollback_quietly
 from bifrost_research.api.similar_regime import similar_rows
 from bifrost_research.lenses.registry import LENSES
@@ -326,7 +327,9 @@ def pin_history(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def max_pain_row(conn: Any, symbol: str, before: Any = None) -> tuple[Any, ...] | None:
-    """Nearest-30-DTE max pain on the symbol's latest date, or the latest date before ``before``."""
+    """Max pain at the next monthly expiry (``lenses.pin_expiry``) on the symbol's
+    latest date, or the latest date before ``before``. None when that date holds
+    no monthly — the reading does not fall back to a weekly or an older date."""
     cut = "AND trade_date < %s::date" if before is not None else ""
     params = (symbol, symbol) if before is None else (symbol, symbol, before)
     return _fetch_one(
@@ -339,11 +342,21 @@ def max_pain_row(conn: Any, symbol: str, before: Any = None) -> tuple[Any, ...] 
           AND trade_date = (
               SELECT MAX(trade_date) FROM {TABLE_OPTION_METRIC_MAX_PAIN_DAILY} WHERE symbol = %s {cut}
           )
-        ORDER BY ABS((expiry - trade_date) - 30) ASC, expiry ASC
+          AND {monthly_expiry_sql()}
+        ORDER BY expiry ASC
         LIMIT 1
         """,
         params,
     )
+
+
+def has_max_pain_rows(conn: Any, symbol: str) -> bool:
+    row = _fetch_one(
+        conn,
+        f"SELECT 1 FROM {TABLE_OPTION_METRIC_MAX_PAIN_DAILY} WHERE symbol = %s LIMIT 1",
+        (symbol,),
+    )
+    return row is not None
 
 
 def close_on(conn: Any, symbol: str, trade_date: Any) -> float | None:
@@ -367,7 +380,9 @@ def exhibit_opex_pin(conn: Any, symbol: str) -> ExhibitResponse:
     try:
         row = max_pain_row(conn, symbol)
         if not row:
-            exh.caveats.append("No max-pain rows for symbol")
+            exh.caveats.append(
+                NO_MONTHLY_CAVEAT if has_max_pain_rows(conn, symbol) else "No max-pain rows for symbol"
+            )
             return exh
         close = close_on(conn, symbol, row[0])
         max_pain = float(row[2]) if row[2] is not None else None

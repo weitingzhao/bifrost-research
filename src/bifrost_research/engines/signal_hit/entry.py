@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 from bifrost_research.db.conn import connect
 from bifrost_research.db.upsert import batch_upsert
+from bifrost_research.lenses.pin_expiry import monthly_expiry_sql
 from bifrost_research.engines.signal_hit.build import (
     classify_gex_regime,
     classify_iv_rank,
@@ -172,9 +173,10 @@ def _load_vrp_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, floa
 
 
 def _load_opex_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, float]]:
+    # The next monthly expiry, as the exhibit reads it (lenses.pin_expiry).
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             WITH nearest_mp AS (
                 SELECT DISTINCT ON (m.symbol)
                     m.symbol,
@@ -183,7 +185,8 @@ def _load_opex_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, flo
                 WHERE m.trade_date = %s
                   AND m.max_pain_strike IS NOT NULL
                   AND m.max_pain_strike > 0
-                ORDER BY m.symbol, ABS((m.expiry - m.trade_date) - 30) ASC, m.expiry ASC
+                  AND {monthly_expiry_sql("m.expiry", "m.trade_date")}
+                ORDER BY m.symbol, m.expiry ASC
             )
             SELECT n.symbol,
                    (s.close::float - n.max_pain_strike) / NULLIF(s.close::float, 0) AS pin_pct

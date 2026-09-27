@@ -23,6 +23,7 @@ from bifrost_research.db.calendar import (
     union_iv_radar_benchmarks,
 )
 from bifrost_research.db.conn import connect
+from bifrost_research.lenses.pin_expiry import monthly_expiry_sql
 from bifrost_research.db.upsert import batch_upsert
 from bifrost_research.engines.scan.build import build_scan_row
 from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_SCAN_DAILY
@@ -51,7 +52,7 @@ _SCAN_COLS = (
     "computed_at",
 )
 
-_AGGREGATE_SQL = """
+_AGGREGATE_SQL = f"""
 WITH watchlist AS (
     SELECT UPPER(unnest(%s::text[])) AS symbol
 ),
@@ -87,7 +88,8 @@ nearest_mp AS (
     WHERE m.trade_date = %s
       AND m.max_pain_strike IS NOT NULL
       AND m.max_pain_strike > 0
-    ORDER BY m.symbol, ABS((m.expiry - m.trade_date) - 30) ASC, m.expiry ASC
+      AND {monthly_expiry_sql("m.expiry", "m.trade_date")}
+    ORDER BY m.symbol, m.expiry ASC
 ),
 pin AS (
     SELECT n.symbol,

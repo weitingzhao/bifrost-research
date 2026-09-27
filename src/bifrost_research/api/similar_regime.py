@@ -30,6 +30,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Query
 
 from bifrost_research.db.conn import connect
+from bifrost_research.lenses.pin_expiry import monthly_expiry_sql
 from bifrost_research.lenses.similar import summarize_forward_returns
 from bifrost_research.schema.schemas import (
     TABLE_OPTION_METRIC_GEX_LEVELS_DAILY,
@@ -258,8 +259,8 @@ def _similar_pin_distance(
 ) -> tuple[list[dict[str, Any]], str]:
     """k-NN on derived pin pct_distance from max_pain × stock close.
 
-    ``pct_distance = (close - max_pain) / NULLIF(close, 0)`` using the ~30 DTE
-    max-pain expiry per trade_date. Prefer this over ``dte_to_opex`` proxy.
+    ``pct_distance = (close - max_pain) / NULLIF(close, 0)`` using the next
+    monthly expiry per trade_date (``lenses.pin_expiry``) — the pin exhibit's. Prefer this over ``dte_to_opex`` proxy.
     """
     source = "max_pain_pin_distance"
     try:
@@ -277,9 +278,8 @@ def _similar_pin_distance(
                     WHERE m.symbol = %s
                       AND m.max_pain_strike IS NOT NULL
                       AND m.max_pain_strike > 0
-                    ORDER BY m.trade_date,
-                             ABS((m.expiry - m.trade_date) - 30) ASC,
-                             m.expiry ASC
+                      AND {monthly_expiry_sql("m.expiry", "m.trade_date")}
+                    ORDER BY m.trade_date, m.expiry ASC
                 ),
                 pin AS (
                     SELECT n.trade_date,
