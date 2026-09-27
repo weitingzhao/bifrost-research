@@ -31,7 +31,17 @@ templater = jinja
 # The 11 USING joins then were inner/left chains on symbol with every select
 # qualified; each became `on <first table>.symbol = <joined>.symbol`, and
 # EXPLAIN (VERBOSE) on the replica gave byte-identical plans before and after.
-rules = core,RF02,AM03,RF03,AL01,ST06,ST07
+# AM04 (added 2026-09-26): the outermost select must not produce an unknown
+# number of columns, i.e. no `select *` straight off a ref() or source(): if
+# the upstream table gains a column, this model's output would change shape
+# unnoticed. The one case, mart_sepa_screening_ranked over composite_score,
+# now lists its ten columns.
+rules = core,RF02,AM03,RF03,AL01,ST06,ST07,AM04
+# Also lint code that touches templated areas. With the default (True), a
+# violation that spans rendered Jinja is dropped, and a model's `select *
+# from {{ ref(...) }}` always does: AM04 passed it while flagging the same
+# query against a plain table name. Turning it off added no other findings.
+ignore_templated_areas = False
 # Same width as ruff's line-length.
 max_line_length = 100
 
