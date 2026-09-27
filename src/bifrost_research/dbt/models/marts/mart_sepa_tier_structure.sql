@@ -128,32 +128,30 @@ vol_contraction as (
 
 select
     u.symbol,
-    bbl.bb_width,
-
-    -- BB squeeze: current width < 50-day average (tightening)
-    bba.bb_width_avg_50d,
-    adx.adx_proxy,
-
-    -- ADX: trend strength
-    ar.aroon_up,
-    ar.aroon_down,
-
-    -- Aroon: bullish when Aroon Up > Aroon Down
-    vc.current_atr,
-    vc.atr_50d_ago,
-
-    -- Volatility contraction
-    current_date as eval_date,
-    coalesce(bbl.bb_width < bba.bb_width_avg_50d, false) as bb_squeeze,
-
-    -- Structure score (normalized 0-1)
-    coalesce(bbl.bb_width < bba.bb_width_avg_50d * 0.75, false) as bb_tight_squeeze,
 
     -- Raw metrics
+    bbl.bb_width,
+    bba.bb_width_avg_50d,
+    adx.adx_proxy,
+    ar.aroon_up,
+    ar.aroon_down,
+    vc.current_atr,
+    vc.atr_50d_ago,
+    current_date as eval_date,
+
+    -- BB squeeze: current width < 50-day average (tightening)
+    coalesce(bbl.bb_width < bba.bb_width_avg_50d, false) as bb_squeeze,
+    coalesce(bbl.bb_width < bba.bb_width_avg_50d * 0.75, false) as bb_tight_squeeze,
+
+    -- ADX: trend strength
     coalesce(adx.adx_proxy > 1.0, false) as adx_trending,
     coalesce(adx.adx_proxy > 2.0, false) as adx_strong_trend,
+
+    -- Aroon: bullish when Aroon Up > Aroon Down
     coalesce(ar.aroon_up > ar.aroon_down, false) as aroon_bullish,
     coalesce(ar.aroon_up > 70, false) as aroon_up_strong,
+
+    -- Volatility contraction
     coalesce(
         vc.current_atr < vc.atr_50d_ago * 0.8,
         false
@@ -162,6 +160,8 @@ select
         vc.current_atr < vc.atr_50d_ago * 0.6,
         false
     ) as vol_tight_contraction,
+
+    -- Structure score (normalized 0-1)
     (
         coalesce(bbl.bb_width < bba.bb_width_avg_50d, false)::int
         + coalesce(bbl.bb_width < bba.bb_width_avg_50d * 0.75, false)::int

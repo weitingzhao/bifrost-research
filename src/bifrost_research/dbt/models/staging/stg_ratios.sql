@@ -18,20 +18,20 @@ select
     period_type,
     fiscal_year,
     fiscal_quarter,
-
-    -- Returns and leverage (the columns downstream marts already read)
     null::numeric as profit_margin,
     null::numeric as operating_margin,
     null::numeric as gross_margin,
     fetched_at,
+
+    -- Returns and leverage (the columns downstream marts already read)
     (data ->> 'return_on_equity')::numeric as roe,
     (data ->> 'return_on_assets')::numeric as roa,
     (data ->> 'debt_to_equity')::numeric as debt_to_equity,
     (data ->> 'current')::numeric as current_ratio,
     (data ->> 'quick')::numeric as quick_ratio,
+    (data ->> 'cash')::numeric as cash_ratio,
 
     -- Valuation
-    (data ->> 'cash')::numeric as cash_ratio,
     (data ->> 'price_to_earnings')::numeric as price_to_earnings,
     (data ->> 'price_to_book')::numeric as price_to_book,
     (data ->> 'price_to_sales')::numeric as price_to_sales,
@@ -40,13 +40,12 @@ select
     (data ->> 'ev_to_ebitda')::numeric as ev_to_ebitda,
     (data ->> 'ev_to_sales')::numeric as ev_to_sales,
     (data ->> 'dividend_yield')::numeric as dividend_yield,
+    (data ->> 'earnings_per_share')::numeric as earnings_per_share,
 
     -- Size and liquidity
-    (data ->> 'earnings_per_share')::numeric as earnings_per_share,
     (data ->> 'market_cap')::numeric as market_cap,
     (data ->> 'enterprise_value')::numeric as enterprise_value,
     (data ->> 'free_cash_flow')::numeric as free_cash_flow,
     (data ->> 'price')::numeric as price,
-
     (data ->> 'average_volume')::numeric as average_volume
 from {{ source('market', 'ratios') }}
