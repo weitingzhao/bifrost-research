@@ -18,6 +18,7 @@ from bifrost_research.orchestration.plugin_http import (
     enqueue_market_slots,
     env,
     get_json,
+    market_doctor_url,
     meta,
     post_json,
 )
@@ -130,10 +131,12 @@ def husbandry_gate(context: AssetExecutionContext) -> MaterializeResult:
     eod_verdict = "unknown"
     eod_detail = "doctor not probed"
     market_session = "unknown"
+    market_generated_at = "unknown"
     flex_source = "unknown"
     try:
-        doctor = get_json(f"{market_base}/market/doctor?probes=false", timeout=180.0)
+        doctor = get_json(market_doctor_url(market_base, probes=False), timeout=180.0)
         market_session = str(doctor.get("session") or "unknown")
+        market_generated_at = str(doctor.get("generated_at") or "unknown")
         market_verdict = str(doctor.get("verdict") or "unknown")
         eod = doctor.get("eod_critical") if isinstance(doctor, dict) else None
         if isinstance(eod, dict):
@@ -166,10 +169,12 @@ def husbandry_gate(context: AssetExecutionContext) -> MaterializeResult:
         )
 
     context.log.info(
-        "husbandry_gate ok market=%s eod=%s session=%s flex_source=%s flex_ingest=%s (%s)",
+        "husbandry_gate ok market=%s eod=%s session=%s generated_at=%s "
+        "flex_source=%s flex_ingest=%s (%s)",
         market_verdict,
         eod_verdict,
         market_session,
+        market_generated_at,
         flex_source,
         flex_verdict,
         flex_reason,
@@ -181,6 +186,7 @@ def husbandry_gate(context: AssetExecutionContext) -> MaterializeResult:
                 "market_eod": eod_verdict,
                 "market_eod_detail": eod_detail,
                 "market_session": market_session,
+                "market_generated_at": market_generated_at,
                 "flex_source": flex_source,
                 "flex_ingest": flex_verdict,
                 "flex_ingest_reason": flex_reason,
