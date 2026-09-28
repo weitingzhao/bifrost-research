@@ -22,9 +22,10 @@ class _FakeCursor:
         q = query.lower()
         if "v_option_snapshot_with_stock" in q:
             trade_date = params[0] if params else None
-            underlyings = None
-            if params and len(params) > 1:
-                underlyings = set(params[1])
+            # The day's instant bounds follow the date; the symbol list, when
+            # there is one, is the only list among the params.
+            lists = [p for p in (params or ())[1:] if isinstance(p, (list, tuple))]
+            underlyings = set(lists[0]) if lists else None
             rows = []
             for r in self.parent.snap_rows:
                 if r.get("trade_date") != trade_date:
@@ -350,6 +351,29 @@ def test_snapshot_fallback_requires_the_row_to_be_fetched_near_its_session() -> 
     compute_atm_iv_for_date(conn, trade_date=date(2026, 6, 25), underlyings=["PLTR"])
     sql = next(q for q, _ in conn.statements if "v_option_snapshot_with_stock" in q)
     assert "fetched_at" in sql and "<= 3" in sql
+
+
+def test_snapshot_fallback_names_the_day_both_ways() -> None:
+    """The range prunes option_snapshot; the expression gives stock_daily a constant.
+
+    Measured 2026-09-28: the expression alone scanned all eight snapshot
+    partitions (20-27s); a snapshot_ts filter alone is how the plugin's
+    chain-spot probe lost the stock_daily inference and hashed the table (69s).
+    """
+    from datetime import datetime, timezone
+
+    conn = _FakeConn()
+    compute_atm_iv_for_date(conn, trade_date=date(2026, 3, 9), underlyings=["PLTR"])
+    sql, params = next((q, p) for q, p in conn.statements if "v_option_snapshot_with_stock" in q)
+    flat = " ".join(sql.split())
+    assert "DATE(timezone('America/New_York', v.snapshot_ts)) = %s" in flat
+    assert "v.snapshot_ts >= %s AND v.snapshot_ts < %s" in flat
+    day, start, end, syms = params
+    assert day == date(2026, 3, 9) and syms == ["PLTR"]
+    # 2026-03-09 is the Monday after DST began: New York midnight is 04:00 UTC,
+    # not the 05:00 of the Sunday before.
+    assert start.astimezone(timezone.utc) == datetime(2026, 3, 9, 4, 0, tzinfo=timezone.utc)
+    assert end.astimezone(timezone.utc) == datetime(2026, 3, 10, 4, 0, tzinfo=timezone.utc)
 
 
 

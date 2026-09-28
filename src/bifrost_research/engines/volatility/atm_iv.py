@@ -19,9 +19,10 @@ Recomputing a day replaces that day's rows for every symbol the source has rows 
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from statistics import median
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from zoneinfo import ZoneInfo
 
 from bifrost_research.db.upsert import batch_upsert
 from bifrost_research.engines.volatility.iv_solver import (
@@ -255,12 +256,34 @@ def fetch_reconstructed_iv_rows_for_date(
     return [_row_to_dict(r, cols) for r in (raw or [])]
 
 
+_NY = ZoneInfo("America/New_York")
+
+
+def _ny_day_bounds(trade_date: date) -> tuple[datetime, datetime]:
+    """``[00:00, next 00:00)`` in New York on ``trade_date``, as instants."""
+    start = datetime.combine(trade_date, time.min, tzinfo=_NY)
+    return start, datetime.combine(trade_date + timedelta(days=1), time.min, tzinfo=_NY)
+
+
 def fetch_snapshot_iv_rows_for_date(
     conn: Any,
     trade_date: date,
     *,
     underlyings: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
+    """The live snapshot's IVs for ``trade_date``: the last resort when nothing is stored.
+
+    The day is named twice, and each form does a job the other cannot. The
+    snapshot_ts range is what prunes option_snapshot's partitions: on the
+    expression alone the planner scanned all eight, 1.8 GB and 20-27s for one
+    session (2026-09-28). The expression is what joins the view's stock_daily
+    at plan time: it is the view's own join key, so an equality on it gives
+    ``bar_date`` a constant, and stock_daily is pruned to one partition and
+    probed by index. On snapshot_ts alone that inference is lost -- the doctor's
+    chain-spot probe, filtered that way, hashed all of stock_daily twice and
+    took 69s. Each selects exactly the rows the other does, so together they
+    change the plan and not the answer.
+    """
     cols = (
         "option_ticker",
         "underlying",
@@ -284,10 +307,12 @@ def fetch_snapshot_iv_rows_for_date(
         INNER JOIN raw_market.option_contract oc
           ON oc.option_ticker = v.option_ticker
         WHERE DATE(timezone('America/New_York', v.snapshot_ts)) = %s
+          AND v.snapshot_ts >= %s AND v.snapshot_ts < %s
           AND v.iv IS NOT NULL
           AND v.underlying_price IS NOT NULL
           AND {observed_near_session("v")}
     """
+    day_start, day_end = _ny_day_bounds(trade_date)
     with conn.cursor() as cur:
         if syms:
             cur.execute(
@@ -296,7 +321,7 @@ def fetch_snapshot_iv_rows_for_date(
                   AND v.underlying = ANY(%s)
                 ORDER BY v.option_ticker, v.snapshot_ts DESC
                 """,
-                (trade_date, syms),
+                (trade_date, day_start, day_end, syms),
             )
         else:
             cur.execute(
@@ -304,7 +329,7 @@ def fetch_snapshot_iv_rows_for_date(
                 + """
                 ORDER BY v.option_ticker, v.snapshot_ts DESC
                 """,
-                (trade_date,),
+                (trade_date, day_start, day_end),
             )
         raw = cur.fetchall() if hasattr(cur, "fetchall") else []
     return [{**_row_to_dict(r, cols), "solver_status": "vendor_snapshot"} for r in (raw or [])]
