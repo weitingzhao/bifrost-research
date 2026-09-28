@@ -30,6 +30,13 @@ def run_vrp(*, lookback_days: int = 3) -> dict[str, Any]:
     return dict(vrp_entry.run(lookback_days=lookback_days))
 
 
+def run_iv_coverage_heal() -> dict[str, Any]:
+    """Recompute IV features on sessions far short of raw's coverage, two years back."""
+    from bifrost_research.engines.volatility import iv_coverage_heal
+
+    return iv_coverage_heal.run(apply=True)
+
+
 def run_vrp_fwd_ret_20d(*, lookback_days: int = 90) -> dict[str, Any]:
     """Fill fwd_ret_20d on VRP rows whose 20 sessions have elapsed."""
     from bifrost_research.engines.vrp import entry as vrp_entry

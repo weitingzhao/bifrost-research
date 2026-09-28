@@ -292,13 +292,15 @@ maint_ensure_partitions = _run_asset(
 
 
 def _run_vol_weekly_backfill() -> dict[str, Any]:
-    return runners.run_volatility(lookback_days=90)
+    out = runners.run_volatility(lookback_days=90)
+    out["coverage_heal"] = runners.run_iv_coverage_heal()
+    return out
 
 
 maint_vol_weekly_backfill = _run_asset(
     key_path=["maintenance", "vol_weekly_backfill"],
     group=GROUP_MAINT,
-    description="Sunday volatility 90d backfill",
+    description="Sunday volatility 90d backfill, then IV coverage heal over two years",
     fn=_run_vol_weekly_backfill,
 )
 
