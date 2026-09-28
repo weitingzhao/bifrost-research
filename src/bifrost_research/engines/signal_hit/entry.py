@@ -406,6 +406,91 @@ def build_rows_for_day(
     return rows
 
 
+# The table each lens's loader reads a date from. A re-walked day replaces a
+# lens's triggers only when this source has that date: before the trading-day
+# batch writes a session, a loader returns nothing, and "nothing fired" must
+# not be read as "every earlier trigger stopped firing".
+LENS_SOURCE: dict[str, tuple[str, str]] = {
+    LENS_IV: ("features.option_metric_iv_percentile_daily", "iv_rank_1y IS NOT NULL"),
+    LENS_VRP: ("features.stock_signal_vrp_daily", "vrp_pct_252d IS NOT NULL"),
+    LENS_OPEX: ("features.option_metric_max_pain_daily", "max_pain_strike > 0"),
+    LENS_SKEW: ("features.option_surface_fit_daily", "atm_slope IS NOT NULL"),
+    LENS_GEX: ("features.option_metric_gex_levels_daily", "total_net_gex IS NOT NULL"),
+    LENS_TERRAIN: ("features.stock_forecast_terrain_daily", "regime IS NOT NULL"),
+    LENS_SENTIMENT: ("features.option_flow_sentiment_daily", "sentiment_score IS NOT NULL"),
+    LENS_SEPA: ("features.stock_signal_sepa_daily", "sepa_score IS NOT NULL"),
+    LENS_MOMENTUM: ("features.stock_signal_momentum_daily", "score IS NOT NULL"),
+}
+
+
+def lenses_with_source(conn: Any, day: date, lenses: Sequence[str]) -> list[str]:
+    """The lenses whose source has ``day``: only these may replace that day's rows."""
+    present: list[str] = []
+    with conn.cursor() as cur:
+        for lens in lenses:
+            table, has_value = LENS_SOURCE[lens]
+            cur.execute(f"SELECT 1 FROM {table} WHERE trade_date = %s AND {has_value} LIMIT 1", (day,))
+            if cur.fetchone():
+                present.append(lens)
+    return present
+
+
+def unfired_keys(
+    existing: Iterable[tuple[str, str, str]],
+    fired: Iterable[tuple[str, str, str]],
+) -> list[tuple[str, str, str]]:
+    """``(lens, symbol, side)`` rows a day holds that today's view of it no longer fires."""
+    return sorted(set(existing) - set(fired))
+
+
+def replace_unfired(
+    conn: Any,
+    day: date,
+    lenses: Sequence[str],
+    rows: Sequence[tuple[Any, ...]],
+    *,
+    symbols: Sequence[str] | None = None,
+    dry_run: bool = False,
+) -> int:
+    """Delete the day's rows, for ``lenses``, that ``rows`` no longer fire.
+
+    Re-walking upserts what fires on today's view of a date. Without this, a
+    trigger that stopped firing — the rule changed (opex_pin, 2026-09-26), its
+    source was recomputed (iv_rank / vrp, 2026-09-27), the symbol was renamed —
+    kept its row beside the new ones and every rate read both. With a watchlist
+    the replacement stays inside it, so a scoped run cannot clear other names.
+    """
+    if not lenses:
+        return 0
+    fired = [(str(r[2]), str(r[1]), str(r[3])) for r in rows]
+    where = "trade_date = %s AND lens = ANY(%s)"
+    params: list[Any] = [day, list(lenses)]
+    if symbols:
+        where += " AND symbol = ANY(%s)"
+        params.append([s.upper() for s in symbols])
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT lens, symbol, trigger_side FROM {TABLE_STOCK_SIGNAL_LENS_HIT_DAILY} WHERE {where}",
+            params,
+        )
+        existing = [(str(a), str(b), str(c)) for a, b, c in cur.fetchall() or []]
+    drop = unfired_keys(existing, fired)
+    if drop and not dry_run:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                DELETE FROM {TABLE_STOCK_SIGNAL_LENS_HIT_DAILY}
+                WHERE trade_date = %s
+                  AND (lens, symbol, trigger_side) IN (
+                      SELECT * FROM unnest(%s::text[], %s::text[], %s::text[])
+                  )
+                """,
+                (day, [k[0] for k in drop], [k[1] for k in drop], [k[2] for k in drop]),
+            )
+        conn.commit()
+    return len(drop)
+
+
 def backfill_missing_forward(
     conn: Any,
     *,
@@ -421,6 +506,9 @@ def backfill_missing_forward(
     never reaches it and the NULL stands forever. On 2026-09-08 nineteen rows
     from 2026-08-03..08-07 sat unjudged for exactly that reason while the same
     run rewrote 198 of their neighbours.
+
+    Re-walked days now drop such rows instead (``replace_unfired``); repair
+    still serves rows older than the window, which no re-walk reaches.
 
     So repair is driven by what is missing, not by re-deriving what should
     exist: find the incomplete rows, recompute only their forward columns, and
@@ -491,7 +579,16 @@ def run(
     lenses: Sequence[str] | None = None,
     as_of: date | None = None,
     repair: bool = False,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
+    """Rebuild each of the last ``lookback_days`` sessions from today's view of it.
+
+    A day is replaced, not only upserted: for every lens whose source has the
+    day, rows it no longer fires are deleted (``replace_unfired``). So a rule
+    change or a recomputed source heals itself inside the window, and a rebuild
+    of older history is this same call with a wider ``lookback_days``.
+    ``dry_run`` reports what would be written and removed and writes nothing.
+    """
     lens_list = list(lenses) if lenses else list(ALL_LENSES)
     end = as_of or _today_ny()
     start = end - timedelta(days=max(lookback_days * 2, lookback_days + 5))
@@ -506,15 +603,11 @@ def run(
 
         watch = _watchlist()
         written = 0
+        removed = 0
         per_day: list[dict[str, Any]] = []
         for day in days:
             rows = build_rows_for_day(conn, day, lens_list, symbols=watch or None)
-            if rows:
-                # Upsert, never delete: re-walked days (3 nightly, 30 in fwd_fill)
-                # keep rows a changed trigger rule no longer fires beside the rows
-                # it does. Settle a lens's history in the same change as its rule
-                # (rebuild: upsert, then delete that lens's rows computed before the
-                # rebuild started — as opex_pin was on 2026-09-27; see lenses/pin_expiry).
+            if rows and not dry_run:
                 batch_upsert(
                     conn,
                     TABLE_STOCK_SIGNAL_LENS_HIT_DAILY,
@@ -531,16 +624,27 @@ def run(
                     ),
                     set_fetched_at=False,
                 )
+            present = lenses_with_source(conn, day, lens_list)
+            dropped = replace_unfired(conn, day, present, rows, symbols=watch or None, dry_run=dry_run)
             written += len(rows)
-            per_day.append({"trade_date": day.isoformat(), "rows_written": len(rows)})
-        repair_stats = backfill_missing_forward(conn) if repair else None
+            removed += dropped
+            per_day.append(
+                {
+                    "trade_date": day.isoformat(),
+                    "rows_written": len(rows),
+                    "rows_removed": dropped,
+                    "lenses_without_source": [x for x in lens_list if x not in present],
+                }
+            )
+        repair_stats = backfill_missing_forward(conn) if repair and not dry_run else None
         return {
             "repair": repair_stats,
-            "mode": "batch",
+            "mode": "dry_run" if dry_run else "batch",
             "lookback_days": lookback_days,
             "lenses": lens_list,
             "days": per_day,
             "rows_written": written,
+            "rows_removed": removed,
         }
     finally:
         try:
@@ -575,10 +679,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Delete existing lens_hit rows for selected lenses before rebuild",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report rows that would be written and removed; write nothing",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
     as_of = date.fromisoformat(args.as_of) if args.as_of else None
     lenses = _parse_lenses(args.lens)
-    if args.clear:
+    if args.clear and not args.dry_run:
         conn = connect()
         try:
             deleted = _clear_lens_hit(conn, lenses)
@@ -588,7 +697,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 conn.close()
             except Exception:
                 pass
-    result = run(lookback_days=args.lookback_days, lenses=lenses, as_of=as_of)
+    result = run(lookback_days=args.lookback_days, lenses=lenses, as_of=as_of, dry_run=args.dry_run)
     logger.info("signal_hit result=%s", result)
     print(result)
     return 0

@@ -97,13 +97,36 @@ def run_signal_hit_fwd_fill(*, lookback_days: int = 30) -> dict[str, Any]:
     """
     from bifrost_research.engines.signal_hit import entry as signal_hit_entry
 
-    # repair=True adds the pass that re-walking cannot do. A rebuild only emits
-    # rows for triggers that still fire on today's view of a past date, so a row
-    # whose lens has since stopped firing is never reached and its NULL stands
-    # however many times the window is re-walked — nineteen rows sat unjudged
-    # that way on 2026-09-08 while the same run rewrote 198 of their neighbours.
+    # Re-walking replaces each of these days: rows a lens no longer fires are
+    # deleted (signal_hit.entry.replace_unfired), so the 30-day window follows
+    # rule changes and recomputed sources. repair=True still fills forward
+    # columns on older rows the window does not reach — nineteen rows sat
+    # unjudged on 2026-09-08 before this pass existed.
     out = dict(signal_hit_entry.run(lookback_days=lookback_days, repair=True))
     out["engine"] = "signal_hit_fwd_fill"
+    return out
+
+
+# Two years of sessions: as far back as the weekly IV coverage heal recomputes
+# its sources (engines/volatility/iv_coverage_heal), so no lens row outlives
+# the input it was read from by more than a week.
+SIGNAL_HIT_FULL_REWALK_DAYS = 730
+
+
+def run_signal_hit_full_rewalk(*, lookback_days: int = SIGNAL_HIT_FULL_REWALK_DAYS) -> dict[str, Any]:
+    """Replace every lens's trigger history from today's view of its sources.
+
+    The nightly 3- and 30-day re-walks follow whatever changed inside their
+    window; a source recomputed further back (the Sunday IV heal reaches two
+    years) or a rule change (opex_pin, 2026-09-26) leaves older days holding
+    triggers their inputs no longer fire. Run after the heal, every week.
+    """
+    from bifrost_research.engines.signal_hit import entry as signal_hit_entry
+
+    out = dict(signal_hit_entry.run(lookback_days=lookback_days, repair=True))
+    out["engine"] = "signal_hit_full_rewalk"
+    # Per-day detail for two years is noise in a Dagster log; keep the totals.
+    out["days"] = len(out.get("days") or [])
     return out
 
 

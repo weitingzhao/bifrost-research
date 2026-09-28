@@ -294,13 +294,15 @@ maint_ensure_partitions = _run_asset(
 def _run_vol_weekly_backfill() -> dict[str, Any]:
     out = runners.run_volatility(lookback_days=90)
     out["coverage_heal"] = runners.run_iv_coverage_heal()
+    # After the heal, never before: the re-walk reads what the heal rewrote.
+    out["signal_hit_rewalk"] = runners.run_signal_hit_full_rewalk()
     return out
 
 
 maint_vol_weekly_backfill = _run_asset(
     key_path=["maintenance", "vol_weekly_backfill"],
     group=GROUP_MAINT,
-    description="Sunday volatility 90d backfill, then IV coverage heal over two years",
+    description="Sunday volatility 90d backfill, IV coverage heal over two years, then signal-hit re-walk over the same span",
     fn=_run_vol_weekly_backfill,
 )
 
