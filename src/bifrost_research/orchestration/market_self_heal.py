@@ -25,7 +25,13 @@ from dagster import (
 )
 
 from bifrost_research.orchestration.market_slot_schedules import GROUP
-from bifrost_research.orchestration.plugin_http import env, get_json, meta, post_json
+from bifrost_research.orchestration.plugin_http import (
+    env,
+    get_json,
+    market_doctor_url,
+    meta,
+    post_json,
+)
 
 # 00:45 UTC Tue–Sat = 20:45 EDT / 19:45 EST on the trading day: after the EOD
 # chain (22:00 UTC) and the Plugin doctor's 19:30 New York session cutoff.
@@ -37,6 +43,20 @@ SELF_HEAL_CRON = "45 0 * * 2-6"
 SELF_HEAL_LATE_CRON = "30 5 * * 2-6"
 DEFAULT_WAIT_SEC = 900
 POLL_SEC = 30
+
+
+def read_doctor(context: AssetExecutionContext, base: str, *, probes: bool) -> dict[str, Any]:
+    """A freshly computed doctor report, with when it was computed in the log."""
+    report = get_json(market_doctor_url(base, probes=probes), timeout=180.0)
+    generated_at = report.get("generated_at")
+    context.log.info(
+        "doctor probes=%s generated_at=%s age_sec=%s", probes, generated_at, report.get("age_sec")
+    )
+    if not generated_at:
+        # An empty report is a cache miss, not a verdict: judging it would
+        # materialize "unknown" and heal nothing.
+        raise RuntimeError(f"market self-heal: doctor returned no generated_at (probes={probes})")
+    return report
 
 
 def should_heal(report: dict[str, Any]) -> bool:
@@ -75,7 +95,7 @@ def market_self_heal(context: AssetExecutionContext) -> MaterializeResult:
     ).rstrip("/")
     wait_sec = int(env("MARKET_SELF_HEAL_WAIT_SEC", str(DEFAULT_WAIT_SEC)))
 
-    before = get_json(f"{base}/market/doctor?probes=true", timeout=180.0)
+    before = read_doctor(context, base, probes=True)
     context.log.info(
         "doctor session=%s verdict=%s summary=%s prescriptions=%d",
         before.get("session"),
@@ -92,6 +112,7 @@ def market_self_heal(context: AssetExecutionContext) -> MaterializeResult:
             metadata=meta(
                 {
                     "session": before.get("session"),
+                    "generated_at_before": before.get("generated_at"),
                     "verdict_before": before.get("verdict"),
                     "outcome": outcome(before, None),
                     "healed": False,
@@ -131,12 +152,14 @@ def market_self_heal(context: AssetExecutionContext) -> MaterializeResult:
             "queue pending=%s running=%s", summary.get("pending"), summary.get("running")
         )
 
-    after = get_json(f"{base}/market/doctor?probes=false", timeout=180.0)
+    after = read_doctor(context, base, probes=False)
     result = outcome(before, after)
     context.log.info("recheck verdict=%s (%s) drained=%s", after.get("verdict"), result, drained)
     md = meta(
         {
             "session": before.get("session"),
+            "generated_at_before": before.get("generated_at"),
+            "generated_at_after": after.get("generated_at"),
             "verdict_before": before.get("verdict"),
             "verdict_after": after.get("verdict"),
             "outcome": result,

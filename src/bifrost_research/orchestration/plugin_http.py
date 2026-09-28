@@ -51,6 +51,17 @@ def get_json(url: str, *, timeout: float = 30.0) -> dict[str, Any]:
         return json.loads(raw) if raw else {}
 
 
+def market_doctor_url(base: str, *, probes: bool) -> str:
+    """``GET /market/doctor``, always freshly computed.
+
+    The Plugin serves the doctor from a background cache: a plain read returns
+    whatever the last caller left — the previous night's session, or an empty
+    report after a pod restart — and only then starts a recompute. A verdict on
+    tonight's session needs ``refresh=true``, which computes it synchronously.
+    """
+    return f"{base}/market/doctor?probes={'true' if probes else 'false'}&refresh=true"
+
+
 def meta(payload: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {"advisory": "D10 BLOCKED"}
     for key, value in payload.items():

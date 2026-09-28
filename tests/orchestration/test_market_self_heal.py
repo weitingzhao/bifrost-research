@@ -13,6 +13,9 @@ from dagster import build_asset_context
 from bifrost_research.orchestration import market_self_heal as msh
 
 
+GEN = "2026-09-05T00:45:12+00:00"
+
+
 def _md(result: Any, key: str) -> Any:
     """Metadata is raw when the asset is called directly, wrapped when Dagster runs it."""
     v = result.metadata[key]
@@ -40,6 +43,7 @@ def _run(
     *,
     reports: list[dict[str, Any]],
     summaries: list[dict[str, Any]],
+    doctor_urls: list[str] | None = None,
 ) -> tuple[Any, list[Any]]:
     posts: list[Any] = []
     gets = iter(reports)
@@ -47,6 +51,8 @@ def _run(
 
     def fake_get(url: str, **kw: Any) -> dict[str, Any]:
         if "/market/doctor" in url:
+            if doctor_urls is not None:
+                doctor_urls.append(url)
             return next(gets)
         return next(sums)
 
@@ -75,6 +81,7 @@ def test_healthy_session_does_not_heal(monkeypatch: pytest.MonkeyPatch) -> None:
         reports=[
             {
                 "session": "2026-09-04",
+                "generated_at": GEN,
                 "verdict": "healthy",
                 "summary": "0 · 0 · 12",
                 "prescriptions": [],
@@ -91,6 +98,7 @@ def test_healthy_session_does_not_heal(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_heals_then_rechecks_healthy(monkeypatch: pytest.MonkeyPatch) -> None:
     before = {
         "session": "2026-09-04",
+        "generated_at": GEN,
         "verdict": "critical",
         "summary": "1 · 0 · 11",
         "findings": [{"severity": "crit", "title": "Option chain snapshot", "detail": "3/25"}],
@@ -106,6 +114,7 @@ def test_heals_then_rechecks_healthy(monkeypatch: pytest.MonkeyPatch) -> None:
     }
     after = {
         "session": "2026-09-04",
+        "generated_at": GEN,
         "verdict": "healthy",
         "summary": "0 · 0 · 12",
         "findings": [],
@@ -128,6 +137,7 @@ def test_heals_then_rechecks_healthy(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_still_critical_after_heal_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     before = {
         "session": "2026-09-04",
+        "generated_at": GEN,
         "verdict": "critical",
         "summary": "",
         "findings": [],
@@ -135,6 +145,7 @@ def test_still_critical_after_heal_raises(monkeypatch: pytest.MonkeyPatch) -> No
     }
     after = {
         "session": "2026-09-04",
+        "generated_at": GEN,
         "verdict": "critical",
         "summary": "",
         "prescriptions": [],
@@ -142,6 +153,66 @@ def test_still_critical_after_heal_raises(monkeypatch: pytest.MonkeyPatch) -> No
     }
     with pytest.raises(RuntimeError, match="still critical.*Stock daily bars"):
         _run(monkeypatch, reports=[before, after], summaries=[{"pending": 0, "running": 0}])
+
+
+def test_both_doctor_reads_are_recomputed_and_stamped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A plain GET /market/doctor is the Plugin's cache — last night's session, or nothing."""
+    before = {
+        "session": "2026-09-04",
+        "generated_at": GEN,
+        "verdict": "critical",
+        "summary": "",
+        "findings": [],
+        "prescriptions": [{"action": "enqueue-slot", "slot": "eod-pipeline", "finding_ids": ["x"]}],
+    }
+    after = {
+        "session": "2026-09-04",
+        "generated_at": "2026-09-05T00:47:03+00:00",
+        "verdict": "healthy",
+        "summary": "",
+        "findings": [],
+        "prescriptions": [],
+    }
+    urls: list[str] = []
+    result, _ = _run(
+        monkeypatch,
+        reports=[before, after],
+        summaries=[{"pending": 0, "running": 0}],
+        doctor_urls=urls,
+    )
+    assert [u.split("/market/doctor", 1)[1] for u in urls] == [
+        "?probes=true&refresh=true",
+        "?probes=false&refresh=true",
+    ]
+    assert _md(result, "generated_at_before") == GEN
+    assert _md(result, "generated_at_after") == "2026-09-05T00:47:03+00:00"
+
+
+def test_healthy_run_records_when_its_report_was_computed(monkeypatch: pytest.MonkeyPatch) -> None:
+    urls: list[str] = []
+    result, _ = _run(
+        monkeypatch,
+        reports=[
+            {
+                "session": "2026-09-04",
+                "generated_at": GEN,
+                "verdict": "healthy",
+                "prescriptions": [],
+                "findings": [],
+            }
+        ],
+        summaries=[],
+        doctor_urls=urls,
+    )
+    assert len(urls) == 1 and urls[0].endswith("?probes=true&refresh=true")
+    assert _md(result, "generated_at_before") == GEN
+
+
+def test_an_empty_report_is_not_a_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cache-miss shape: no session, no verdict — must not materialize as "unknown"."""
+    empty = {"ok": True, "findings": [], "generated_at": None, "age_sec": None, "computing": True}
+    with pytest.raises(RuntimeError, match="no generated_at"):
+        _run(monkeypatch, reports=[empty], summaries=[])
 
 
 def test_schedule_and_whitelist_wired() -> None:
