@@ -18,6 +18,7 @@ from bifrost_research.orchestration.plugin_http import (
     enqueue_market_slots,
     env,
     get_json,
+    MARKET_DOCTOR_TIMEOUT_SEC,
     market_doctor_url,
     meta,
     post_json,
@@ -134,7 +135,9 @@ def husbandry_gate(context: AssetExecutionContext) -> MaterializeResult:
     market_generated_at = "unknown"
     flex_source = "unknown"
     try:
-        doctor = get_json(market_doctor_url(market_base, probes=False), timeout=180.0)
+        doctor = get_json(
+            market_doctor_url(market_base, probes=False), timeout=MARKET_DOCTOR_TIMEOUT_SEC
+        )
         market_session = str(doctor.get("session") or "unknown")
         market_generated_at = str(doctor.get("generated_at") or "unknown")
         market_verdict = str(doctor.get("verdict") or "unknown")

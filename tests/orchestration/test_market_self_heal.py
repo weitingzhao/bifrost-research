@@ -43,7 +43,7 @@ def _run(
     *,
     reports: list[dict[str, Any]],
     summaries: list[dict[str, Any]],
-    doctor_urls: list[str] | None = None,
+    doctor_calls: list[tuple[str, Any]] | None = None,
 ) -> tuple[Any, list[Any]]:
     posts: list[Any] = []
     gets = iter(reports)
@@ -51,8 +51,8 @@ def _run(
 
     def fake_get(url: str, **kw: Any) -> dict[str, Any]:
         if "/market/doctor" in url:
-            if doctor_urls is not None:
-                doctor_urls.append(url)
+            if doctor_calls is not None:
+                doctor_calls.append((url, kw.get("timeout")))
             return next(gets)
         return next(sums)
 
@@ -165,31 +165,37 @@ def test_both_doctor_reads_are_recomputed_and_stamped(monkeypatch: pytest.Monkey
         "findings": [],
         "prescriptions": [{"action": "enqueue-slot", "slot": "eod-pipeline", "finding_ids": ["x"]}],
     }
+    before["computed_ms"] = 21400
     after = {
         "session": "2026-09-04",
         "generated_at": "2026-09-05T00:47:03+00:00",
+        "computed_ms": 18900,
         "verdict": "healthy",
         "summary": "",
         "findings": [],
         "prescriptions": [],
     }
-    urls: list[str] = []
+    calls: list[tuple[str, Any]] = []
     result, _ = _run(
         monkeypatch,
         reports=[before, after],
         summaries=[{"pending": 0, "running": 0}],
-        doctor_urls=urls,
+        doctor_calls=calls,
     )
-    assert [u.split("/market/doctor", 1)[1] for u in urls] == [
+    assert [u.split("/market/doctor", 1)[1] for u, _ in calls] == [
         "?probes=true&refresh=true",
         "?probes=false&refresh=true",
     ]
+    # A fresh report under backfill load took 259s on 2026-09-28.
+    assert all(t == msh.MARKET_DOCTOR_TIMEOUT_SEC >= 600 for _, t in calls)
     assert _md(result, "generated_at_before") == GEN
     assert _md(result, "generated_at_after") == "2026-09-05T00:47:03+00:00"
+    assert _md(result, "doctor_ms_before") == 21400
+    assert _md(result, "doctor_ms_after") == 18900
 
 
 def test_healthy_run_records_when_its_report_was_computed(monkeypatch: pytest.MonkeyPatch) -> None:
-    urls: list[str] = []
+    calls: list[tuple[str, Any]] = []
     result, _ = _run(
         monkeypatch,
         reports=[
@@ -202,9 +208,9 @@ def test_healthy_run_records_when_its_report_was_computed(monkeypatch: pytest.Mo
             }
         ],
         summaries=[],
-        doctor_urls=urls,
+        doctor_calls=calls,
     )
-    assert len(urls) == 1 and urls[0].endswith("?probes=true&refresh=true")
+    assert len(calls) == 1 and calls[0][0].endswith("?probes=true&refresh=true")
     assert _md(result, "generated_at_before") == GEN
 
 

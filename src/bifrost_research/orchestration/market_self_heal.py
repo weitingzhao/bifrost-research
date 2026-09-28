@@ -28,6 +28,7 @@ from bifrost_research.orchestration.market_slot_schedules import GROUP
 from bifrost_research.orchestration.plugin_http import (
     env,
     get_json,
+    MARKET_DOCTOR_TIMEOUT_SEC,
     market_doctor_url,
     meta,
     post_json,
@@ -47,10 +48,13 @@ POLL_SEC = 30
 
 def read_doctor(context: AssetExecutionContext, base: str, *, probes: bool) -> dict[str, Any]:
     """A freshly computed doctor report, with when it was computed in the log."""
-    report = get_json(market_doctor_url(base, probes=probes), timeout=180.0)
+    report = get_json(market_doctor_url(base, probes=probes), timeout=MARKET_DOCTOR_TIMEOUT_SEC)
     generated_at = report.get("generated_at")
     context.log.info(
-        "doctor probes=%s generated_at=%s age_sec=%s", probes, generated_at, report.get("age_sec")
+        "doctor probes=%s generated_at=%s computed_ms=%s",
+        probes,
+        generated_at,
+        report.get("computed_ms"),
     )
     if not generated_at:
         # An empty report is a cache miss, not a verdict: judging it would
@@ -113,6 +117,7 @@ def market_self_heal(context: AssetExecutionContext) -> MaterializeResult:
                 {
                     "session": before.get("session"),
                     "generated_at_before": before.get("generated_at"),
+                    "doctor_ms_before": before.get("computed_ms"),
                     "verdict_before": before.get("verdict"),
                     "outcome": outcome(before, None),
                     "healed": False,
@@ -160,6 +165,8 @@ def market_self_heal(context: AssetExecutionContext) -> MaterializeResult:
             "session": before.get("session"),
             "generated_at_before": before.get("generated_at"),
             "generated_at_after": after.get("generated_at"),
+            "doctor_ms_before": before.get("computed_ms"),
+            "doctor_ms_after": after.get("computed_ms"),
             "verdict_before": before.get("verdict"),
             "verdict_after": after.get("verdict"),
             "outcome": result,

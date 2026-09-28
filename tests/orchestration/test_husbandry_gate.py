@@ -27,11 +27,13 @@ def _md(result: Any, key: str) -> Any:
     return getattr(v, "value", v)
 
 
-def _run(monkeypatch: pytest.MonkeyPatch, doctor: dict[str, Any]) -> tuple[Any, list[str]]:
-    urls: list[str] = []
+def _run(
+    monkeypatch: pytest.MonkeyPatch, doctor: dict[str, Any]
+) -> tuple[Any, list[tuple[str, Any]]]:
+    calls: list[tuple[str, Any]] = []
 
     def fake_get(url: str, **kw: Any) -> dict[str, Any]:
-        urls.append(url)
+        calls.append((url, kw.get("timeout")))
         if "/market/doctor" in url:
             return doctor
         if url.endswith("/flex/config/summary"):
@@ -39,12 +41,12 @@ def _run(monkeypatch: pytest.MonkeyPatch, doctor: dict[str, Any]) -> tuple[Any, 
         return _flex_ok()
 
     monkeypatch.setattr(pba, "get_json", fake_get)
-    return pba.husbandry_gate(build_asset_context()), urls
+    return pba.husbandry_gate(build_asset_context()), calls
 
 
 def test_the_doctor_read_is_recomputed_and_stamped(monkeypatch: pytest.MonkeyPatch) -> None:
     """A plain GET /market/doctor is the Plugin's cache — an earlier session, or nothing."""
-    result, urls = _run(
+    result, calls = _run(
         monkeypatch,
         {
             "session": "2026-09-04",
@@ -53,8 +55,9 @@ def test_the_doctor_read_is_recomputed_and_stamped(monkeypatch: pytest.MonkeyPat
             "eod_critical": {"verdict": "healthy", "detail": ""},
         },
     )
-    doctor = [u for u in urls if "/market/doctor" in u]
-    assert len(doctor) == 1 and doctor[0].endswith("/market/doctor?probes=false&refresh=true")
+    doctor = [(u, t) for u, t in calls if "/market/doctor" in u]
+    assert len(doctor) == 1 and doctor[0][0].endswith("/market/doctor?probes=false&refresh=true")
+    assert doctor[0][1] == pba.MARKET_DOCTOR_TIMEOUT_SEC
     assert _md(result, "market_session") == "2026-09-04"
     assert _md(result, "market_generated_at") == GEN
     assert _md(result, "gate") == "pass"

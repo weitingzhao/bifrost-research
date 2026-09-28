@@ -51,6 +51,12 @@ def get_json(url: str, *, timeout: float = 30.0) -> dict[str, Any]:
         return json.loads(raw) if raw else {}
 
 
+#: A fresh doctor report is many statements, each capped at 120s by the Plugin.
+#: It took 0.6–36.7s at 00:45 UTC before the cache (09-08..09-15), and 144–259s
+#: on 2026-09-28 under a 5k-job option_daily backfill — past the old 180s.
+MARKET_DOCTOR_TIMEOUT_SEC = 600.0
+
+
 def market_doctor_url(base: str, *, probes: bool) -> str:
     """``GET /market/doctor``, always freshly computed.
 
