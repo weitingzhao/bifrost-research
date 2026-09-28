@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from bifrost_research.sepa_fusion import (
     dbt_composite_score_0_1,
     fuse_sepa,
@@ -67,5 +69,6 @@ def test_shadow_report_weights_documented() -> None:
         "owner": "dbt mart_sepa_composite_score + sepa_projection",
         "pit": "asof_ts = last projection timestamp (daily UPSERT)",
     }
-    assert sum(report["weights"].values()) == 1.0
+    # Before 3.12 sum() adds floats naively: these weights give 0.9999999999999999 on 3.11.
+    assert sum(report["weights"].values()) == pytest.approx(1.0)
     assert report["owner"].startswith("dbt")
