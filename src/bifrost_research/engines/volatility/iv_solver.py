@@ -63,6 +63,30 @@ BRENT_MAXITER = 100
 SNAPSHOT_MAX_FETCH_LAG_DAYS = 3
 
 
+def as_traded_close(alias: str) -> str:
+    """SQL expression: ``alias`` (a ``stock_daily`` row) at the price it traded at.
+
+    The Plugin fetches bars ``adjusted=true``, adjusted for every split gone ex by
+    the fetch, while an option contract keeps the strike it was listed with. So a
+    bar dated before a split and fetched after it is on a different scale from
+    that day's chain: BKNG 2026-01-15 closed 207.72 in ``stock_daily`` against
+    strikes 3,600-6,660 (25-for-1, ex 2026-04-06), and no contract sat within the
+    ATM band on any of the 130 sessions before the ex-date. Multiplying back the
+    splits between the bar and its fetch restores the as-traded close; a bar
+    fetched before its split already is one, which is why the fetch bounds it.
+    """
+    return (
+        f"{alias}.close * coalesce(("
+        "SELECT exp(sum(ln(ca.ratio_to / ca.ratio_from)))"
+        " FROM raw_market.corporate_action ca"
+        f" WHERE ca.symbol = {alias}.symbol AND ca.action_type = 'split'"
+        " AND ca.ratio_from > 0 AND ca.ratio_to > 0 AND ca.ratio_from <> ca.ratio_to"
+        f" AND ca.ex_date > {alias}.bar_date"
+        f" AND ca.ex_date <= DATE(timezone('America/New_York', {alias}.fetched_at))"
+        "), 1)"
+    )
+
+
 def observed_near_session(alias: str) -> str:
     """SQL predicate: ``alias`` (a snapshot row) was fetched within the lag of its session."""
     return (
@@ -265,18 +289,23 @@ def solve_symbol_window(
     vendor = _vendor_keys(conn, sym, start_date, end_date)
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
+            WITH sp AS (
+              SELECT s.symbol, s.bar_date, {as_traded_close("s")} AS spot
+              FROM raw_market.stock_daily s
+              WHERE s.symbol = %s
+                AND s.bar_date BETWEEN %s AND %s
+                AND s.close IS NOT NULL AND s.close > 0
+            )
             SELECT o.option_ticker, o.underlying, o.bar_date, o.expiry, o.strike,
-                   o.option_right, o.open, o.high, o.low, o.close, s.close AS spot
+                   o.option_right, o.open, o.high, o.low, o.close, sp.spot
             FROM raw_market.option_daily o
-            JOIN raw_market.stock_daily s
-              ON s.symbol = o.underlying AND s.bar_date = o.bar_date
+            JOIN sp ON sp.symbol = o.underlying AND sp.bar_date = o.bar_date
             WHERE o.underlying = %s
               AND o.bar_date BETWEEN %s AND %s
-              AND s.close IS NOT NULL AND s.close > 0
             ORDER BY o.bar_date, o.option_ticker
             """,
-            (sym, start_date, end_date),
+            (sym, start_date, end_date, sym, start_date, end_date),
         )
         raw = cur.fetchall() or []
 

@@ -31,6 +31,7 @@ from statistics import median
 from typing import Any, Sequence
 
 from bifrost_research.engines.backtest.canonical_pnl import bs_price
+from bifrost_research.engines.volatility.iv_solver import as_traded_close
 from bifrost_research.repositories.earnings_filings import (
     SAME_PRINT_DAYS,
     distinct_prints,
@@ -57,9 +58,13 @@ def one_print(
     d: date,
     closes: dict[date, float],
     atm: dict[date, list[tuple[date, float, float]]],
+    traded: dict[date, float] | None = None,
 ) -> dict[str, Any]:
     """The row for a print filed on ``d``. ``atm`` maps a session to its
-    (expiry, atm_strike, atm_iv) rows."""
+    (expiry, atm_strike, atm_iv) rows. ``closes`` measure the move; ``traded``
+    (as-traded closes, defaulting to ``closes``) price the straddle, because the
+    ATM strike is the one listed that day and an adjusted close is not on its
+    scale before a split."""
     sessions = sorted(closes)
     before = next((s for s in reversed(sessions) if s < d), None)
     after = next((s for s in sessions if s > d), None)
@@ -91,7 +96,8 @@ def one_print(
         row["missing"] = "no ATM IV for an expiry covering the print"
         return row
     expiry, strike, iv = front[0]
-    priced = straddle_move(closes[before], strike, iv, (expiry - before).days)
+    spot = (traded or closes).get(before, closes[before])
+    priced = straddle_move(spot, strike, iv, (expiry - before).days)
     row["expiry"] = expiry.isoformat()
     if priced:
         row["priced"] = round(priced, 6)
@@ -138,13 +144,16 @@ def earnings_moves(conn: Any, symbol: str, *, limit: int = 8, as_of: date | None
     lo, hi = prints[0] - timedelta(days=10), prints[-1] + timedelta(days=10)
     with conn.cursor() as cur:
         cur.execute(
-            """
-            SELECT bar_date, close FROM raw_market.stock_daily
-            WHERE symbol = %s AND bar_date BETWEEN %s AND %s AND close > 0
+            f"""
+            SELECT s.bar_date, s.close, {as_traded_close("s")}
+            FROM raw_market.stock_daily s
+            WHERE s.symbol = %s AND s.bar_date BETWEEN %s AND %s AND s.close > 0
             """,
             (sym, lo, hi),
         )
-        closes = {d: float(c) for d, c in (cur.fetchall() or [])}
+        fetched = cur.fetchall() or []
+        closes = {d: float(c) for d, c, _t in fetched}
+        traded = {d: float(t) for d, _c, t in fetched}
         sessions = sorted(closes)
         wanted: set[date] = set()
         for d in prints:
@@ -162,7 +171,7 @@ def earnings_moves(conn: Any, symbol: str, *, limit: int = 8, as_of: date | None
         for td, exp, k, iv in cur.fetchall() or []:
             atm.setdefault(td, []).append((exp, float(k), float(iv)))
 
-    rows = [one_print(d, closes, atm) for d in prints]
+    rows = [one_print(d, closes, atm, traded) for d in prints]
     rows.reverse()  # newest first, as the panel reads
     return {**out, "prints": rows, **summarize(rows)}
 

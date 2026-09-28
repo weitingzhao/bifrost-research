@@ -61,6 +61,16 @@ def test_a_print_with_no_close_after_it_says_so() -> None:
     assert row["actual"] is None and row["missing"] == "no close after the print yet"
 
 
+def test_the_straddle_is_priced_on_the_as_traded_close() -> None:
+    # A 10-for-1 split between the session and its fetch: the adjusted close is a
+    # tenth of the one the listed ATM strike was struck against.
+    adjusted = {k: v / 10.0 for k, v in CLOSES.items()}
+    base = one_print(date(2031, 2, 25), CLOSES, ATM)
+    row = one_print(date(2031, 2, 25), adjusted, ATM, traded=CLOSES)
+    assert row["priced"] == base["priced"]
+    assert row["actual"] == base["actual"]
+
+
 def test_rich_counts_moves_under_what_was_priced() -> None:
     rows: list[dict[str, Any]] = [{"ratio": 0.5}, {"ratio": 1.4}, {"ratio": 0.9}, {"ratio": None}]
     assert summarize(rows) == {"n": 3, "median_ratio": 0.9, "rich": 2}
@@ -109,7 +119,7 @@ class _MovesCur:
                 (date(2031, 4, 22), head + "Zeta Motors released its results for the quarter ended March 31, 2031."),
             ]
         elif "raw_market.stock_daily" in flat:
-            self._rows = [(date(2031, 4, d), 100.0 + d) for d in (1, 3, 21, 23)]
+            self._rows = [(date(2031, 4, d), 100.0 + d, 100.0 + d) for d in (1, 3, 21, 23)]
         else:
             self._rows = []
 

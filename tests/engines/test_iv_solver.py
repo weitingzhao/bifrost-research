@@ -218,3 +218,14 @@ def test_projection_skips_and_clears_a_partial_session():
     assert out["degraded_rows_dropped"] == 7
     assert [r[2] for r in conn.upserts] == [D[6]]
     assert any(s.lstrip().startswith("DELETE") and "vendor_snapshot" in s for s in conn.sql)
+
+
+def test_as_traded_close_undoes_only_splits_between_bar_and_fetch():
+    from bifrost_research.engines.volatility.iv_solver import as_traded_close
+
+    sql = " ".join(as_traded_close("s").split())
+    assert sql.startswith("s.close * coalesce((")
+    assert "ca.ex_date > s.bar_date" in sql
+    assert "ca.ex_date <= DATE(timezone('America/New_York', s.fetched_at))" in sql
+    assert "ca.action_type = 'split'" in sql
+    assert sql.endswith("), 1)")

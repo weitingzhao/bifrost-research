@@ -13,11 +13,60 @@
 
   Fix: for incremental runs, union retained history (outside the lookback)
   with the fresh slice before window functions, so sequences stay contiguous.
+
+  Retained history is only right while the source still agrees with it. The
+  Plugin rewrites old bars — an adjusted re-pull after a split (APH 2026-09-03:
+  295 bars 160.08 → 82.07), a renamed company's history copied onto its new
+  symbol (SATS → ECHO), a name joining the universe — and none of that lands
+  inside the lookback. So a symbol whose bars between this table's first day and
+  the lookback no longer match the source by count and close sum is restated:
+  rebuilt from the source over that span instead of kept.
 */
 
 {% set lookback_days = 60 %}
 
-with fresh as (
+{% if is_incremental() %}
+    with bounds as (
+        select
+            min(prev.trade_date) as first_day,
+            max(prev.trade_date) - interval '{{ lookback_days }} days' as cutoff
+        from {{ this }} as prev
+    ),
+
+    source_history as (
+        select
+            d.symbol,
+            count(*) as n,
+            sum(d.close::numeric) as close_sum
+        from {{ source('market', 'stock_daily') }} as d
+        inner join {{ ref('dim_universe') }} as u on d.symbol = u.symbol
+        cross join bounds as b
+        where d.bar_date >= b.first_day and d.bar_date <= b.cutoff
+        group by d.symbol
+    ),
+
+    kept_history as (
+        select
+            prev.symbol,
+            count(*) as n,
+            sum(prev.close::numeric) as close_sum
+        from {{ this }} as prev
+        cross join bounds as b
+        where prev.trade_date <= b.cutoff
+        group by prev.symbol
+    ),
+
+    restated as (
+        select s.symbol
+        from source_history as s
+        left join kept_history as k on s.symbol = k.symbol
+        where k.n is distinct from s.n or k.close_sum is distinct from s.close_sum
+    ),
+
+    fresh as (
+{% else %}
+    with fresh as (
+{% endif %}
     select
         d.symbol,
         d.bar_date as trade_date,
@@ -25,32 +74,36 @@ with fresh as (
         d.high,
         d.low,
         d.close,
-        d.volume
+        d.volume,
+        true as from_fresh
     from {{ source('market', 'stock_daily') }} as d
     inner join {{ ref('dim_universe') }} as u on d.symbol = u.symbol
     {% if is_incremental() %}
-        where d.bar_date > (
-            select max(prev.trade_date) - interval '{{ lookback_days }} days'
-            from {{ this }} as prev
-        )
+        cross join bounds as b
+        left join restated as r on d.symbol = r.symbol
+        where
+            d.bar_date > b.cutoff
+            or (d.bar_date >= b.first_day and r.symbol is not null)
     {% endif %}
 ),
 
 {% if is_incremental() %}
     retained as (
         select
-            symbol,
-            trade_date,
-            open,
-            high,
-            low,
-            close,
-            volume
-        from {{ this }}
-        where trade_date <= (
-            select max(prev.trade_date) - interval '{{ lookback_days }} days'
-            from {{ this }} as prev
-        )
+            prev.symbol,
+            prev.trade_date,
+            prev.open,
+            prev.high,
+            prev.low,
+            prev.close,
+            prev.volume,
+            false as from_fresh
+        from {{ this }} as prev
+        cross join bounds as b
+        left join restated as r on prev.symbol = r.symbol
+        where
+            prev.trade_date <= b.cutoff
+            and r.symbol is null
     ),
 
     source_data as (
@@ -74,6 +127,7 @@ with_prev as (
         d.low,
         d.close,
         d.volume,
+        d.from_fresh,
 
         lag(d.close) over w as prev_close,
         lag(d.close, 10) over w as close_10d_ago,
@@ -171,7 +225,5 @@ select
     (close / nullif(close_252d_ago, 0) - 1) as return_252d
 from with_atr
 {% if is_incremental() %}
-    where trade_date > (
-        select max(prev.trade_date) - interval '{{ lookback_days }} days' from {{ this }} as prev
-    )
+    where from_fresh
 {% endif %}

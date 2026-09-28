@@ -29,6 +29,7 @@ from bifrost_research.engines.volatility.iv_solver import (
     DTE_MIN,
     _mid_from_ohlc,
     _right_lit,
+    as_traded_close,
     observed_near_session,
     solve_iv,
 )
@@ -321,21 +322,26 @@ def fetch_option_daily_brent_rows_for_date(
     ``exclude`` — the contracts the reconstructed table already prices."""
     skip = {str(t) for t in exclude}
     syms = [str(s).strip().upper() for s in (underlyings or []) if str(s).strip()]
+    scope = " AND s.symbol = ANY(%s)" if syms else ""
     sql = f"""
+        WITH sp AS (
+          SELECT s.symbol, s.bar_date, {as_traded_close("s")} AS spot
+          FROM raw_market.stock_daily s
+          WHERE s.bar_date = %s AND s.close > 0{scope}
+        )
         SELECT o.option_ticker, o.underlying, o.expiry, o.strike, o.option_right,
-               o.high, o.low, o.close, s.close AS spot
+               o.high, o.low, o.close, sp.spot
         FROM raw_market.option_daily o
-        JOIN raw_market.stock_daily s ON s.symbol = o.underlying AND s.bar_date = o.bar_date
+        JOIN sp ON sp.symbol = o.underlying AND sp.bar_date = o.bar_date
         WHERE o.bar_date = %s
-          AND s.close > 0
           AND (o.expiry - o.bar_date) BETWEEN {DTE_MIN} AND {DTE_MAX}
-          AND o.strike BETWEEN {1 - ATM_MAX_MONEYNESS} * s.close AND {1 + ATM_MAX_MONEYNESS} * s.close
+          AND o.strike BETWEEN {1 - ATM_MAX_MONEYNESS} * sp.spot AND {1 + ATM_MAX_MONEYNESS} * sp.spot
     """
     with conn.cursor() as cur:
         if syms:
-            cur.execute(sql + " AND o.underlying = ANY(%s)", (trade_date, syms))
+            cur.execute(sql, (trade_date, syms, trade_date))
         else:
-            cur.execute(sql, (trade_date,))
+            cur.execute(sql, (trade_date, trade_date))
         raw = cur.fetchall() if hasattr(cur, "fetchall") else []
     out: list[dict[str, Any]] = []
     for ticker, und, expiry, strike, right_raw, high, low, close, spot in raw or []:
