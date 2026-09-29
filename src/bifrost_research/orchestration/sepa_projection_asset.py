@@ -6,8 +6,13 @@ from dagster import AssetExecutionContext, AssetKey, MaterializeResult, asset
 
 from bifrost_research.orchestration.sepa_projection import run_sepa_projection
 
-# Soft upstream: husbandry_gate (market_eod + flex enqueues) must pass first.
+# Upstreams: husbandry_gate (market_eod + flex enqueues) must pass, and dbt must
+# have rebuilt the mart this asset projects. Without the mart edge the projection
+# only followed dbt by luck: on 2026-09-29 (run e1dd41e5) the mart landed at
+# 02:33:29 and the projection read it at 02:36:21, with nothing ordering the two.
+# dbt is one step, so this waits for the whole dbt build and is skipped if it fails.
 _GATE = AssetKey(["batch", "husbandry_gate"])
+_FEATURE_MART = AssetKey(["mart_sepa_feature_daily"])
 
 
 def _metadata(result: dict[str, Any]) -> dict[str, Any]:
@@ -25,12 +30,12 @@ def _metadata(result: dict[str, Any]) -> dict[str, Any]:
 
 @asset(
     key=AssetKey(["features", "sepa_projection"]),
-    deps=[_GATE],
+    deps=[_GATE, _FEATURE_MART],
     group_name="feature_store",
     description=(
         "Project dbt mart_sepa_feature_daily → features.stock_signal_sepa_daily. "
-        "Runs after husbandry_gate (Market EOD + Flex enqueue). Prefer materializing "
-        "dbt assets in the same job before this asset when manifest is present."
+        "Runs after husbandry_gate (Market EOD + Flex outcome) and after the dbt "
+        "build that rebuilds the mart; a failed dbt build skips it."
     ),
 )
 def sepa_projection(context: AssetExecutionContext) -> MaterializeResult:
