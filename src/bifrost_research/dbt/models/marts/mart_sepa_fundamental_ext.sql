@@ -51,7 +51,11 @@ latest_cashflow as (
         operating_cf,
         investing_cf,
         net_cash_flow,
-        coalesce(operating_cf + investing_cf, 0) as free_cash_flow
+        -- Operating cash flow less capex where the row has capex (the vendor's
+        -- v1 statements). Legacy rows carry no capex line, so they keep the
+        -- old stand-in, operating plus all investing cash flow (Owner B,
+        -- 2026-09-29).
+        coalesce(free_cash_flow, operating_cf + investing_cf, 0) as free_cash_flow
     from {{ ref('stg_cash_flow') }}
     where period_type = 'quarterly'
     order by symbol asc, period_date desc

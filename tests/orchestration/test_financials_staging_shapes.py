@@ -181,3 +181,10 @@ def test_every_documented_column_is_produced(model: str) -> None:
     documented = {column["name"] for column in entry.get("columns", [])}
     missing = documented - set(_targets(model))
     assert not missing, (model, sorted(missing))
+
+
+def test_ext_scores_true_free_cash_flow_before_the_legacy_stand_in() -> None:
+    """Owner B, 2026-09-29: capex-based FCF where the row has capex, else the
+    old operating-plus-investing stand-in, so a legacy row scores as before."""
+    ext = re.sub(r"\s+", " ", (DBT / "models" / "marts" / "mart_sepa_fundamental_ext.sql").read_text())
+    assert "coalesce(free_cash_flow, operating_cf + investing_cf, 0) as free_cash_flow" in ext
