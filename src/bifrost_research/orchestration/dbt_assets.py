@@ -27,7 +27,7 @@ _GATED_RESOURCE_TYPES = frozenset({"model", "seed", "snapshot"})
 # the asset that writes them. A model reading one waits for that engine as well as
 # the gate. On 2026-09-29 mart_sepa_tier_options was built at 02:31 from Friday's IV
 # percentile, PCR and GEX levels, because volatility and gex wrote Monday's rows at
-# 02:33-02:36. test_every_features_source_has_a_writer keeps this map complete.
+# 02:33-02:36. test_every_dbt_source_is_ingested_or_has_a_writer keeps it complete.
 ENGINE_WRITTEN_SOURCES: Mapping[tuple[str, str], AssetKey] = {
     ("features", "option_metric_iv_percentile_daily"): volatility.key,
     ("features", "option_metric_pcr_daily"): volatility.key,
