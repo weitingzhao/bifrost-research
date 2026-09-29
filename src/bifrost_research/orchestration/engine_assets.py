@@ -273,11 +273,15 @@ def option_pinned_contract(context: AssetExecutionContext) -> MaterializeResult:
 
 @asset(
     key=AssetKey(["engines", "signal_hit_fwd_fill"]),
-    deps=[AssetKey(["engines", "signal_hit"])],
+    # signal_hit runs on its own schedule and is not in research_trading_day, so
+    # without _MARKET this started at t=0: before the gate had judged the session
+    # whose bars it reads, and beside the gate's doctor call (2026-09-29 02:30:21).
+    deps=[AssetKey(["engines", "signal_hit"]), *_MARKET],
     group_name="python_analytics",
     description=(
         "Late-fill hit_5d / hit_20d on lens rows whose forward window has elapsed. "
-        "The nightly signal_hit run only walks 3 days, so those columns were always NULL."
+        "The nightly signal_hit run only walks 3 days, so those columns were always NULL. "
+        "Runs after husbandry_gate, like the other engines."
     ),
 )
 def signal_hit_fwd_fill(context: AssetExecutionContext) -> MaterializeResult:

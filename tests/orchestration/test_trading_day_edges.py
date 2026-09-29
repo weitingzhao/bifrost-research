@@ -1,21 +1,29 @@
-"""dbt waits for the husbandry gate, and sepa_projection waits for dbt (Owner 2026-09-29).
+"""research_trading_day orders its steps by edges, not by timing (Owner 2026-09-29).
 
-research_trading_day run e1dd41e5 (2026-09-29 02:30 UTC): ``bifrost_research_dbt_assets``
-logged STEP_START at 02:30:21 and ``batch__husbandry_gate`` at 02:30:37 — dbt ran
-beside the gate instead of after it. The default dagster-dbt translator gave the dbt
-assets only their dbt sources as upstreams, so a failing gate blocked the engines
-but not dbt (09-09, 09-10 and 09-17 each ran dbt to success after the gate failed).
+gate -> dbt: in run e1dd41e5 (2026-09-29 02:30 UTC) ``bifrost_research_dbt_assets``
+logged STEP_START at 02:30:21 and ``batch__husbandry_gate`` at 02:30:37. The default
+dagster-dbt translator gave the dbt assets only their dbt sources as upstreams, so a
+failing gate blocked the engines but not dbt (09-09, 09-10 and 09-17 each ran dbt to
+success after the gate failed).
 
-The same run had no edge from dbt to ``features/sepa_projection`` either: the mart it
-projects landed at 02:33:29 and the projection read it at 02:36:21 by luck.
+dbt -> sepa_projection: the mart it projects landed at 02:33:29 and the projection
+read it at 02:36:21 by luck.
 
-These tests run the real dbt assets in-process with a stub dbt CLI. They need the
-parsed manifest (``make dbt-parse``); skipped without it, like the Definitions
-smoke test.
+volatility / gex -> dbt: mart_sepa_tier_options was built at 02:31:15 from the
+previous session's IV percentile, PCR and GEX levels; the engines wrote that night's
+rows at 02:33-02:36.
+
+gate -> signal_hit_fwd_fill: its only upstream is outside the job, so it started at
+02:30:21, before the gate had judged the session whose bars it reads.
+
+These tests run the real dbt assets in-process with a stub dbt CLI and stub engine
+runners. They need the parsed manifest (``make dbt-parse``); skipped without it,
+like the Definitions smoke test.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -34,7 +42,9 @@ from dagster import (
 )
 from dagster_dbt import DbtCliResource
 
+from bifrost_research.orchestration import engine_assets as ea
 from bifrost_research.orchestration import plugin_batch_assets as pba
+from bifrost_research.orchestration import runners
 from bifrost_research.orchestration import sepa_projection_asset as spa
 from bifrost_research.orchestration.paths import (
     DBT_MANIFEST_PATH,
@@ -52,6 +62,9 @@ FEATURE_MART = AssetKey(["mart_sepa_feature_daily"])
 GATE_STEP = "batch__husbandry_gate"
 DBT_STEP = "bifrost_research_dbt_assets"
 SEPA_STEP = "features__sepa_projection"
+VOL_STEP = "engines__volatility"
+GEX_STEP = "engines__gex"
+FWD_FILL_STEP = "engines__signal_hit_fwd_fill"
 
 Events = list[tuple[DagsterEventType, str | None]]
 
@@ -123,6 +136,24 @@ def _stub_projection(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         "bifrost_research.db.conn.connect", lambda: SimpleNamespace(close=lambda: None)
     )
     return projected
+
+
+def _stub_engines(monkeypatch: pytest.MonkeyPatch, *, failing: str | None = None) -> list[str]:
+    """Replace the engine runners the assets call; returns the engines that ran."""
+    ran: list[str] = []
+
+    def runner(name: str) -> Any:
+        def run(**_kw: Any) -> dict[str, Any]:
+            ran.append(name)
+            if name == failing:
+                raise RuntimeError(f"{name} failed (stub)")
+            return {"engine": name}
+
+        return run
+
+    for name in ("volatility", "gex", "signal_hit_fwd_fill"):
+        monkeypatch.setattr(runners, f"run_{name}", runner(name))
+    return ran
 
 
 def _dbt_assets() -> list[Any]:
@@ -251,3 +282,67 @@ def test_sepa_projection_runs_after_dbt(monkeypatch: pytest.MonkeyPatch) -> None
     sepa_start = _index(events, DagsterEventType.STEP_START, SEPA_STEP)
     assert dbt_done < sepa_start
     assert projected == ["mart_sepa_feature_daily"]
+
+
+def test_every_dbt_source_is_ingested_or_has_a_writer() -> None:
+    """A dbt model reading a table some engine writes must wait for that engine.
+
+    market.* is written by the Plugin and judged by the gate; every other source
+    needs an entry in ENGINE_WRITTEN_SOURCES, or dbt races the engine again.
+    """
+    from bifrost_research.orchestration.dbt_assets import ENGINE_WRITTEN_SOURCES
+
+    manifest = json.loads(DBT_MANIFEST_PATH.read_text())
+    read = {d for n in manifest["nodes"].values() for d in n.get("depends_on", {}).get("nodes", [])}
+    sources = {
+        (s["source_name"], s["name"]) for uid, s in manifest["sources"].items() if uid in read
+    }
+    engine_written = {s for s in sources if s[0] != "market"}
+    assert engine_written, "no engine-written source found; the check is looking in the wrong place"
+    unmapped = sorted(engine_written - set(ENGINE_WRITTEN_SOURCES))
+    assert not unmapped, f"dbt reads these without waiting for their writer: {unmapped}"
+
+
+def test_dbt_waits_for_the_engines_it_reads() -> None:
+    from bifrost_research.orchestration.definitions import defs
+
+    parents = defs.resolve_asset_graph().get(AssetKey(["mart_sepa_tier_options"])).parent_keys
+    assert {GATE, ea.volatility.key, ea.gex.key} <= parents
+    assert {GATE_STEP, VOL_STEP, GEX_STEP} <= _trading_day_upstream(DBT_STEP)
+
+
+def test_failing_engine_means_dbt_never_starts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Better no rebuild than a SEPA options tier built from the previous session."""
+    _stub_gate(monkeypatch, eod_verdict="healthy")
+    ran = _stub_engines(monkeypatch, failing="volatility")
+    result, events = _run(ea.volatility, ea.gex, *_dbt_assets())
+
+    assert not result.success
+    assert (DagsterEventType.STEP_FAILURE, VOL_STEP) in events
+    assert (DagsterEventType.STEP_START, DBT_STEP) not in events
+    assert _DBT_CALLS == []
+    assert "volatility" in ran
+
+
+def test_dbt_runs_after_the_engines_it_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_gate(monkeypatch, eod_verdict="healthy")
+    _stub_engines(monkeypatch)
+    result, events = _run(ea.volatility, ea.gex, *_dbt_assets())
+
+    assert result.success
+    dbt_start = _index(events, DagsterEventType.STEP_START, DBT_STEP)
+    assert _index(events, DagsterEventType.STEP_SUCCESS, VOL_STEP) < dbt_start
+    assert _index(events, DagsterEventType.STEP_SUCCESS, GEX_STEP) < dbt_start
+    assert _DBT_CALLS == [["build"]]
+
+
+def test_signal_hit_fwd_fill_waits_for_the_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert GATE_STEP in _trading_day_upstream(FWD_FILL_STEP)
+
+    _stub_gate(monkeypatch, eod_verdict="critical")
+    ran = _stub_engines(monkeypatch)
+    result, events = _run(ea.signal_hit_fwd_fill)
+
+    assert not result.success
+    assert (DagsterEventType.STEP_START, FWD_FILL_STEP) not in events
+    assert ran == []

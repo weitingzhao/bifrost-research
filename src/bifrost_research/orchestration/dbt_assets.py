@@ -8,9 +8,10 @@ Note: avoid ``from __future__ import annotations`` — Dagster needs live contex
 
 from typing import Any, List, Mapping, Optional
 
-from dagster import AssetExecutionContext, AssetSpec
+from dagster import AssetExecutionContext, AssetKey, AssetSpec
 from dagster_dbt import DagsterDbtTranslator, DbtCliResource, DbtProject, dbt_assets
 
+from bifrost_research.orchestration.engine_assets import canonical_pnl, gex, volatility
 from bifrost_research.orchestration.paths import (
     DBT_MANIFEST_PATH,
     DBT_PROFILES_DIR,
@@ -22,16 +23,44 @@ from bifrost_research.orchestration.plugin_batch_assets import husbandry_gate
 # dbt nodes that become assets; sources are external keys, tests are checks.
 _GATED_RESOURCE_TYPES = frozenset({"model", "seed", "snapshot"})
 
+# dbt sources that a Research engine writes, keyed (source_name, table), mapped to
+# the asset that writes them. A model reading one waits for that engine as well as
+# the gate. On 2026-09-29 mart_sepa_tier_options was built at 02:31 from Friday's IV
+# percentile, PCR and GEX levels, because volatility and gex wrote Monday's rows at
+# 02:33-02:36. test_every_features_source_has_a_writer keeps this map complete.
+ENGINE_WRITTEN_SOURCES: Mapping[tuple[str, str], AssetKey] = {
+    ("features", "option_metric_iv_percentile_daily"): volatility.key,
+    ("features", "option_metric_pcr_daily"): volatility.key,
+    ("features", "option_metric_gex_levels_daily"): gex.key,
+    ("features", "stock_signal_canonical_pnl_daily"): canonical_pnl.key,
+}
+
+
+def _engine_writers(
+    manifest: Mapping[str, Any], resource_props: Mapping[str, Any]
+) -> set[AssetKey]:
+    sources = manifest.get("sources", {})
+    writers = set()
+    for node_id in resource_props.get("depends_on", {}).get("nodes", []):
+        source = sources.get(node_id)
+        if source is not None:
+            writer = ENGINE_WRITTEN_SOURCES.get((source["source_name"], source["name"]))
+            if writer is not None:
+                writers.add(writer)
+    return writers
+
 
 class GatedDbtTranslator(DagsterDbtTranslator):
-    """Every dbt asset waits for ``batch/husbandry_gate`` (Owner decision 2026-09-29).
+    """Every dbt asset waits for ``batch/husbandry_gate`` (Owner decision 2026-09-29),
+    and a model that reads an engine's table also waits for that engine.
 
     The default translator derives deps from the manifest alone, so the dbt
     assets' only upstreams were their dbt sources (``market.short_volume``, …)
     and nothing tied them to the gate. On 2026-09-29 dbt started 16s before the
     gate and ran beside it; a failing gate would have blocked the engines and
     left dbt building on an incomplete session. Adding the gate as a dep puts an
-    edge in the graph: when it fails, the dbt step never starts.
+    edge in the graph: when it fails, the dbt step never starts. The engine deps
+    work the same way, and since dbt is one step, the whole build waits for them.
     """
 
     def get_asset_spec(
@@ -41,12 +70,14 @@ class GatedDbtTranslator(DagsterDbtTranslator):
         project: Optional[DbtProject],
     ) -> AssetSpec:
         spec = super().get_asset_spec(manifest, unique_id, project)
-        resource_type = self.get_resource_props(manifest, unique_id).get("resource_type")
-        if resource_type not in _GATED_RESOURCE_TYPES:
+        resource_props = self.get_resource_props(manifest, unique_id)
+        if resource_props.get("resource_type") not in _GATED_RESOURCE_TYPES:
             return spec
-        if any(dep.asset_key == husbandry_gate.key for dep in spec.deps):
+        upstream = {husbandry_gate.key, *_engine_writers(manifest, resource_props)}
+        missing = upstream - {dep.asset_key for dep in spec.deps}
+        if not missing:
             return spec
-        return spec.merge_attributes(deps=[husbandry_gate.key])
+        return spec.merge_attributes(deps=sorted(missing, key=AssetKey.to_user_string))
 
 
 def build_dbt_resource() -> DbtCliResource:
