@@ -131,13 +131,17 @@ market_fundamentals_market = _make_slot_asset(
     "UTC 04:30 Tue–Sat — ratios + short data for the last session (whole market)",
 )
 # The ratios endpoint ignores ?date and answers with the vendor's latest, which
-# the vendor issues during the day after a session — after the 04:30 run asked.
-# Polling every three hours, weekends included, lands a session's ratios the
-# day they appear instead of two slot runs later.
+# the vendor issues the morning after a session — just after the 04:30 run asks.
+# Measured on one weekday session (2026-09-28, Mon): the 04:30 Tue run still got
+# 09-25; the 05:10 run got 09-28 with 4,680 rows; 4,685 at 11:10; 4,790 (stable)
+# by 14:10. So the bulk lands in (04:30, 05:10] UTC and a ~2% tail in
+# (11:10, 14:10]. One sample, so poll hourly 05:10–08:10 (three spare hours for
+# a late morning), keep 11:10 / 14:10 around the tail, and a 20:10 safety net.
+# Daily, weekends included: Friday's ratios land Saturday morning.
 market_ratios_market = _make_slot_asset(
     "market_ratios_market",
     ("ratios-market",),
-    "UTC 02:10 / 05:10 … 20:10 daily — ratios alone, whole market (vendor's latest)",
+    "UTC 05:10–08:10 hourly, 11:10, 14:10, 20:10 daily — ratios alone, whole market (vendor's latest)",
 )
 
 # Wave 3 — refresh + maintenance
@@ -253,7 +257,7 @@ _MARKET_SPECS: list[tuple[str, str, Any, str, str]] = [
         "market_ratios_market_schedule",
         "market_ratios_market_job",
         market_ratios_market,
-        "10 2-20/3 * * *",
+        "10 5-8,11,14,20 * * *",
         "ratios-market",
     ),
     (
