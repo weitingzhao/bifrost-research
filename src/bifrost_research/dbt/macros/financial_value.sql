@@ -21,3 +21,15 @@
         (data -> '{{ legacy_key }}' ->> 'value')::numeric
     )
 {%- endmacro %}
+
+{#-
+  A line only the v1 shape has (purchase_of_property_plant_and_equipment: the
+  legacy rows carry no capex line), with the same number guard as the v1
+  branch above. NULL on a legacy row.
+-#}
+{% macro financial_v1_value(v1_key) -%}
+    case
+        when jsonb_typeof(data -> '{{ v1_key }}') = 'number'
+            then (data ->> '{{ v1_key }}')::numeric
+    end
+{%- endmacro %}

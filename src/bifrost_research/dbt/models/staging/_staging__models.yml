@@ -49,8 +49,19 @@ models:
           - not_null
       - name: operating_cf
         description: "Operating cash flow"
+      - name: capex
+        description: >-
+          Capital expenditure, the vendor's v1 purchase_of_property_plant_and_equipment,
+          signed as a cash flow like investing_cf: negative when cash is spent, 0 where a
+          bank reports no line, positive in the rare period where it nets to an inflow.
+          NULL on legacy rows, which carry no capex line, and on v1 rows without it
+          (older bank filings).
       - name: free_cash_flow
-        description: "Free cash flow (OCF - CapEx)"
+        description: >-
+          Free cash flow: operating cash flow less capital spending, i.e. v1
+          net_cash_from_operating_activities + capex (capex is negative when spent).
+          NULL wherever capex is NULL, legacy rows included: investing cash flow is not
+          used as a stand-in.
 
   - name: stg_ratios
     description: "Financial ratios, full market by date, from raw_market.ratios (Financials & Ratios plan)"

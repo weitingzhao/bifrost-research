@@ -10,6 +10,10 @@ Some names exist in both shapes (``basic_earnings_per_share``,
 ``gross_profit``, ``cost_of_revenue``). Casting a legacy object to numeric
 raises, and one raising row fails the whole dbt build and every SEPA mart
 behind it, so a v1 read is only taken when the value is a number.
+
+Capex exists only in the v1 shape, so ``capex`` and ``free_cash_flow`` on
+stg_cash_flow are v1 reads with no legacy fallback: NULL on a legacy row rather
+than a figure invented from investing cash flow.
 """
 
 from __future__ import annotations
@@ -59,6 +63,8 @@ def _rendered(model: str) -> str:
     body = (DBT / "models" / "staging" / f"{model}.sql").read_text()
     template = jinja2.Environment().from_string(macro + "\n" + body)
     sql = template.render(config=lambda **_: "", source=lambda _s, table: f"raw_market.{table}")
+    # A model's line comments may name columns too; only the SQL counts.
+    sql = re.sub(r"--[^\n]*", "", sql)
     return re.sub(r"\s+", " ", sql)
 
 
@@ -70,6 +76,31 @@ def _column(sql: str, name: str) -> str:
     # The shortest coalesce ending right before this alias.
     expr = match.group(1)
     return expr[expr.rfind("coalesce( ") :]
+
+
+def _targets(model: str) -> dict[str, str]:
+    """Output column -> expression, in the final select's order."""
+    sql = _rendered(model)
+    match = re.search(r"\bselect (.*) from raw_market\.", sql)
+    assert match, model
+    body, targets, depth, start = match.group(1), [], 0, 0
+    for i, char in enumerate(body):
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        if char == "," and depth == 0:
+            targets.append(body[start:i].strip())
+            start = i + 1
+    targets.append(body[start:].strip())
+    out: dict[str, str] = {}
+    for target in targets:
+        aliased = re.fullmatch(r"(.+) as ([a-z0-9_]+)", target)
+        name, expr = (aliased.group(2), aliased.group(1)) if aliased else (target, target)
+        out[name] = expr
+    return out
+
+
+def _v1(name: str) -> str:
+    """The guarded v1 read, as financial_value / financial_v1_value render it."""
+    return f"case when jsonb_typeof(data -> '{name}') = 'number' then (data ->> '{name}')::numeric end"
 
 
 @pytest.mark.parametrize("model", sorted(READS))
@@ -106,3 +137,47 @@ def test_the_derived_figures_keep_their_legacy_arithmetic() -> None:
     noncurrent = _column(balance, "noncurrent_liabilities")
     assert "(data ->> 'total_liabilities')::numeric - (data ->> 'total_current_liabilities')::numeric" in noncurrent
     assert "(data -> 'noncurrent_liabilities' ->> 'value')::numeric" in noncurrent
+
+
+def test_capex_and_free_cash_flow_are_v1_reads_only() -> None:
+    targets = _targets("stg_cash_flow")
+    capex, ocf = "purchase_of_property_plant_and_equipment", "net_cash_from_operating_activities"
+    assert targets["capex"] == _v1(capex)
+    # The vendor signs capex as a cash flow, negative when cash is spent, so free
+    # cash flow adds it. A minus (or an abs()) would count spending as income.
+    assert targets["free_cash_flow"] == f"{_v1(ocf)} + {_v1(capex)}"
+    for column in ("capex", "free_cash_flow"):
+        # No legacy fallback: that shape has no capex line, and investing cash
+        # flow is not a stand-in for one.
+        assert "->> 'value'" not in targets[column], column
+        assert "investing" not in targets[column], column
+
+
+def test_cash_flow_columns_keep_their_order() -> None:
+    # The new columns come last, so every column before them keeps its place.
+    assert list(_targets("stg_cash_flow")) == [
+        "symbol",
+        "period_date",
+        "period_type",
+        "fiscal_year",
+        "fiscal_quarter",
+        "fetched_at",
+        "operating_cf",
+        "investing_cf",
+        "financing_cf",
+        "net_cash_flow",
+        "capex",
+        "free_cash_flow",
+    ]
+
+
+@pytest.mark.parametrize("model", sorted(READS))
+def test_every_documented_column_is_produced(model: str) -> None:
+    # _staging__models.yml documented stg_cash_flow.free_cash_flow for a long
+    # time before the model produced it.
+    yaml = pytest.importorskip("yaml")
+    doc = yaml.safe_load((DBT / "models" / "staging" / "_staging__models.yml").read_text())
+    (entry,) = [m for m in doc["models"] if m["name"] == model]
+    documented = {column["name"] for column in entry.get("columns", [])}
+    missing = documented - set(_targets(model))
+    assert not missing, (model, sorted(missing))
