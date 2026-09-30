@@ -38,7 +38,7 @@ from bifrost_research.engines.signal_hit.build import (
     hit_for,
 )
 from bifrost_research.lenses.registry import decay_lens_ids
-from bifrost_research.lenses.slope_tenor import SLOPE_PICK_ORDER, slope_window_sql
+from bifrost_research.lenses.slope_tenor import SLOPE_30D_WHERE_BINDS, slope_30d_sql
 from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_LENS_HIT_DAILY
 
 logger = logging.getLogger(__name__)
@@ -254,17 +254,12 @@ def _load_skew_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, flo
         cur.execute(
             f"""
             WITH today AS (
-                SELECT DISTINCT ON (symbol) symbol, atm_slope::float AS slope
-                FROM features.option_surface_fit_daily
-                WHERE trade_date = %s AND {slope_window_sql()}
-                ORDER BY symbol, {SLOPE_PICK_ORDER}
+                SELECT symbol, atm_slope::float AS slope
+                FROM {slope_30d_sql("trade_date = %s")} AS r
             ),
             hist AS (
-                SELECT DISTINCT ON (symbol, trade_date) symbol, trade_date, ABS(atm_slope)::float AS a
-                FROM features.option_surface_fit_daily
-                WHERE {slope_window_sql()}
-                  AND trade_date < %s AND trade_date >= %s::date - INTERVAL '252 days'
-                ORDER BY symbol, trade_date, {SLOPE_PICK_ORDER}
+                SELECT symbol, trade_date, ABS(atm_slope)::float AS a
+                FROM {slope_30d_sql("trade_date < %s AND trade_date >= %s::date - INTERVAL '252 days'")} AS r
             )
             SELECT t.symbol, t.slope,
                    100.0 * COUNT(h.a) FILTER (WHERE h.a < ABS(t.slope)) / NULLIF(COUNT(h.a), 0),
@@ -273,7 +268,10 @@ def _load_skew_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, flo
             LEFT JOIN hist h ON h.symbol = t.symbol
             GROUP BY t.symbol, t.slope
             """,
-            (trade_date, trade_date, trade_date),
+            (
+                *(trade_date,) * SLOPE_30D_WHERE_BINDS,
+                *(trade_date, trade_date) * SLOPE_30D_WHERE_BINDS,
+            ),
         )
         rows = cur.fetchall() or []
     out: list[tuple[str, str, float]] = []

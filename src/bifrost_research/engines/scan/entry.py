@@ -24,7 +24,7 @@ from bifrost_research.db.calendar import (
 )
 from bifrost_research.db.conn import connect
 from bifrost_research.lenses.pin_expiry import monthly_expiry_sql
-from bifrost_research.lenses.slope_tenor import SLOPE_PICK_ORDER, slope_window_sql
+from bifrost_research.lenses.slope_tenor import SLOPE_30D_WHERE_BINDS, slope_30d_sql
 from bifrost_research.db.upsert import batch_upsert
 from bifrost_research.engines.scan.build import build_scan_row
 from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_SCAN_DAILY
@@ -73,13 +73,8 @@ universe AS (
     WHERE symbol IS NOT NULL AND symbol <> ''
 ),
 surface_30d AS (
-    SELECT DISTINCT ON (symbol)
-        symbol,
-        atm_slope
-    FROM features.option_surface_fit_daily
-    WHERE trade_date = %s
-      AND {slope_window_sql()}
-    ORDER BY symbol, {SLOPE_PICK_ORDER}
+    SELECT symbol, atm_slope
+    FROM {slope_30d_sql("trade_date = %s")} AS r
 ),
 nearest_mp AS (
     SELECT DISTINCT ON (m.symbol)
@@ -181,8 +176,11 @@ def fetch_scan_source_rows(
     symbols_filter: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     watch = [s.strip().upper() for s in watchlist if s and s.strip()]
+    # Every placeholder after the watchlist is the session; surface_30d's
+    # binds SLOPE_30D_WHERE_BINDS of them (lenses/slope_tenor.py).
     params: list[Any] = [
         watch,
+        *[trade_date] * (SLOPE_30D_WHERE_BINDS - 1),
         trade_date,
         trade_date,
         trade_date,

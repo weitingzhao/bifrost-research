@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
-from bifrost_research.lenses.slope_tenor import SLOPE_PICK_ORDER, slope_window_sql
+from bifrost_research.lenses.slope_tenor import SLOPE_30D_COLUMNS, SLOPE_30D_WHERE_BINDS, slope_30d_sql
 from bifrost_research.repositories.listing_status import liveness_floor, retired_sql, split_retired
 
 
@@ -49,7 +49,7 @@ def _row_to_dict(row: Any, columns: Sequence[str]) -> dict[str, Any]:
         out = {col: row[col] for col in columns if col in row}
     else:
         out = {columns[i]: row[i] for i in range(min(len(columns), len(row)))}
-    for date_col in ("trade_date", "expiry"):
+    for date_col in ("trade_date", "expiry", "short_expiry", "long_expiry"):
         v = out.get(date_col)
         if isinstance(v, datetime):
             out[date_col] = v.date().isoformat()
@@ -165,46 +165,46 @@ def get_residuals(
     return [_row_to_dict(r, _RESIDUAL_COLUMNS) for r in rows]
 
 
-# The ~30-day read, as every skew reader takes it (lenses/slope_tenor.py).
-_SKEW_WINDOW = slope_window_sql()
+# The ~30-day read, as every skew reader takes it (lenses/slope_tenor.py). Its
+# ``where`` binds SLOPE_30D_WHERE_BINDS times.
+_SKEW_COLUMNS = SLOPE_30D_COLUMNS
+_SVI_PARAMS = ("svi_a", "svi_b", "svi_rho", "svi_m", "svi_sigma")
 
 
 def get_skew_extremes(conn: Any, *, as_of: date, limit: int = 20) -> list[dict[str, Any]]:
-    """Top-N symbols by |atm_slope| on the ``as_of`` session only.
+    """Top-N symbols by |atm_slope| of the ~30-day reading on the ``as_of`` session only.
 
-    A name whose freshest ~30-day fit predates ``as_of`` is not ranked here —
-    see :func:`get_skew_left_out`.
+    Rows carry ``basis`` (``interpolated`` / ``window``) and, when interpolated,
+    the two fits it came from (``short_*`` / ``long_*``); ``dte`` is then 30 and
+    there is no single smile, so the SVI parameters are absent. A name whose
+    freshest reading predates ``as_of`` is not ranked here — see
+    :func:`get_skew_left_out`.
     """
     lim = max(1, min(int(limit), 200))
     sql = f"""
-        WITH session_fits AS (
-            SELECT DISTINCT ON (symbol) {_cols(_FIT_COLUMNS)}
-            FROM features.option_surface_fit_daily
-            WHERE trade_date = %s
-              AND {_SKEW_WINDOW}
-            ORDER BY symbol, {SLOPE_PICK_ORDER}
-        )
-        SELECT * FROM session_fits
+        SELECT {", ".join(_SKEW_COLUMNS)}
+        FROM {slope_30d_sql("trade_date = %s")} AS r
         ORDER BY ABS(atm_slope) DESC, symbol
         LIMIT %s
     """
     with conn.cursor() as cur:
-        cur.execute(sql, (as_of, lim))
+        cur.execute(sql, (*(as_of,) * SLOPE_30D_WHERE_BINDS, lim))
         rows = cur.fetchall() or []
-    return [_row_to_dict(r, _FIT_COLUMNS) for r in rows]
+    out = [_row_to_dict(r, _SKEW_COLUMNS) for r in rows]
+    # Rows carried the fit's SVI parameters before 0.152.0; the keys stay (null)
+    # for a release so a reader built against them does not lose a field at once.
+    for d in out:
+        for k in _SVI_PARAMS:
+            d.setdefault(k, None)
+    return out
 
 
 def count_skew_names(conn: Any, *, as_of: date) -> int:
-    """How many names have a ~30-day fit on the ``as_of`` session."""
+    """How many names have a ~30-day reading on the ``as_of`` session."""
     with conn.cursor() as cur:
         cur.execute(
-            f"""
-            SELECT COUNT(DISTINCT symbol)
-            FROM features.option_surface_fit_daily
-            WHERE trade_date = %s
-              AND {_SKEW_WINDOW}
-            """,
-            (as_of,),
+            f"SELECT COUNT(*) FROM {slope_30d_sql('trade_date = %s')} AS r",
+            (as_of,) * SLOPE_30D_WHERE_BINDS,
         )
         row = cur.fetchone()
     if row is None:
@@ -214,18 +214,17 @@ def count_skew_names(conn: Any, *, as_of: date) -> int:
 
 
 def get_skew_left_out(conn: Any, *, as_of: date) -> list[dict[str, Any]]:
-    """Names with a ~30-day fit before ``as_of`` but none on it, newest first.
+    """Names with a ~30-day reading before ``as_of`` but none on it, newest first.
 
     ``reason``: ``retired`` — the listing no longer trades (see
     ``repositories/listing_status.py``); ``not_fit`` — no surface fit for the name
-    that session at all; ``no_30d_fit`` — fit that session, but no expiry in
-    20–45 DTE fit with a slope.
+    that session at all; ``no_30d_fit`` — fit that session, but neither fits
+    either side of 30 DTE nor one 20–45 DTE out (lenses/slope_tenor.py).
     """
     sql = f"""
         WITH last_reading AS (
             SELECT DISTINCT ON (symbol) symbol, trade_date
-            FROM features.option_surface_fit_daily
-            WHERE {_SKEW_WINDOW}
+            FROM {slope_30d_sql()} AS r
             ORDER BY symbol ASC, trade_date DESC
         )
         SELECT

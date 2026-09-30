@@ -214,15 +214,19 @@ class _ScriptedConn:
 
 
 def test_skew_extremes_ranks_one_session_only() -> None:
+    from bifrost_research.lenses.slope_tenor import SLOPE_30D_WHERE_BINDS
     from bifrost_research.repositories import vol_surface as repo
 
     conn = _ScriptedConn([("TSLA", date(2026, 8, 25), date(2026, 9, 26), 32)])
     rows = repo.get_skew_extremes(conn, as_of=date(2026, 8, 25), limit=500)
     assert rows[0]["symbol"] == "TSLA" and rows[0]["trade_date"] == "2026-08-25"
+    # The SVI parameters stay as null keys for one release (no single smile).
+    assert "svi_a" in rows[0] and rows[0]["svi_a"] is None
     sql, params = conn.calls[0]
     assert "trade_date = %s" in sql
-    assert "dte BETWEEN 20 AND 45" in sql
-    assert params == (date(2026, 8, 25), 200)
+    assert "dte BETWEEN 20 AND 45" in sql and "'interpolated'" in sql
+    # The ~30-day reading repeats its where (lenses/slope_tenor.py).
+    assert params == (date(2026, 8, 25),) * SLOPE_30D_WHERE_BINDS + (200,)
 
 
 def test_skew_left_out_names_the_reason() -> None:
