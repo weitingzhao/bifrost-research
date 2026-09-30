@@ -1150,6 +1150,41 @@ def _ensure_residual_right_in_key(cur: _Cursor) -> None:
     )
 
 
+def _ensure_residual_ticker_in_key(cur: _Cursor) -> None:
+    """The contract, not strike and right, keys a residual row (0.153.2).
+
+    ``(strike, option_right)`` does not name one contract on SPX: its monthly
+    expiries list the AM-settled SPX and the PM-settled SPXW at the same strike,
+    so one overwrote the other — 38,881 rows over 19 SPX sessions between
+    2026-08-05 and 09-29 once 0.153.0 had separated calls from puts. Stored rows
+    carry no ticker and SPX's cannot be told apart, so the table is emptied and
+    the vol-surface backfill writes it again. Idempotent: nothing happens once
+    ``option_ticker`` exists.
+    """
+    cur.execute(
+        """
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'features'
+              AND table_name = 'option_surface_residual_daily'
+              AND column_name = 'option_ticker'
+          ) THEN
+            TRUNCATE features.option_surface_residual_daily;
+            ALTER TABLE features.option_surface_residual_daily
+              ADD COLUMN option_ticker text NOT NULL;
+            ALTER TABLE features.option_surface_residual_daily
+              DROP CONSTRAINT option_surface_residual_daily_pkey;
+            ALTER TABLE features.option_surface_residual_daily
+              ADD CONSTRAINT option_surface_residual_daily_pkey
+              PRIMARY KEY (symbol, trade_date, expiry, option_ticker);
+          END IF;
+        END $$;
+        """
+    )
+
+
 def _create_research_tables(cur: _Cursor) -> None:
   # --- Momentum Radar ---
     cur.execute(
@@ -1946,11 +1981,13 @@ def _create_research_tables(cur: _Cursor) -> None:
             residual_z    double precision,
             computed_at   timestamptz NOT NULL DEFAULT now(),
             option_right  char(1)     NOT NULL CHECK (option_right IN ('C', 'P')),
-            PRIMARY KEY (symbol, trade_date, expiry, strike, option_right)
+            option_ticker text        NOT NULL,
+            PRIMARY KEY (symbol, trade_date, expiry, option_ticker)
         )
         """
     )
     _ensure_residual_right_in_key(cur)
+    _ensure_residual_ticker_in_key(cur)
     cur.execute(
         f"""
         CREATE INDEX IF NOT EXISTS option_surface_residual_z_abs

@@ -41,8 +41,10 @@ _RESIDUAL_COLUMNS: tuple[str, ...] = (
     "residual",
     "residual_z",
     "computed_at",
-    # One row per contract from 0.153.0; a strike carries a call and a put.
+    # One row per contract: a call and a put at a strike from 0.153.0, and from
+    # 0.153.2 SPX and SPXW at the same strike on a monthly expiry.
     "option_right",
+    "option_ticker",
 )
 
 
@@ -159,7 +161,7 @@ def get_residuals(
         WHERE symbol = %s
           AND trade_date = %s
           AND expiry = %s
-        ORDER BY strike, option_right
+        ORDER BY strike, option_right, option_ticker
     """
     with conn.cursor() as cur:
         cur.execute(sql, (sym, td, expiry))

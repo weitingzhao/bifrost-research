@@ -39,6 +39,9 @@ class IvPoint:
     strike: float
     iv: float
     option_right: str = ""
+    #: The contract itself. Strike and right do not name one: on SPX's monthly
+    #: expiries the AM-settled SPX and the PM-settled SPXW list the same strike.
+    option_ticker: str = ""
 
 
 def _valid_iv(v: Any) -> float | None:
@@ -359,12 +362,12 @@ def fetch_iv_points_for_date(
     symbol: str,
     trade_date: date,
 ) -> tuple[float | None, dict[date, list[IvPoint]]]:
-    cols = ("expiry", "strike", "option_right", "iv", "underlying_price")
+    cols = ("expiry", "strike", "option_right", "iv", "underlying_price", "option_ticker")
     with conn.cursor() as cur:
         cur.execute(
             f"""
             SELECT DISTINCT ON (v.option_ticker)
-              oc.expiry, oc.strike, oc.option_right, v.iv, v.underlying_price
+              oc.expiry, oc.strike, oc.option_right, v.iv, v.underlying_price, v.option_ticker
             FROM raw_market.v_option_snapshot_with_stock v
             INNER JOIN raw_market.option_contract oc ON oc.option_ticker = v.option_ticker
             WHERE v.underlying = %s
@@ -397,7 +400,12 @@ def fetch_iv_points_for_date(
             except (TypeError, ValueError):
                 pass
         by_exp.setdefault(exp, []).append(
-            IvPoint(strike=strike, iv=iv, option_right=str(d.get("option_right") or ""))
+            IvPoint(
+                strike=strike,
+                iv=iv,
+                option_right=str(d.get("option_right") or ""),
+                option_ticker=str(d.get("option_ticker") or ""),
+            )
         )
     spot = float(median(spots)) if spots else None
     # Fallback: view join yields no spot (e.g. index options like SPX have no

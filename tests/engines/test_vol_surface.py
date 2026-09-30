@@ -157,16 +157,17 @@ def _points(spot: float = 100.0):
     for strike in (80.0, 85.0, 90.0, 95.0, 100.0, 105.0, 110.0, 115.0, 120.0):
         k = math.log(strike / spot)
         iv = 0.30 - 0.2 * k + 0.4 * k * k
-        pts.append(IvPoint(strike=strike, iv=iv, option_right="C"))
-        pts.append(IvPoint(strike=strike, iv=iv + 0.01, option_right="P"))
+        cents = f"{int(strike * 1000):08d}"
+        pts.append(IvPoint(strike=strike, iv=iv, option_right="C", option_ticker=f"O:XYZ261030C{cents}"))
+        pts.append(IvPoint(strike=strike, iv=iv + 0.01, option_right="P", option_ticker=f"O:XYZ261030P{cents}"))
     return pts
 
 
 def test_prepare_smile_keeps_each_contracts_right_in_k_order():
     from bifrost_research.engines.vol_surface.entry import _prepare_smile
 
-    ks, ivs, strikes, rights = _prepare_smile(_points(), 100.0)
-    assert len(ks) == len(rights) == 18
+    ks, ivs, strikes, rights, tickers = _prepare_smile(_points(), 100.0)
+    assert len(ks) == len(rights) == len(tickers) == len(set(tickers)) == 18
     assert ks == sorted(ks)
     assert sorted(set(rights)) == ["C", "P"]
     # A call and a put at each strike: both survive, each with its own right.
@@ -235,13 +236,41 @@ def test_a_names_session_is_replaced_and_residuals_are_keyed_by_contract(monkeyp
 
     residual = next(w for w in writes if w[0] == "features.option_surface_residual_daily")
     _table, cols, rows, kw = residual
-    assert kw["conflict_keys"] == ("symbol", "trade_date", "expiry", "strike", "option_right")
+    assert kw["conflict_keys"] == ("symbol", "trade_date", "expiry", "option_ticker")
     assert all(w[3]["auto_commit"] is False for w in writes)
     right = cols.index("option_right")
     assert len(rows) == 18, "a call and a put per strike, not one row per strike"
     assert sorted({r[right] for r in rows}) == ["C", "P"]
     keys = {(r[cols.index("strike")], r[right]) for r in rows}
     assert len(keys) == len(rows)
+    assert len({r[cols.index("option_ticker")] for r in rows}) == len(rows)
+
+
+def test_spx_and_spxw_at_one_strike_are_two_residual_rows(monkeypatch):
+    """SPX's monthly expiries list SPX (AM) and SPXW (PM) at the same strike and right."""
+    from datetime import date
+
+    from bifrost_research.engines.vol_surface import entry
+    from bifrost_research.engines.volatility.surface import IvPoint
+
+    td, expiry = date(2026, 9, 29), date(2026, 10, 16)
+    pts = []
+    for strike in (5400.0, 5500.0, 5600.0, 5700.0, 5800.0, 5900.0, 6000.0):
+        k = math.log(strike / 5700.0)
+        iv = 0.18 - 0.3 * k + 0.5 * k * k
+        cents = f"{int(strike * 1000):08d}"
+        for root, bump in (("SPX", 0.0), ("SPXW", 0.002)):
+            pts.append(IvPoint(strike=strike, iv=iv + bump, option_right="C", option_ticker=f"O:{root}261016C{cents}"))
+    monkeypatch.setattr(entry, "fetch_iv_points_for_date", lambda _c, _s, _d: (5700.0, {expiry: pts}))
+    writes = []
+    monkeypatch.setattr(entry, "batch_upsert", lambda conn, table, cols, rows, **kw: writes.append((table, cols, rows)) or len(rows))
+    entry.compute_vol_surface_for_symbol(_Conn(), symbol="SPX", trade_date=td)
+    _t, cols, rows = next(w for w in writes if w[0] == "features.option_surface_residual_daily")
+    assert len(rows) == 14, "seven strikes, two contracts each"
+    by_strike = {}
+    for r in rows:
+        by_strike.setdefault(r[cols.index("strike")], set()).add(r[cols.index("option_ticker")][:6])
+    assert all(v == {"O:SPX2", "O:SPXW"} for v in by_strike.values())
 
 
 def test_the_iv_point_fetch_leaves_adjusted_contracts_out():

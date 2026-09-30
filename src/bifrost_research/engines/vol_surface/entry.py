@@ -69,6 +69,7 @@ _RESIDUAL_COLS = (
     "residual_z",
     "computed_at",
     "option_right",
+    "option_ticker",
 )
 
 
@@ -83,14 +84,14 @@ def _dte(trade_date: date, expiry: date) -> int:
 def _prepare_smile(
     points: Sequence[IvPoint],
     spot: float,
-) -> tuple[list[float], list[float], list[float], list[str]] | None:
-    """Return (log_moneyness, iv_market, strikes, rights) filtered/ordered by k.
+) -> tuple[list[float], list[float], list[float], list[str], list[str]] | None:
+    """Return (log_moneyness, iv_market, strikes, rights, tickers) filtered/ordered by k.
 
     The sort is stable and ``fit_svi_smile`` sorts the same sequence the same
     way, so a call and a put at one strike keep their order through the fit and
     each residual lands on its own contract.
     """
-    triples: list[tuple[float, float, float, str]] = []
+    triples: list[tuple[float, float, float, str, str]] = []
     for p in points:
         if p.strike <= 0 or spot <= 0:
             continue
@@ -106,9 +107,9 @@ def _prepare_smile(
         if not math.isfinite(k):
             continue
         right = str(p.option_right or "").strip().upper()[:1]
-        if right not in ("C", "P"):
+        if right not in ("C", "P") or not p.option_ticker:
             continue
-        triples.append((k, iv, p.strike, right))
+        triples.append((k, iv, p.strike, right, p.option_ticker))
     if len(triples) < _MIN_POINTS:
         return None
     triples.sort(key=lambda t: t[0])
@@ -116,7 +117,8 @@ def _prepare_smile(
     ivs = [t[1] for t in triples]
     strikes = [t[2] for t in triples]
     rights = [t[3] for t in triples]
-    return ks, ivs, strikes, rights
+    tickers = [t[4] for t in triples]
+    return ks, ivs, strikes, rights, tickers
 
 
 def compute_vol_surface_for_symbol(
@@ -153,7 +155,7 @@ def compute_vol_surface_for_symbol(
             skipped += 1
             logger.info("vol-surface skip %s %s: n_points<%d", sym, expiry, _MIN_POINTS)
             continue
-        ks, ivs, strikes, rights = prepared
+        ks, ivs, strikes, rights, tickers = prepared
         T = max(dte, 1) / 365.0
         result = fit_svi_smile(ks, ivs, T)
         if result is None:
@@ -181,8 +183,8 @@ def compute_vol_surface_for_symbol(
             )
         )
         rmse_safe = result.rmse if result.rmse and result.rmse > 0 else 1e-6
-        for k, iv_mkt, iv_fit, strike, right in zip(
-            result.log_moneyness, result.iv_market, result.iv_fitted, strikes, rights
+        for k, iv_mkt, iv_fit, strike, right, ticker in zip(
+            result.log_moneyness, result.iv_market, result.iv_fitted, strikes, rights, tickers
         ):
             residual = iv_mkt - iv_fit
             residual_rows.append(
@@ -198,6 +200,7 @@ def compute_vol_surface_for_symbol(
                     round(residual / rmse_safe, 8),
                     now,
                     right,
+                    ticker,
                 )
             )
         fits.append(result)
@@ -239,9 +242,11 @@ def compute_vol_surface_for_symbol(
             "features.option_surface_residual_daily",
             _RESIDUAL_COLS,
             residual_rows,
-            conflict_keys=("symbol", "trade_date", "expiry", "strike", "option_right"),
+            conflict_keys=("symbol", "trade_date", "expiry", "option_ticker"),
             auto_commit=False,
             update_cols=(
+                "strike",
+                "option_right",
                 "log_moneyness",
                 "iv_market",
                 "iv_fitted",
