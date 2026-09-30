@@ -1,6 +1,6 @@
 [project]
 name = "bifrost-research"
-version = "0.152.0"
+version = "0.153.0"
 description = "Bifrost Research Engine — OLAP analytics, engines, and Research API"
 requires-python = ">=3.11"
 dependencies = [
@@ -12,6 +12,11 @@ dependencies = [
     "psycopg2-binary>=2.9.9",
     "httpx>=0.27.0",
     "mcp>=1.19.0,<2",
+    # The SVI fitter prefers scipy's least_squares and falls back to a pure-Python
+    # Nelder-Mead. No image had scipy until 0.153.0, so every fit took the
+    # fallback: on 2026-09-30, 13% of 5,370 refits ended at twice the best
+    # least-squares objective or worse (median RMSE 1.99 vs 1.74 vol points).
+    "scipy>=1.13,<2",
 ]
 
 [project.optional-dependencies]

@@ -1116,6 +1116,40 @@ def _ensure_canonical_pnl_features_pk(cur: _Cursor) -> None:
     )
 
 
+def _ensure_residual_right_in_key(cur: _Cursor) -> None:
+    """One residual row per contract, not per strike (0.153.0).
+
+    The key was ``(symbol, trade_date, expiry, strike)`` while a fit takes a call
+    and a put at most strikes, and the writer upserts row by row, so the second
+    of each pair overwrote the first: NVDA's 2026-09-29 fits held 93 points and
+    49 residual rows. The rows already stored cannot be told call from put, so
+    they are dropped here and the vol-surface backfill writes them again.
+    Idempotent: nothing happens once ``option_right`` exists.
+    """
+    cur.execute(
+        """
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'features'
+              AND table_name = 'option_surface_residual_daily'
+              AND column_name = 'option_right'
+          ) THEN
+            TRUNCATE features.option_surface_residual_daily;
+            ALTER TABLE features.option_surface_residual_daily
+              ADD COLUMN option_right char(1) NOT NULL CHECK (option_right IN ('C', 'P'));
+            ALTER TABLE features.option_surface_residual_daily
+              DROP CONSTRAINT option_surface_residual_daily_pkey;
+            ALTER TABLE features.option_surface_residual_daily
+              ADD CONSTRAINT option_surface_residual_daily_pkey
+              PRIMARY KEY (symbol, trade_date, expiry, strike, option_right);
+          END IF;
+        END $$;
+        """
+    )
+
+
 def _create_research_tables(cur: _Cursor) -> None:
   # --- Momentum Radar ---
     cur.execute(
@@ -1911,10 +1945,12 @@ def _create_research_tables(cur: _Cursor) -> None:
             residual      double precision,
             residual_z    double precision,
             computed_at   timestamptz NOT NULL DEFAULT now(),
-            PRIMARY KEY (symbol, trade_date, expiry, strike)
+            option_right  char(1)     NOT NULL CHECK (option_right IN ('C', 'P')),
+            PRIMARY KEY (symbol, trade_date, expiry, strike, option_right)
         )
         """
     )
+    _ensure_residual_right_in_key(cur)
     cur.execute(
         f"""
         CREATE INDEX IF NOT EXISTS option_surface_residual_z_abs

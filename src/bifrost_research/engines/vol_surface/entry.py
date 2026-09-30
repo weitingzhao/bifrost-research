@@ -68,6 +68,7 @@ _RESIDUAL_COLS = (
     "residual",
     "residual_z",
     "computed_at",
+    "option_right",
 )
 
 
@@ -82,9 +83,14 @@ def _dte(trade_date: date, expiry: date) -> int:
 def _prepare_smile(
     points: Sequence[IvPoint],
     spot: float,
-) -> tuple[list[float], list[float], list[float]] | None:
-    """Return (log_moneyness, iv_market, strikes) filtered/ordered by k."""
-    triples: list[tuple[float, float, float]] = []
+) -> tuple[list[float], list[float], list[float], list[str]] | None:
+    """Return (log_moneyness, iv_market, strikes, rights) filtered/ordered by k.
+
+    The sort is stable and ``fit_svi_smile`` sorts the same sequence the same
+    way, so a call and a put at one strike keep their order through the fit and
+    each residual lands on its own contract.
+    """
+    triples: list[tuple[float, float, float, str]] = []
     for p in points:
         if p.strike <= 0 or spot <= 0:
             continue
@@ -99,14 +105,18 @@ def _prepare_smile(
         k = moneyness(p.strike, spot)
         if not math.isfinite(k):
             continue
-        triples.append((k, iv, p.strike))
+        right = str(p.option_right or "").strip().upper()[:1]
+        if right not in ("C", "P"):
+            continue
+        triples.append((k, iv, p.strike, right))
     if len(triples) < _MIN_POINTS:
         return None
     triples.sort(key=lambda t: t[0])
     ks = [t[0] for t in triples]
     ivs = [t[1] for t in triples]
     strikes = [t[2] for t in triples]
-    return ks, ivs, strikes
+    rights = [t[3] for t in triples]
+    return ks, ivs, strikes, rights
 
 
 def compute_vol_surface_for_symbol(
@@ -143,7 +153,7 @@ def compute_vol_surface_for_symbol(
             skipped += 1
             logger.info("vol-surface skip %s %s: n_points<%d", sym, expiry, _MIN_POINTS)
             continue
-        ks, ivs, strikes = prepared
+        ks, ivs, strikes, rights = prepared
         T = max(dte, 1) / 365.0
         result = fit_svi_smile(ks, ivs, T)
         if result is None:
@@ -171,8 +181,8 @@ def compute_vol_surface_for_symbol(
             )
         )
         rmse_safe = result.rmse if result.rmse and result.rmse > 0 else 1e-6
-        for k, iv_mkt, iv_fit, strike in zip(
-            result.log_moneyness, result.iv_market, result.iv_fitted, strikes
+        for k, iv_mkt, iv_fit, strike, right in zip(
+            result.log_moneyness, result.iv_market, result.iv_fitted, strikes, rights
         ):
             residual = iv_mkt - iv_fit
             residual_rows.append(
@@ -187,9 +197,18 @@ def compute_vol_surface_for_symbol(
                     round(residual, 8),
                     round(residual / rmse_safe, 8),
                     now,
+                    right,
                 )
             )
         fits.append(result)
+
+    # The session's rows for this name are replaced, not merged: an expiry or a
+    # contract that no longer fits must not keep yesterday's run's row (before
+    # 0.153.0 both tables only ever upserted). One transaction, so a reader never
+    # sees the name half written.
+    with conn.cursor() as cur:
+        for table in ("features.option_surface_fit_daily", "features.option_surface_residual_daily"):
+            cur.execute(f"DELETE FROM {table} WHERE symbol = %s AND trade_date = %s", (sym, trade_date))
 
     if fit_rows:
         batch_upsert(
@@ -198,6 +217,7 @@ def compute_vol_surface_for_symbol(
             _FIT_COLS,
             fit_rows,
             conflict_keys=("symbol", "trade_date", "expiry"),
+            auto_commit=False,
             update_cols=(
                 "dte",
                 "svi_a",
@@ -219,7 +239,8 @@ def compute_vol_surface_for_symbol(
             "features.option_surface_residual_daily",
             _RESIDUAL_COLS,
             residual_rows,
-            conflict_keys=("symbol", "trade_date", "expiry", "strike"),
+            conflict_keys=("symbol", "trade_date", "expiry", "strike", "option_right"),
+            auto_commit=False,
             update_cols=(
                 "log_moneyness",
                 "iv_market",
@@ -230,6 +251,7 @@ def compute_vol_surface_for_symbol(
             ),
             set_fetched_at=False,
         )
+    conn.commit()
 
     return {
         "ok": True,
