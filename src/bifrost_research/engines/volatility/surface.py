@@ -343,6 +343,17 @@ def _as_date(value: Any) -> date | None:
     return date.fromisoformat(s)
 
 
+#: Adjusted contracts (``O:APTV1…``, ``O:HON2…``) are left out: the OCC root is
+#: the underlying's plus a digit, the deliverable is no longer 100 shares of the
+#: underlying, and the vendor still solves their IV against the underlying's
+#: close. On 2026-09-29 the APTV1 35 call read 346% beside 52% for the standard
+#: APTV 35 call; in September 18 names carried such contracts into every SVI fit,
+#: IV surface and OpEx read built from this function. The root is what the
+#: ticker holds between ``O:`` and its last 15 characters (YYMMDD, right, strike).
+#: Other root aliases (SPXW for SPX, BRKB for BRK.B) do not end in a digit.
+NOT_ADJUSTED_CONTRACT_SQL = "substr(v.option_ticker, 3, length(v.option_ticker) - 17) !~ '[0-9]$'"
+
+
 def fetch_iv_points_for_date(
     conn: Any,
     symbol: str,
@@ -351,7 +362,7 @@ def fetch_iv_points_for_date(
     cols = ("expiry", "strike", "option_right", "iv", "underlying_price")
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT DISTINCT ON (v.option_ticker)
               oc.expiry, oc.strike, oc.option_right, v.iv, v.underlying_price
             FROM raw_market.v_option_snapshot_with_stock v
@@ -359,6 +370,7 @@ def fetch_iv_points_for_date(
             WHERE v.underlying = %s
               AND DATE(timezone('America/New_York', v.snapshot_ts)) = %s
               AND v.iv IS NOT NULL
+              AND {NOT_ADJUSTED_CONTRACT_SQL}
             ORDER BY v.option_ticker, v.snapshot_ts DESC
             """,
             (symbol.strip().upper(), trade_date),

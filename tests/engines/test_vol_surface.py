@@ -242,3 +242,50 @@ def test_a_names_session_is_replaced_and_residuals_are_keyed_by_contract(monkeyp
     assert sorted({r[right] for r in rows}) == ["C", "P"]
     keys = {(r[cols.index("strike")], r[right]) for r in rows}
     assert len(keys) == len(rows)
+
+
+def test_the_iv_point_fetch_leaves_adjusted_contracts_out():
+    """``O:APTV1…`` is solved against APTV's close while it delivers something else.
+
+    The filter reads the OCC root as the ticker between ``O:`` and its last 15
+    characters; an adjusted root ends in a digit, and the aliases the chain
+    really uses (SPXW, BRKB) do not. The Python slice below is the SQL's
+    ``substr(t, 3, length(t) - 17)``.
+    """
+    from datetime import date
+
+    from bifrost_research.engines.volatility import surface
+
+    def root(ticker: str) -> str:
+        return ticker[2 : len(ticker) - 15]
+
+    assert root("O:APTV1261120C00035000") == "APTV1"
+    assert root("O:HON2261120P00200000") == "HON2"
+    assert root("O:SPXW261016C05800000") == "SPXW"
+    assert root("O:BRKB261016C00500000") == "BRKB"
+    assert root("O:A261016C00145000") == "A"
+    kept = [t for t in ("O:APTV1261120C00035000", "O:SPXW261016C05800000", "O:BRKB261016C00500000", "O:A261016C00145000")
+            if not root(t)[-1].isdigit()]
+    assert kept == ["O:SPXW261016C05800000", "O:BRKB261016C00500000", "O:A261016C00145000"]
+
+    class _C:
+        def cursor(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return None
+
+        def execute(self, sql, params):
+            self.sql, self.params = sql, params
+
+        def fetchall(self):
+            return []
+
+    c = _C()
+    surface.fetch_iv_points_for_date(c, "aptv", date(2026, 9, 29))
+    assert surface.NOT_ADJUSTED_CONTRACT_SQL in c.sql
+    assert "length(v.option_ticker) - 17" in surface.NOT_ADJUSTED_CONTRACT_SQL
+    assert c.sql.count("%s") == len(c.params) == 2
