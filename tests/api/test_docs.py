@@ -44,6 +44,32 @@ def test_the_calibration_reports_status_against_every_blueprint_contract() -> No
     assert any(g in calibration for g in STATUS_GLYPHS)
 
 
+def test_the_calibration_roll_up_matches_its_rows() -> None:
+    """The §2 tally is what the Lab calibration page compares its own count against.
+
+    It said 27 contracts and ✅15 ⚠️5 ❌6 ⏳1 from the first calibration on while
+    the rows said 28 and, by 2026-10-01, ✅16 ⚠️5 ❌5 ⏳2: four row edits on
+    2026-09-08 never reached the tally. Counted the way the page counts it — the
+    rows of §2 whose first cell is a contract id, by the glyph opening the second.
+    """
+    import re
+    from collections import Counter
+
+    calibration = docs.read_doc("calibration")["markdown"]
+    section = re.search(r"^## 2\..*?(?=^## )", calibration, re.M | re.S)
+    assert section, "no §2"
+    rows = re.findall(r"^\| (C-[A-Z]\d+) \| (✅|⚠️?|❌|⏳)", section.group(0), re.M)
+    by_glyph = Counter(g.rstrip("\ufe0f") for _, g in rows)
+    tally = re.search(
+        r"\*\*计数\*\*[：:]\s*✅\s*(\d+)\s*⚠️?\s*(\d+)\s*❌\s*(\d+)\s*⏳\s*(\d+)，共\s*(\d+)\s*条",
+        section.group(0),
+    )
+    assert tally, "no roll-up line in §2"
+    ok, warn, fail, ramp, total = (int(x) for x in tally.groups())
+    assert (ok, warn, fail, ramp) == (by_glyph["✅"], by_glyph["⚠"], by_glyph["❌"], by_glyph["⏳"])
+    assert total == len(rows) == ok + warn + fail + ramp
+
+
 def test_an_unknown_document_is_a_404_not_a_directory_listing() -> None:
     client = TestClient(create_app())
     assert client.get("/research/docs/../../pyproject").status_code in (404, 422)
