@@ -23,6 +23,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Mapping, Sequence
 
 from bifrost_research.db.upsert import batch_upsert
+from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 
 _SENTIMENT_COLS = (
     "symbol",
@@ -287,7 +288,7 @@ def fetch_tape_flow_rows(conn: Any, symbol: str, trade_date: date) -> list[Optio
     )
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT
               t.expiry,
               t.strike,
@@ -306,6 +307,7 @@ def fetch_tape_flow_rows(conn: Any, symbol: str, trade_date: date) -> list[Optio
              AND oi.trade_date = t.trade_date
             WHERE t.underlying = %s
               AND t.trade_date = %s
+              AND {not_adjusted_contract_sql("t.option_ticker")}
             GROUP BY t.expiry, t.strike, t.option_right
             HAVING COALESCE(SUM(t.size), 0) > 0
             ORDER BY t.expiry, t.strike, t.option_right
@@ -358,7 +360,7 @@ def fetch_flow_rows(conn: Any, symbol: str, trade_date: date) -> list[OptionFlow
     )
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT DISTINCT ON (oi.option_ticker)
               oi.expiry,
               oi.strike,
@@ -378,6 +380,7 @@ def fetch_flow_rows(conn: Any, symbol: str, trade_date: date) -> list[OptionFlow
             ) snap ON TRUE
             WHERE oi.underlying = %s
               AND oi.trade_date = %s
+              AND {not_adjusted_contract_sql("oi.option_ticker")}
             ORDER BY oi.option_ticker
             """,
             (trade_date, symbol.strip().upper(), trade_date),
@@ -432,7 +435,15 @@ def compute_order_flow_for_symbol(
         data_source = DATA_SOURCE_PROXY
         notes = NOTES_PROXY
 
+    sym = symbol.strip().upper()
+    # The session is replaced, not merged: a name whose contracts are all gone, or a
+    # cluster that no longer forms, must not keep an earlier run's row (until 0.154.0
+    # both tables only upserted). One transaction with the writes below.
+    with conn.cursor() as cur:
+        for table in ("features.option_flow_sentiment_daily", "features.option_flow_multi_leg_daily"):
+            cur.execute(f"DELETE FROM {table} WHERE symbol = %s AND trade_date = %s", (sym, trade_date))
     if not rows:
+        conn.commit()
         return {
             "ok": False,
             "error": "No option tape or OI/snapshot rows",
@@ -444,7 +455,6 @@ def compute_order_flow_for_symbol(
     sentiment = compute_order_sentiment(rows, data_source=data_source, notes=notes)
     clusters = detect_multi_leg_scaffolding(rows, data_source=data_source)
     now = datetime.now(timezone.utc)
-    sym = symbol.strip().upper()
 
     batch_upsert(
         conn,
@@ -471,6 +481,7 @@ def compute_order_flow_for_symbol(
             )
         ],
         conflict_keys=("symbol", "trade_date"),
+        auto_commit=False,
         update_cols=(
             "call_notional",
             "put_notional",
@@ -512,6 +523,7 @@ def compute_order_flow_for_symbol(
             _MULTI_LEG_COLS,
             ml_rows,
             conflict_keys=("symbol", "trade_date", "cluster_id"),
+            auto_commit=False,
             update_cols=(
                 "strategy_guess",
                 "legs",
@@ -523,6 +535,7 @@ def compute_order_flow_for_symbol(
             ),
             set_fetched_at=False,
         )
+    conn.commit()
 
     return {
         "ok": True,

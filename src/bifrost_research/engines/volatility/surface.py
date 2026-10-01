@@ -18,6 +18,7 @@ from statistics import median
 from typing import Any, Mapping, Sequence
 
 from bifrost_research.db.upsert import batch_upsert
+from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 
 _COLS = (
     "symbol",
@@ -346,15 +347,12 @@ def _as_date(value: Any) -> date | None:
     return date.fromisoformat(s)
 
 
-#: Adjusted contracts (``O:APTV1…``, ``O:HON2…``) are left out: the OCC root is
-#: the underlying's plus a digit, the deliverable is no longer 100 shares of the
-#: underlying, and the vendor still solves their IV against the underlying's
-#: close. On 2026-09-29 the APTV1 35 call read 346% beside 52% for the standard
-#: APTV 35 call; in September 18 names carried such contracts into every SVI fit,
-#: IV surface and OpEx read built from this function. The root is what the
-#: ticker holds between ``O:`` and its last 15 characters (YYMMDD, right, strike).
-#: Other root aliases (SPXW for SPX, BRKB for BRK.B) do not end in a digit.
-NOT_ADJUSTED_CONTRACT_SQL = "substr(v.option_ticker, 3, length(v.option_ticker) - 17) !~ '[0-9]$'"
+#: Adjusted contracts (``O:APTV1…``, ``O:HON2…``) are left out: the deliverable is
+#: no longer 100 shares of the underlying, and the vendor still solves their IV
+#: against the underlying's close (see ``engines.adjusted_contracts``). In
+#: September 18 names carried such contracts into every SVI fit, IV surface and
+#: OpEx read built from this function.
+NOT_ADJUSTED_CONTRACT_SQL = not_adjusted_contract_sql("v.option_ticker")
 
 
 def fetch_iv_points_for_date(

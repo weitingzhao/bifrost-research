@@ -14,7 +14,8 @@ Algorithm independently reimplemented from bifrost_api.research.iv_atm
 Per (symbol, expiry): nearest strikes to spot; avg call+put IV when both exist; iv in (0, 10).
 A strike more than ``ATM_MAX_MONEYNESS`` from spot is not at the money: an expiry whose
 nearest priced strike is further out gets no row rather than a deep ITM/OTM contract's IV.
-Recomputing a day replaces that day's rows for every symbol the source has rows for.
+Recomputing a day replaces that day's rows for every symbol asked for and every
+symbol the source has rows for.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
 from bifrost_research.db.upsert import batch_upsert
+from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 from bifrost_research.engines.volatility.iv_solver import (
     DTE_MAX,
     DTE_MIN,
@@ -239,13 +241,14 @@ def fetch_reconstructed_iv_rows_for_date(
         "solver_status",
     )
     syms = [str(s).strip().upper() for s in (underlyings or []) if str(s).strip()]
-    base = """
+    base = f"""
         SELECT option_ticker, symbol AS underlying, iv, spot AS underlying_price,
                expiry, strike, option_right, solver_status
         FROM features.option_iv_reconstructed_daily
         WHERE trade_date = %s
           AND iv IS NOT NULL AND iv > 0
           AND spot IS NOT NULL AND spot > 0
+          AND {not_adjusted_contract_sql("option_ticker")}
     """
     with conn.cursor() as cur:
         if syms:
@@ -311,6 +314,7 @@ def fetch_snapshot_iv_rows_for_date(
           AND v.iv IS NOT NULL
           AND v.underlying_price IS NOT NULL
           AND {observed_near_session("v")}
+          AND {not_adjusted_contract_sql("v.option_ticker")}
     """
     day_start, day_end = _ny_day_bounds(trade_date)
     with conn.cursor() as cur:
@@ -361,6 +365,7 @@ def fetch_option_daily_brent_rows_for_date(
         WHERE o.bar_date = %s
           AND (o.expiry - o.bar_date) BETWEEN {DTE_MIN} AND {DTE_MAX}
           AND o.strike BETWEEN {1 - ATM_MAX_MONEYNESS} * sp.spot AND {1 + ATM_MAX_MONEYNESS} * sp.spot
+          AND {not_adjusted_contract_sql("o.option_ticker")}
     """
     with conn.cursor() as cur:
         if syms:
@@ -487,8 +492,11 @@ def compute_atm_iv_for_date(
             )
         )
 
-    # Replace, not merge: an expiry that no longer qualifies must not keep yesterday's row.
-    sourced = sorted({symbol for symbol, _expiry in groups})
+    # Replace, not merge: an expiry that no longer qualifies must not keep yesterday's row,
+    # nor a symbol asked for that has no source rows left (LEN 2025-01-21 lost every
+    # expiry once adjusted contracts were left out).
+    asked = {str(s).strip().upper() for s in (underlyings or []) if str(s).strip()}
+    sourced = sorted(asked | {symbol for symbol, _expiry in groups})
     with conn.cursor() as cur:
         cur.execute(
             """

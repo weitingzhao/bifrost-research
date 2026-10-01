@@ -26,6 +26,7 @@ from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from bifrost_research.db.upsert import batch_upsert
+from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 
 _NY = ZoneInfo("America/New_York")
 
@@ -283,7 +284,7 @@ def parity_spot(conn: Any, underlying: str, trade_date: date) -> float | None:
     start = datetime.combine(trade_date, datetime.min.time(), tzinfo=_NY)
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             WITH s AS (
               SELECT oc.expiry, oc.strike, oc.option_right AS r, os.day_close AS px, os.snapshot_ts
               FROM raw_market.option_snapshot os
@@ -292,6 +293,7 @@ def parity_spot(conn: Any, underlying: str, trade_date: date) -> float | None:
                 AND os.snapshot_ts >= %s AND os.snapshot_ts < %s
                 AND os.day_close > 0
                 AND oc.expiry > %s
+                AND {not_adjusted_contract_sql("os.option_ticker")}
             ),
             pick AS (SELECT MAX(snapshot_ts) AS ts, MIN(expiry) AS ex FROM s)
             SELECT c.strike + c.px - p.px AS fwd
@@ -435,7 +437,7 @@ def fetch_gex_contracts(
         "gamma",
         "day_volume",
     )
-    sql = """
+    sql = f"""
         SELECT
           oi.expiry,
           oi.strike,
@@ -454,6 +456,7 @@ def fetch_gex_contracts(
         ) snap ON TRUE
         WHERE oi.underlying = %s
           AND oi.trade_date = %s
+          AND {not_adjusted_contract_sql("oi.option_ticker")}
     """
     params: list[Any] = [trade_date, symbol.strip().upper(), trade_date]
     if expiry is not None:
@@ -502,6 +505,15 @@ def fetch_gex_contracts(
     return out
 
 
+def _delete_gex_session(conn: Any, symbol: str, trade_date: date, expiry: date | None) -> None:
+    """Delete one name's session (one expiry of it when ``expiry`` is given) from both daily tables."""
+    scope = " AND expiry = %s" if expiry is not None else ""
+    params: tuple[Any, ...] = (symbol, trade_date) + ((expiry,) if expiry is not None else ())
+    with conn.cursor() as cur:
+        for table in ("features.option_metric_gex_daily", "features.option_metric_gex_levels_daily"):
+            cur.execute(f"DELETE FROM {table} WHERE symbol = %s AND trade_date = %s{scope}", params)
+
+
 def compute_gex_for_symbol(
     conn: Any,
     *,
@@ -519,7 +531,13 @@ def compute_gex_for_symbol(
         }
 
     pairs = fetch_gex_contracts(conn, symbol, trade_date, expiry=expiry)
+    # The session is replaced, not merged: a strike or an expiry that no longer
+    # has a contract must not keep an earlier run's row (until 0.154.0 both tables
+    # only upserted, and 270 strike rows built from adjusted contracts alone would
+    # have outlived the filter). One transaction with the writes below.
+    _delete_gex_session(conn, symbol.strip().upper(), trade_date, expiry)
     if not pairs:
+        conn.commit()
         return {
             "ok": False,
             "error": "No OI contracts",
@@ -581,6 +599,7 @@ def compute_gex_for_symbol(
             _GEX_COLS,
             dist_rows,
             conflict_keys=("symbol", "trade_date", "expiry", "strike"),
+            auto_commit=False,
             update_cols=(
                 "call_oi",
                 "put_oi",
@@ -601,6 +620,7 @@ def compute_gex_for_symbol(
             _LEVELS_COLS,
             level_rows,
             conflict_keys=("symbol", "trade_date", "expiry"),
+            auto_commit=False,
             update_cols=(
                 "spot",
                 "total_net_gex",
@@ -613,6 +633,7 @@ def compute_gex_for_symbol(
             ),
             set_fetched_at=False,
         )
+    conn.commit()
 
     return {
         "ok": True,

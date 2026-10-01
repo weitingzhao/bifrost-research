@@ -17,6 +17,7 @@ from typing import Any, Literal, Sequence
 
 from bifrost_research.db.fastcount import breakdown_with_dominant, distinct_count, estimate_rows
 from bifrost_research.db.upsert import batch_upsert
+from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 from bifrost_research.engines.backtest.canonical_pnl import bs_delta, bs_price
 from bifrost_research.schema.schemas import TABLE_OPTION_IV_RECONSTRUCTED_DAILY
 
@@ -303,6 +304,7 @@ def solve_symbol_window(
             JOIN sp ON sp.symbol = o.underlying AND sp.bar_date = o.bar_date
             WHERE o.underlying = %s
               AND o.bar_date BETWEEN %s AND %s
+              AND {not_adjusted_contract_sql("o.option_ticker")}
             ORDER BY o.bar_date, o.option_ticker
             """,
             (sym, start_date, end_date, sym, start_date, end_date),
@@ -415,6 +417,7 @@ def degraded_sessions(conn: Any, symbol: str, start_date: date, end_date: date) 
               AND os.snapshot_ts >= (%s::timestamp AT TIME ZONE 'America/New_York')
               AND os.snapshot_ts < (%s::timestamp AT TIME ZONE 'America/New_York')
               AND {observed_near_session("os")}
+              AND {not_adjusted_contract_sql("os.option_ticker")}
             GROUP BY 1
             ORDER BY 1
             """,
@@ -472,6 +475,7 @@ def project_vendor_snapshot_window(
               AND v.iv IS NOT NULL AND v.iv > 0
               AND v.underlying_price IS NOT NULL AND v.underlying_price > 0
               AND {observed_near_session("v")}
+              AND {not_adjusted_contract_sql("v.option_ticker")}
             ORDER BY v.option_ticker,
                      DATE(timezone('America/New_York', v.snapshot_ts)),
                      v.snapshot_ts DESC
