@@ -50,6 +50,7 @@ from zoneinfo import ZoneInfo
 
 from bifrost_research.db.calendar import load_symbols_from_env_or_query, union_iv_radar_benchmarks
 from bifrost_research.db.conn import connect
+from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 from bifrost_research.engines.canonical_pnl import run_cohort as run_canonical_cohort
 from bifrost_research.engines.volatility.atm_iv import compute_atm_iv_for_date
 from bifrost_research.engines.volatility.iv_percentile import compute_iv_percentile_for_date
@@ -125,9 +126,10 @@ def reproject_vendor(conn: Any, symbols: Sequence[str], end: date, *, apply: boo
     if not apply:
         n = _scalar(
             conn,
-            """
+            f"""
             SELECT COUNT(*) FROM raw_market.option_snapshot
             WHERE underlying = ANY(%s) AND iv > 0
+              AND {not_adjusted_contract_sql("option_ticker")}
               AND snapshot_ts >= (%s::timestamp AT TIME ZONE 'America/New_York')
               AND snapshot_ts < (%s::timestamp AT TIME ZONE 'America/New_York')
             """,

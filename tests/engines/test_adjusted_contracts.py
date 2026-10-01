@@ -9,7 +9,8 @@ from typing import Any, Callable
 from bifrost_research.engines import flow
 from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 from bifrost_research.engines.gex import exposure
-from bifrost_research.engines.volatility import atm_iv, iv_solver, pcr, surface
+from bifrost_research.engines.backtest import event_query
+from bifrost_research.engines.volatility import atm_iv, iv_coverage_heal, iv_history_repair, iv_solver, max_pain, pcr, surface
 
 TD = date(2026, 9, 29)
 
@@ -88,6 +89,13 @@ def test_every_raw_reader_leaves_adjusted_contracts_out() -> None:
         (lambda c: pcr.fetch_oi_totals_for_date(c, TD, underlyings=["APTV"]), "option_ticker"),
         (lambda c: pcr.fetch_oi_totals_for_date(c, TD), "option_ticker"),
         (lambda c: pcr.fetch_volume_totals_for_date(c, TD, underlyings=["APTV"]), "os.option_ticker"),
+        # 0.155.0
+        (lambda c: max_pain.fetch_oi_rows_for_date(c, TD, underlyings=["APTV"]), "option_ticker"),
+        (lambda c: max_pain.fetch_oi_rows_for_date(c, TD), "option_ticker"),
+        (lambda c: surface.fetch_spot_fallback(c, "APTV", TD), "os.option_ticker"),
+        (lambda c: iv_coverage_heal.raw_breadth(c, ["APTV"], TD, TD), "option_ticker"),
+        (lambda c: iv_history_repair.reproject_vendor(c, ["APTV"], TD, apply=False), "option_ticker"),
+        (lambda c: event_query._pick_option(c, "APTV", TD, "C", 30, 35.0), "option_ticker"),
     ]
     for call, column in calls:
         conn = _Conn()
@@ -98,6 +106,23 @@ def test_every_raw_reader_leaves_adjusted_contracts_out() -> None:
             assert "length(" in sql and "- 17) !~ '[0-9]$'" in sql, sql
         for sql, params in conn.statements:
             assert sql.count("%s") == len(params or ()), sql
+
+
+def test_the_max_pain_endpoints_leave_adjusted_contracts_out() -> None:
+    from bifrost_research.api import options
+
+    def answer(sql: str) -> list[Any]:
+        return [(TD,)] if "MAX(trade_date)" in sql else []
+
+    for call in (
+        lambda c: options.compute_max_pain_live(c, symbol="APTV", expiry=date(2026, 10, 16)),
+        lambda c: options.compute_max_pain_history(c, symbol="APTV", expiry=date(2026, 10, 16)),
+    ):
+        conn = _Conn(answer)
+        call(conn)
+        reads = _raw_reads(conn)
+        assert len(reads) == 2
+        assert all(not_adjusted_contract_sql("option_ticker") in sql for sql in reads)
 
 
 def test_the_tape_reader_leaves_adjusted_contracts_out() -> None:
@@ -186,6 +211,46 @@ def test_pcr_replaces_every_symbol_asked_for_even_without_rows() -> None:
     assert [x for x in empty.log if x != "select"] == ["delete", "commit"]
 
 
+def _oi(sym: str, strike: float, right: str, oi: int, expiry: date = date(2026, 10, 16)) -> tuple[Any, ...]:
+    return (sym, expiry, strike, right, oi)
+
+
+def test_max_pain_replaces_every_symbol_asked_for_in_one_transaction() -> None:
+    rows = [_oi("APTV", 35.0, "C", 10), _oi("APTV", 35.0, "P", 10)]
+    conn = _Conn(lambda sql: rows if "raw_market.option_open_interest" in sql else [])
+    out = max_pain.compute_max_pain_for_date(conn, trade_date=TD, underlyings=["APTV", "CUE"])
+    deletes = [(sql, p) for sql, p in conn.statements if sql.startswith("DELETE")]
+    assert deletes == [
+        (
+            "DELETE FROM features.option_metric_max_pain_daily WHERE trade_date = %s AND symbol = ANY(%s)",
+            (TD, ["APTV", "CUE"]),
+        )
+    ]
+    assert out["groups"] == 1
+    assert [x for x in conn.log if x != "select"] == ["delete", "write", "commit"]
+
+
+def test_max_pain_skips_an_expiry_whose_open_interest_is_zero() -> None:
+    later = date(2026, 11, 20)
+    rows = [
+        _oi("CWBC", 12.5, "C", 5),
+        _oi("CWBC", 15.0, "P", 3),
+        _oi("CWBC", 15.0, "C", 0, later),
+        _oi("CWBC", 17.5, "P", 0, later),
+    ]
+    conn = _Conn(lambda sql: rows if "raw_market.option_open_interest" in sql else [])
+    out = max_pain.compute_max_pain_for_date(conn, trade_date=TD, underlyings=["CWBC"])
+    assert out["groups"] == 1 and out["skipped_zero_oi"] == 1
+    written = next(p for sql, p in conn.statements if sql.startswith("INSERT"))
+    assert [r[2] for r in written] == [date(2026, 10, 16)]
+
+
+def test_max_pain_keeps_a_session_with_no_open_interest_at_all() -> None:
+    conn = _Conn()
+    max_pain.compute_max_pain_for_date(conn, trade_date=TD, underlyings=["APTV"])
+    assert "delete" not in conn.log and "write" not in conn.log
+
+
 def test_atm_replaces_a_symbol_asked_for_that_has_no_source_rows() -> None:
     recon = [
         ("O:PLTR261016C00100000", "PLTR", 0.50, 100.0, date(2026, 10, 16), 100.0, "C", "vendor_snapshot"),
@@ -268,3 +333,51 @@ def test_purge_clears_an_atm_session_whose_source_is_now_empty() -> None:
     ]
     i = conn.log.index("delete", conn.log.index("commit"))  # the first commit closes the reconstructed delete
     assert "commit" in conn.log[i + 1 :]
+
+
+def test_the_max_pain_pass_counts_without_writing() -> None:
+    def answer(sql: str) -> list[Any]:
+        if "SELECT COUNT(*)" in sql:
+            return [(842,)]
+        if "FROM raw_market.option_open_interest" in sql:
+            return [("CUE", date(2026, 9, 25)), ("HON", date(2026, 9, 16))]
+        if "JOIN unnest" in sql and "option_metric_max_pain_daily" in sql:
+            return [("CUE", date(2026, 9, 25)), ("HON", date(2026, 9, 16))]
+        if "JOIN unnest" in sql and "stock_forecast_terrain_daily" in sql:
+            return [("HON", date(2026, 9, 16))]
+        return []
+
+    conn = _Conn(answer)
+    summary = purge.run_max_pain(conn, apply=False, zero_oi=True)
+    assert summary["max_pain"]["sessions"] == 2
+    assert summary["terrain"] == {"sessions": 1, "listed": 95}
+    assert summary["zero_oi"] == {"rows": 842, "delete": True}
+    assert "delete" not in conn.log and "write" not in conn.log and "commit" not in conn.log
+
+
+def test_the_max_pain_pass_clears_cue_although_its_recompute_finds_nothing() -> None:
+    day = date(2026, 9, 25)
+
+    def answer(sql: str) -> list[Any]:
+        if "SELECT COUNT(*)" in sql:
+            return [(0,)]
+        if "SELECT DISTINCT underlying, trade_date FROM raw_market.option_open_interest" in sql:
+            return [("CUE", day)]
+        if "JOIN unnest" in sql and "SELECT DISTINCT t.symbol" in sql and "max_pain" in sql:
+            return [("CUE", day)]
+        return []
+
+    conn = _Conn(answer)
+    summary = purge.run_max_pain(conn, apply=True)
+    deletes = [(sql, p) for sql, p in conn.statements if sql.startswith("DELETE")]
+    assert deletes == [
+        ("DELETE FROM features.option_metric_max_pain_daily WHERE trade_date = %s AND symbol = ANY(%s)", (day, ["CUE"]))
+    ]
+    assert conn.log[conn.log.index("delete") + 1 :].count("commit") >= 1
+    assert "deleted" not in summary["zero_oi"]
+
+
+def test_terrain_pairs_are_the_95_measured() -> None:
+    pairs = purge.terrain_pairs()
+    assert len(pairs) == 95
+    assert ("HON", date(2026, 9, 16)) in pairs and ("HONA", date(2026, 9, 16)) in pairs

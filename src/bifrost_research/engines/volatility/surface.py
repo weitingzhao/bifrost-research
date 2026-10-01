@@ -421,14 +421,15 @@ def fetch_spot_fallback(
     """Derive an ATM spot proxy when stock join is unavailable.
 
     Prefers option_snapshot delta ≈ 0.5 call strike (works for indices like
-    SPX without a stock row). Falls back to max_pain_daily.max_pain_strike if
+    SPX without a stock row), adjusted contracts left out: their strike is not on
+    the underlying's scale. Falls back to max_pain_daily.max_pain_strike if
     delta samples are unavailable.
     """
     sym = symbol.strip().upper()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT oc.strike, os.delta
                 FROM raw_market.option_snapshot os
                 JOIN raw_market.option_contract oc ON oc.option_ticker = os.option_ticker
@@ -437,6 +438,7 @@ def fetch_spot_fallback(
                   AND os.delta IS NOT NULL
                   AND os.delta BETWEEN 0.4 AND 0.6
                   AND oc.option_right = 'C'
+                  AND {not_adjusted_contract_sql("os.option_ticker")}
                 ORDER BY ABS(os.delta - 0.5)
                 LIMIT 5
                 """,

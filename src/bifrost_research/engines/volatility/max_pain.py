@@ -14,6 +14,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from bifrost_research.db.upsert import batch_upsert
+from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 
 _COLS = (
     "symbol",
@@ -124,25 +125,33 @@ def fetch_oi_rows_for_date(
     *,
     underlyings: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Load OI rows for one trade_date (optional underlying filter)."""
+    """Load OI rows for one trade_date (optional underlying filter).
+
+    Adjusted contracts (``O:HON1…``, see ``engines.adjusted_contracts``) are left
+    out: their deliverable is not 100 shares, so their OI does not belong on the
+    underlying's strike ladder (measured 2026-10-01: 277 stored rows on 230
+    name-sessions, CUE 2026-09-25..30 built from them alone).
+    """
     cols = ("underlying", "expiry", "strike", "option_right", "open_interest")
     syms = [str(s).strip().upper() for s in (underlyings or []) if str(s).strip()]
     with conn.cursor() as cur:
         if syms:
             cur.execute(
-                """
+                f"""
                 SELECT underlying, expiry, strike, option_right, open_interest
                 FROM raw_market.option_open_interest
                 WHERE trade_date = %s AND underlying = ANY(%s)
+                  AND {not_adjusted_contract_sql("option_ticker")}
                 """,
                 (trade_date, syms),
             )
         else:
             cur.execute(
-                """
+                f"""
                 SELECT underlying, expiry, strike, option_right, open_interest
                 FROM raw_market.option_open_interest
                 WHERE trade_date = %s
+                  AND {not_adjusted_contract_sql("option_ticker")}
                 """,
                 (trade_date,),
             )
@@ -156,17 +165,25 @@ def compute_max_pain_for_date(
     trade_date: date,
     underlyings: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Compute max pain for all (underlying, expiry) with OI on ``trade_date`` and upsert.
+    """Compute max pain for every (underlying, expiry) with OI on ``trade_date``.
 
-    Uses ON CONFLICT DO UPDATE so recomputes refresh ``computed_at`` and values.
+    The day's rows are replaced, in one transaction, for every symbol asked for and
+    every symbol the OI has: until 0.155.0 this only upserted, so an expiry whose
+    contracts were gone (CUE's, all adjusted) kept an earlier run's row. An expiry
+    whose open interest sums to zero is not written: every strike has zero pain
+    there, and the "max pain" was just the lowest strike listed (842 such rows
+    stood on 2026-10-01).
     """
     oi_rows = fetch_oi_rows_for_date(conn, trade_date, underlyings=underlyings)
     if not oi_rows:
+        # A day with no OI at all is a feed that has not landed (or has been
+        # trimmed), not a market without open interest: keep what is stored.
         return {
             "trade_date": trade_date.isoformat(),
             "groups": 0,
             "rows_written": 0,
             "symbols": 0,
+            "skipped_zero_oi": 0,
         }
 
     # Group OI by (underlying, expiry)
@@ -180,11 +197,15 @@ def compute_max_pain_for_date(
 
     now = datetime.now(timezone.utc)
     upsert_rows: list[tuple[Any, ...]] = []
+    skipped_zero_oi = 0
     for (symbol, expiry), rows in sorted(groups.items()):
         skmap = strike_map_for_expiry(rows, expiry)
         if not skmap:
             continue
         max_pain_strike, min_pain, _points, total_oi = compute_max_pain_curve(skmap)
+        if total_oi <= 0:
+            skipped_zero_oi += 1
+            continue
         upsert_rows.append(
             (
                 symbol,
@@ -197,24 +218,37 @@ def compute_max_pain_for_date(
             )
         )
 
-    n = batch_upsert(
-        conn,
-        "features.option_metric_max_pain_daily",
-        _COLS,
-        upsert_rows,
-        conflict_keys=("symbol", "trade_date", "expiry"),
-        update_cols=(
-            "max_pain_strike",
-            "total_oi",
-            "total_pain_at_strike",
-            "computed_at",
-        ),
-        set_fetched_at=False,
-    )
+    asked = {str(s).strip().upper() for s in (underlyings or []) if str(s).strip()}
+    replaced = sorted(asked | {und for und, _exp in groups})
+    if replaced:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM features.option_metric_max_pain_daily WHERE trade_date = %s AND symbol = ANY(%s)",
+                (trade_date, replaced),
+            )
+    n = 0
+    if upsert_rows:
+        n = batch_upsert(
+            conn,
+            "features.option_metric_max_pain_daily",
+            _COLS,
+            upsert_rows,
+            conflict_keys=("symbol", "trade_date", "expiry"),
+            update_cols=(
+                "max_pain_strike",
+                "total_oi",
+                "total_pain_at_strike",
+                "computed_at",
+            ),
+            auto_commit=False,
+            set_fetched_at=False,
+        )
+    conn.commit()
     symbols = sorted({r[0] for r in upsert_rows})
     return {
         "trade_date": trade_date.isoformat(),
         "groups": len(upsert_rows),
         "rows_written": n,
         "symbols": len(symbols),
+        "skipped_zero_oi": skipped_zero_oi,
     }

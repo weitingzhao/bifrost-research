@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 from fastapi import APIRouter, HTTPException, Query
 
 from bifrost_research.db.conn import connect
+from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 
 router = APIRouter(prefix="/analytics/options", tags=["options"])
 
@@ -320,9 +321,10 @@ def compute_max_pain_live(
     if td is None:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT MAX(trade_date) FROM raw_market.option_open_interest
                 WHERE underlying = %s AND expiry = %s
+                  AND {not_adjusted_contract_sql("option_ticker")}
                 """,
                 (sym, expiry),
             )
@@ -373,9 +375,10 @@ def compute_max_pain_history(
     sym = str(symbol).strip().upper()
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT MAX(trade_date) FROM raw_market.option_open_interest
             WHERE underlying = %s AND expiry = %s
+              AND {not_adjusted_contract_sql("option_ticker")}
             """,
             (sym, expiry),
         )
@@ -394,11 +397,12 @@ def compute_max_pain_history(
     start = end - timedelta(days=int(lookback_days))
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT trade_date, strike, option_right, open_interest
             FROM raw_market.option_open_interest
             WHERE underlying = %s AND expiry = %s
               AND trade_date >= %s AND trade_date <= %s
+              AND {not_adjusted_contract_sql("option_ticker")}
             ORDER BY trade_date ASC
             """,
             (sym, expiry, start, end),

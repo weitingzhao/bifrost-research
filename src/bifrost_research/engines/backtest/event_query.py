@@ -43,6 +43,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
 
+from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 from bifrost_research.engines.backtest.event_defs import EventDef
 from bifrost_research.engines.backtest.strategy_templates import (
     LegSpec,
@@ -466,18 +467,21 @@ def _pick_option(
 
     Uses ``option_daily.close`` for pricing. Strike selection prefers the
     nearest strike within ``tolerance_pct`` of ``strike_target`` on the
-    expiry closest to ``on_or_before + target_dte``.
+    expiry closest to ``on_or_before + target_dte``. Adjusted contracts are left
+    out: 5,346 of their bars share expiry, strike and right with a standard bar
+    (2026-10-01), and nothing here would break the tie.
     """
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT expiry, strike, close, open, high, low, bar_date, option_ticker
                 FROM raw_market.option_daily
                 WHERE underlying = %s
                   AND option_right = %s
                   AND bar_date <= %s
                   AND expiry > %s
+                  AND {not_adjusted_contract_sql("option_ticker")}
                 ORDER BY bar_date DESC
                 LIMIT 400
                 """,

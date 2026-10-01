@@ -23,10 +23,31 @@ Only stored name-sessions are touched: a name the engines never wrote (TRP, whos
 adjusted bars sit in ``option_daily``) gets no new rows. Without ``--apply`` every
 step only counts.
 
+``--max-pain`` runs the 0.155.0 pass instead, for the readers 0.154.0 left out
+(measured read-only 2026-10-01):
+
+5. max pain     — stored name-sessions whose open interest held an adjusted contract:
+                  277 rows on 230 change (63 strikes move), and CUE 2026-09-25..30
+                  had nothing else. Each session is cleared, then recomputed.
+6. terrain      — terrain reads GEX levels and IV percentile, which the first pass
+                  rebuilt at 22:18–22:26 UTC; every daily row was written before.
+                  ``TERRAIN_PAIRS`` are the 95 whose scores differ between the
+                  pre-rebuild inputs (the backup in ``~/bifrost-backups/golden-source/
+                  2026-10-01_adjusted-contracts-0154``) and today's. Only those: a
+                  terrain row is what its inputs said when it ran, and 343 of the 495
+                  rows of these names would move today for other reasons.
+7. scan         — the name-sessions whose nearest-monthly max pain moved (27) or
+                  whose terrain was recomputed: scan copies pin distance, regime,
+                  pin score, tail risk and trend release.
+
+``--zero-oi`` also deletes every stored max-pain row whose open interest sums to
+zero; from 0.155.0 the engine no longer writes them (842 on 2026-10-01).
+
 Usage::
 
     python -m bifrost_research.engines.adjusted_contract_purge
     python -m bifrost_research.engines.adjusted_contract_purge --apply
+    python -m bifrost_research.engines.adjusted_contract_purge --max-pain [--zero-oi] [--apply]
 """
 
 from __future__ import annotations
@@ -48,7 +69,24 @@ RECON = "features.option_iv_reconstructed_daily"
 ATM = "features.option_metric_atm_iv_daily"
 PERCENTILE = "features.option_metric_iv_percentile_daily"
 VRP = "features.stock_signal_vrp_daily"
+MAX_PAIN = "features.option_metric_max_pain_daily"
+SCAN = "features.stock_signal_scan_daily"
 WINDOW = 252
+
+#: Terrain name-sessions (2026-) whose scores the first pass's rebuild moved.
+TERRAIN_PAIRS = {
+    "APTV": "09-17 09-18 09-21 09-22 09-23 09-24 09-25 09-28 09-29 09-30",
+    "BDX": "09-08 09-09 09-10 09-11 09-14 09-15 09-16 09-17 09-22 09-23 09-24 09-25",
+    "CMCSA": "09-14 09-15",
+    "FDX": "09-14 09-16",
+    "GME": "09-24 09-25 09-28 09-29 09-30",
+    "HON": "09-07 09-08 09-09 09-10 09-11 09-14 09-15 09-16 09-17 09-18 09-21 09-22 09-23 09-24 09-25 09-28 09-29 09-30",
+    "HONA": "09-16 09-17",
+    "IONQ": "09-07 09-09 09-10 09-11 09-14 09-15 09-16 09-17 09-18 09-21 09-23 09-24 09-25 09-28 09-29 09-30",
+    "SM": "09-09 09-10 09-11 09-15 09-16 09-17 09-18 09-21 09-22 09-23 09-24 09-25 09-28 09-29 09-30",
+    "SPGI": "09-15 09-16 09-18",
+    "VICI": "09-08 09-09 09-10 09-11 09-16 09-24 09-25 09-28 09-29 09-30",
+}
 
 Pair = tuple[str, date]
 
@@ -264,9 +302,112 @@ def run(conn: Any, *, apply: bool) -> dict[str, Any]:
     return summary
 
 
+def terrain_pairs() -> set[Pair]:
+    return {(sym, date.fromisoformat(f"2026-{md}")) for sym, days in TERRAIN_PAIRS.items() for md in days.split()}
+
+
+def nearest_monthly_pain(conn: Any, pairs: Iterable[Pair]) -> dict[Pair, tuple[date, float]]:
+    """The max pain scan and the opex lens read: the nearest monthly expiry's."""
+    from bifrost_research.lenses.pin_expiry import monthly_expiry_sql
+
+    pairs = sorted(pairs)
+    if not pairs:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT DISTINCT ON (m.symbol, m.trade_date) m.symbol, m.trade_date, m.expiry, m.max_pain_strike
+            FROM {MAX_PAIN} m
+            JOIN unnest(%s::text[], %s::date[]) AS p(symbol, trade_date)
+              ON p.symbol = m.symbol AND p.trade_date = m.trade_date
+            WHERE m.max_pain_strike > 0 AND {monthly_expiry_sql("m.expiry", "m.trade_date")}
+            ORDER BY m.symbol, m.trade_date, m.expiry
+            """,
+            ([s for s, _ in pairs], [d for _, d in pairs]),
+        )
+        return {(str(r[0]), r[1]): (r[2], float(r[3])) for r in cur.fetchall() or []}
+
+
+def run_max_pain(conn: Any, *, apply: bool, zero_oi: bool = False) -> dict[str, Any]:
+    from bifrost_research.engines.forecast.terrain import (
+        compute_market_terrain,
+        load_upstream_signals,
+        upsert_market_terrain,
+    )
+    from bifrost_research.engines.scan.entry import compute_scan_for_date
+    from bifrost_research.engines.volatility.max_pain import compute_max_pain_for_date
+
+    oi = _pairs(
+        conn,
+        f"""
+        SELECT DISTINCT underlying, trade_date FROM raw_market.option_open_interest
+        WHERE {_adjusted('option_ticker')}
+        """,
+    )
+    pain = _stored(conn, MAX_PAIN, oi)
+    terrain = _stored(conn, "features.stock_forecast_terrain_daily", terrain_pairs())
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) FROM {MAX_PAIN} WHERE total_oi = 0")
+        zero_rows = int(cur.fetchone()[0])
+    summary: dict[str, Any] = {
+        "applied": apply,
+        "max_pain": {
+            "sessions": len(pain),
+            "symbols": len({s for s, _ in pain}),
+            "first": min((d for _, d in pain), default=None),
+            "last": max((d for _, d in pain), default=None),
+        },
+        "terrain": {"sessions": len(terrain), "listed": len(terrain_pairs())},
+        "zero_oi": {"rows": zero_rows, "delete": zero_oi},
+    }
+    if not apply:
+        return summary
+
+    # 5. max pain: clear each session's names, then recompute. The engine keeps a
+    # session it finds no OI for at all, so the clear is what removes CUE's.
+    before = nearest_monthly_pain(conn, pain)
+    rows = 0
+    for td, syms in _by_date(pain).items():
+        with conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {MAX_PAIN} WHERE trade_date = %s AND symbol = ANY(%s)", (td, syms))
+        rows += int(compute_max_pain_for_date(conn, trade_date=td, underlyings=syms).get("rows_written") or 0)
+        conn.commit()
+    after = nearest_monthly_pain(conn, pain)
+    moved = {p for p in pain if before.get(p) != after.get(p)}
+    summary["max_pain"].update(rows_written=rows, monthly_moved=len(moved))
+
+    if zero_oi:
+        with conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {MAX_PAIN} WHERE total_oi = 0")
+            summary["zero_oi"]["deleted"] = int(cur.rowcount or 0)
+        conn.commit()
+
+    # 6. terrain, on today's inputs, the way the daily slot writes it.
+    written = 0
+    for sym, td in sorted(terrain):
+        spot, gex, momentum, iv = load_upstream_signals(conn, sym, td)
+        if spot <= 0:
+            continue
+        row = compute_market_terrain(sym, td, spot=spot, gex=gex or None, momentum=momentum or None, iv=iv or None)
+        written += upsert_market_terrain(conn, [row])
+    summary["terrain"]["rows_written"] = written
+
+    # 7. scan rows that copy either.
+    scan = _stored(conn, SCAN, moved | terrain)
+    scan_rows = 0
+    for td, syms in _by_date(scan).items():
+        scan_rows += int(
+            compute_scan_for_date(conn, trade_date=td, watchlist=syms, symbols_filter=syms).get("rows_written") or 0
+        )
+    summary["scan"] = {"sessions": len(scan), "rows_written": scan_rows}
+    return summary
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="write; without it every step only counts")
+    parser.add_argument("--max-pain", action="store_true", help="the 0.155.0 pass: max pain, terrain, scan")
+    parser.add_argument("--zero-oi", action="store_true", help="with --max-pain: delete max-pain rows of zero OI")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     conn = connect()
@@ -277,7 +418,10 @@ def main(argv: list[str] | None = None) -> int:
             if not args.apply:
                 cur.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
         conn.commit()
-        summary = run(conn, apply=args.apply)
+        if args.max_pain:
+            summary = run_max_pain(conn, apply=args.apply, zero_oi=args.zero_oi)
+        else:
+            summary = run(conn, apply=args.apply)
     finally:
         conn.close()
     print(json.dumps(summary, default=str, indent=2))

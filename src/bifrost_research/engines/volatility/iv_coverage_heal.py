@@ -35,6 +35,7 @@ from zoneinfo import ZoneInfo
 
 from bifrost_research.db.calendar import load_symbols_from_env_or_query, union_iv_radar_benchmarks
 from bifrost_research.db.conn import connect
+from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 from bifrost_research.engines.volatility.atm_iv import compute_atm_iv_for_date
 from bifrost_research.engines.volatility.iv_history_repair import sessions
 from bifrost_research.engines.volatility.iv_percentile import compute_iv_percentile_for_date
@@ -66,6 +67,8 @@ def raw_breadth(conn: Any, universe: Sequence[str], start: date, end: date) -> B
 
     One statement per month with the bounds as literals: option_daily is partitioned
     monthly and a parameter bound scans every partition (35s against 0.2s a month).
+    Adjusted contracts do not count: ATM IV leaves them out, so a name holding only
+    those is not coverage the features could have.
     """
     out: Breadth = {}
     for lo, hi in months(start, end):
@@ -78,6 +81,7 @@ def raw_breadth(conn: Any, universe: Sequence[str], start: date, end: date) -> B
                 WHERE bar_date >= DATE '{lo.isoformat()}' AND bar_date <= DATE '{hi.isoformat()}'
                   AND underlying = ANY(%s)
                   AND (expiry - bar_date) BETWEEN %s AND %s
+                  AND {not_adjusted_contract_sql("option_ticker")}
                 GROUP BY 1
                 """,
                 (list(universe), DTE_MIN, DTE_MAX),
