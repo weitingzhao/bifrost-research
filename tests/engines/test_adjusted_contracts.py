@@ -22,6 +22,7 @@ class _Conn:
         self.statements: list[tuple[str, Any]] = []
         self.log: list[str] = []
         self._rows: list[Any] = []
+        self.rowcount = 0
 
     def cursor(self) -> _Conn:
         return self
@@ -241,3 +242,29 @@ def test_downstream_takes_every_session_whose_window_holds_a_moved_iv30() -> Non
     finally:
         purge.WINDOW = original
     assert sorted(d for _, d in out) == days[2:5]
+
+
+def test_purge_clears_an_atm_session_whose_source_is_now_empty() -> None:
+    """LEN 2025-01-21: every near-money contract was adjusted, so the recompute finds
+    nothing and returns before its own delete; the purge clears the session itself."""
+    day = date(2025, 1, 21)
+
+    def answer(sql: str) -> list[Any]:
+        if "SELECT COUNT(*)" in sql:
+            return [(0,)]
+        if "FROM raw_market.option_daily" in sql and "SELECT DISTINCT underlying, bar_date" in sql:
+            return [("LEN", day)]
+        if "JOIN unnest" in sql and "SELECT DISTINCT t.symbol" in sql:
+            return [("LEN", day)]
+        return []
+
+    conn = _Conn(answer)
+    purge.run(conn, apply=True)
+    atm_deletes = [
+        (sql, p) for sql, p in conn.statements if sql.startswith("DELETE FROM features.option_metric_atm_iv_daily")
+    ]
+    assert atm_deletes == [
+        ("DELETE FROM features.option_metric_atm_iv_daily WHERE trade_date = %s AND symbol = ANY(%s)", (day, ["LEN"]))
+    ]
+    i = conn.log.index("delete", conn.log.index("commit"))  # the first commit closes the reconstructed delete
+    assert "commit" in conn.log[i + 1 :]

@@ -15,7 +15,7 @@ Per (symbol, expiry): nearest strikes to spot; avg call+put IV when both exist; 
 A strike more than ``ATM_MAX_MONEYNESS`` from spot is not at the money: an expiry whose
 nearest priced strike is further out gets no row rather than a deep ITM/OTM contract's IV.
 Recomputing a day replaces that day's rows for every symbol asked for and every
-symbol the source has rows for.
+symbol the source has rows for; a day with no source rows at all is left as it is.
 """
 
 from __future__ import annotations
@@ -493,8 +493,8 @@ def compute_atm_iv_for_date(
         )
 
     # Replace, not merge: an expiry that no longer qualifies must not keep yesterday's row,
-    # nor a symbol asked for that has no source rows left (LEN 2025-01-21 lost every
-    # expiry once adjusted contracts were left out).
+    # nor a symbol asked for that has no source rows while others do. A day with no
+    # source rows at all returned above, untouched: an outage must not wipe it.
     asked = {str(s).strip().upper() for s in (underlyings or []) if str(s).strip()}
     sourced = sorted(asked | {symbol for symbol, _expiry in groups})
     with conn.cursor() as cur:

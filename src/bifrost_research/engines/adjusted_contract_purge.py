@@ -220,7 +220,14 @@ def run(conn: Any, *, apply: bool) -> dict[str, Any]:
     # 2. ATM IV, session by session over the names each session stored.
     before = iv30_by_pair(conn, found["atm"])
     for td, syms in _by_date(found["atm"]).items():
+        # compute_atm_iv_for_date keeps a day it finds no source rows for at all, so an
+        # outage cannot wipe it; here that is the day to clear (LEN 2025-01-21, CDE
+        # 2025-04-17, GME 2025-10-03 and HON 2025-10-30 had only adjusted contracts near
+        # the money, and 0.154.0 left their ten rows in place).
+        with conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {ATM} WHERE trade_date = %s AND symbol = ANY(%s)", (td, syms))
         compute_atm_iv_for_date(conn, trade_date=td, underlyings=syms)
+        conn.commit()
     after = iv30_by_pair(conn, found["atm"])
     moved = _moved(before, after)
     summary["atm"]["iv30_moved"] = len(moved)
