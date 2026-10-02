@@ -629,9 +629,10 @@ def load_upstream_signals(
         # 09-09 and 09-10 all read 174.33 against closes of 170.30, 169.53 and
         # 165.86. The intraday path, asking for today before today's bar
         # exists, keeps the levels spot as before.
+        # As printed, like the walls it is compared with (plugin 0.74.0).
         cur.execute(
             """
-            SELECT bar_date, close FROM raw_market.stock_daily
+            SELECT bar_date, COALESCE(close_unadjusted, close) AS close FROM raw_market.stock_daily
             WHERE symbol = %s AND bar_date <= %s
             ORDER BY bar_date DESC
             LIMIT 1

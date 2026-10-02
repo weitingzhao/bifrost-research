@@ -75,8 +75,15 @@ def as_traded_close(alias: str) -> str:
     ATM band on any of the 130 sessions before the ex-date. Multiplying back the
     splits between the bar and its fetch restores the as-traded close; a bar
     fetched before its split already is one, which is why the fetch bounds it.
+
+    Spin-offs cannot be undone that way: the vendor folds them into the adjusted
+    series and reports none (HON 2025-10-29 is 200.65 adjusted, 212.89 as traded,
+    212.10 by its own chain's parity). From plugin 0.74.0 the session's printed
+    close is stored beside the adjusted one as ``close_unadjusted``; it leads, and
+    the split arithmetic only covers a row the plugin has not filled.
     """
     return (
+        f"COALESCE({alias}.close_unadjusted, "
         f"{alias}.close * coalesce(("
         "SELECT exp(sum(ln(ca.ratio_to / ca.ratio_from)))"
         " FROM raw_market.corporate_action ca"
@@ -84,7 +91,7 @@ def as_traded_close(alias: str) -> str:
         " AND ca.ratio_from > 0 AND ca.ratio_to > 0 AND ca.ratio_from <> ca.ratio_to"
         f" AND ca.ex_date > {alias}.bar_date"
         f" AND ca.ex_date <= DATE(timezone('America/New_York', {alias}.fetched_at))"
-        "), 1)"
+        "), 1))"
     )
 
 

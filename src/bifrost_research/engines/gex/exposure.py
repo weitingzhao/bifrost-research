@@ -351,14 +351,16 @@ def fetch_spot_reading(
         candidates.append("SPX")
         sym = "SPX"
 
-    for table, col, source in (
-        ("raw_market.stock_daily", "bar_date", "close"),
-        ("raw_market.stock_snapshot", "session_date", "snapshot"),
+    # The daily bar's close as printed (plugin 0.74.0): strikes were listed
+    # against it, and the adjusted close moves with later splits and spin-offs.
+    for table, col, source, price in (
+        ("raw_market.stock_daily", "bar_date", "close", "COALESCE(close_unadjusted, close)"),
+        ("raw_market.stock_snapshot", "session_date", "snapshot", "close"),
     ):
         with conn.cursor() as cur:
             for cand in candidates:
                 cur.execute(
-                    f"SELECT close FROM {table} WHERE symbol = %s AND {col} = %s",
+                    f"SELECT {price} FROM {table} WHERE symbol = %s AND {col} = %s",
                     (cand, trade_date),
                 )
                 f = _first_positive(cur.fetchone())
@@ -375,7 +377,7 @@ def fetch_spot_reading(
             for cand in candidates:
                 cur.execute(
                     """
-                    SELECT close, bar_date FROM raw_market.stock_daily
+                    SELECT COALESCE(close_unadjusted, close), bar_date FROM raw_market.stock_daily
                     WHERE symbol = %s AND bar_date < %s AND bar_date >= %s
                     ORDER BY bar_date DESC
                     LIMIT 1

@@ -224,8 +224,9 @@ def test_as_traded_close_undoes_only_splits_between_bar_and_fetch():
     from bifrost_research.engines.volatility.iv_solver import as_traded_close
 
     sql = " ".join(as_traded_close("s").split())
-    assert sql.startswith("s.close * coalesce((")
+    # The printed close leads (plugin 0.74.0); the split arithmetic fills a row without it.
+    assert sql.startswith("COALESCE(s.close_unadjusted, s.close * coalesce((")
     assert "ca.ex_date > s.bar_date" in sql
     assert "ca.ex_date <= DATE(timezone('America/New_York', s.fetched_at))" in sql
     assert "ca.action_type = 'split'" in sql
-    assert sql.endswith("), 1)")
+    assert sql.endswith("), 1))")

@@ -280,15 +280,14 @@ def _similar_pin_distance(
                            n.max_pain_strike,
                            n.expiry,
                            n.dte,
-                           s.close::float AS close,
-                           (s.close::float - n.max_pain_strike)
-                               / NULLIF(s.close::float, 0) AS pct_distance
+                           COALESCE(s.close_unadjusted, s.close)::float AS close,
+                           (COALESCE(s.close_unadjusted, s.close)::float - n.max_pain_strike)
+                               / NULLIF(COALESCE(s.close_unadjusted, s.close)::float, 0) AS pct_distance
                     FROM nearest_mp n
                     JOIN raw_market.stock_daily s
                       ON s.symbol = n.symbol
                      AND s.bar_date = n.trade_date
-                    WHERE s.close IS NOT NULL
-                      AND s.close > 0
+                    WHERE COALESCE(s.close_unadjusted, s.close) > 0
                 )
                 SELECT trade_date, symbol,
                        pct_distance AS lens_value,

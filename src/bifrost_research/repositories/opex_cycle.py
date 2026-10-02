@@ -316,9 +316,11 @@ def get_pin_analysis(
     if not max_pain_by_expiry:
         return []
 
-    # Fetch settle closes on the friday dates
+    # Fetch settle closes on the friday dates: the close as printed, which is what
+    # the strikes were listed against (the adjusted close moves with later splits
+    # and spin-offs).
     sql2 = """
-        SELECT bar_date, close
+        SELECT bar_date, COALESCE(close_unadjusted, close) AS close
         FROM raw_market.stock_daily
         WHERE symbol = %s
           AND bar_date = ANY(%s)

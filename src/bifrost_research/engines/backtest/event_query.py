@@ -425,12 +425,17 @@ def resolve_events(
 
 
 def _fetch_stock_price(conn: Any, symbol: str, on_or_before: date) -> dict[str, Any] | None:
-    """Return {bar_date, open, close} on or before ``on_or_before`` (latest)."""
+    """Return {bar_date, open, close, close_as_traded} on or before ``on_or_before`` (latest).
+
+    ``close`` is adjusted, so a stock leg's entry and exit sit on one scale;
+    ``close_as_traded`` is the printed close, the scale an option leg's strikes
+    were listed on (they differ after a later split or spin-off).
+    """
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT bar_date, open, close
+                SELECT bar_date, open, close, COALESCE(close_unadjusted, close) AS close_as_traded
                 FROM raw_market.stock_daily
                 WHERE symbol = %s
                   AND bar_date <= %s
@@ -450,8 +455,14 @@ def _fetch_stock_price(conn: Any, symbol: str, on_or_before: date) -> dict[str, 
             "bar_date": row.get("bar_date"),
             "open": row.get("open"),
             "close": row.get("close"),
+            "close_as_traded": row.get("close_as_traded", row.get("close")),
         }
-    return {"bar_date": row[0], "open": row[1], "close": row[2]}
+    return {
+        "bar_date": row[0],
+        "open": row[1],
+        "close": row[2],
+        "close_as_traded": row[3] if len(row) > 3 else row[2],
+    }
 
 
 def _pick_option(
@@ -569,7 +580,7 @@ def _price_option_leg(
     stock_entry = _fetch_stock_price(conn, symbol, entry_date)
     if not stock_entry or stock_entry.get("close") is None:
         return None
-    spot = float(stock_entry["close"])
+    spot = float(stock_entry.get("close_as_traded") or stock_entry["close"])
 
     # Strike selection — RS-C1 v1 uses moneyness_offset; target_delta reserved
     # for future work when delta / IV columns are available in option_daily.
