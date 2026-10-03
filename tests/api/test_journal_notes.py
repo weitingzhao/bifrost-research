@@ -12,7 +12,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bifrost_research.api.app import create_app
-from bifrost_research.repositories.journal_notes import NoteLockedError, normalize_refs
+from bifrost_research.repositories.journal_notes import (
+    NoteLockedError,
+    TradeRefEnvError,
+    normalize_refs,
+    present_refs,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -107,3 +112,133 @@ def test_missing_note_is_404(client: TestClient) -> None:
     ):
         assert client.patch("/research/journal/notes/nx", json={"body_md": "x"}).status_code == 404
         assert client.delete("/research/journal/notes/nx").status_code == 404
+
+
+# ── TD-73 / naming R0 — trade refs are stored per environment ───────────────
+
+ENV = {"X-Bifrost-Env": "prod"}
+
+
+def test_trade_ref_is_stored_env_qualified_under_its_new_code() -> None:
+    refs = normalize_refs(
+        [
+            {"type": "inst", "id": "158"},  # the old code, still accepted
+            {"type": "trade", "id": "#158"},  # same trade → duplicate
+            {"type": "trade", "id": "prod:159"},  # already this env's
+            {"type": "trade", "id": "not-a-number"},  # falls out like a blank id
+        ],
+        "prod",
+    )
+    assert refs == [
+        {"type": "trade", "id": "prod:158"},
+        {"type": "trade", "id": "prod:159"},
+    ]
+
+
+def test_trade_ref_without_env_or_from_another_env_raises() -> None:
+    with pytest.raises(TradeRefEnvError):
+        normalize_refs([{"type": "inst", "id": "158"}])
+    with pytest.raises(TradeRefEnvError):
+        normalize_refs([{"type": "trade", "id": "dev:158"}], "prod")
+    # Notes that link no trade need no environment (old clients keep working).
+    assert normalize_refs([{"type": "sym", "id": "zztm"}]) == [{"type": "sym", "id": "ZZTM"}]
+
+
+def test_present_refs_strips_only_this_envs_prefix() -> None:
+    stored = [
+        {"type": "trade", "id": "prod:158"},
+        {"type": "trade", "id": "dev:158"},
+        {"type": "sym", "id": "ZZTM"},
+    ]
+    assert present_refs(stored, "prod") == [
+        {"type": "trade", "id": "158"},
+        {"type": "trade", "id": "dev:158"},
+        {"type": "sym", "id": "ZZTM"},
+    ]
+    assert present_refs(stored, None) == stored
+
+
+def test_create_with_trade_ref_and_env_header_qualifies(client: TestClient) -> None:
+    created = {"id": "n1", "owner_id": "owner", "body_md": "hello", "refs": []}
+    with (
+        patch("bifrost_research.api.journal.connect", return_value=MagicMock()),
+        patch(
+            "bifrost_research.repositories.journal_notes.insert_note", return_value=created
+        ) as ins,
+    ):
+        res = client.post(
+            "/research/journal/notes",
+            headers=ENV,
+            json={"body_md": "hello", "refs": [{"type": "inst", "id": "158"}]},
+        )
+    assert res.status_code == 200
+    assert ins.call_args.kwargs["refs"] == [{"type": "trade", "id": "prod:158"}]
+    assert ins.call_args.kwargs["env"] == "prod"
+
+
+def test_trade_ref_without_env_header_is_400_and_writes_nothing(client: TestClient) -> None:
+    """An old client (or a caller that bypassed the Trade gateway) cannot say
+    which environment's #158 it means — refused, never guessed."""
+    with (
+        patch("bifrost_research.api.journal.connect", return_value=MagicMock()) as conn,
+        patch("bifrost_research.repositories.journal_notes.insert_note") as ins,
+    ):
+        res = client.post(
+            "/research/journal/notes",
+            json={"body_md": "hello", "refs": [{"type": "inst", "id": "158"}]},
+        )
+        patched = client.patch(
+            "/research/journal/notes/n1", json={"refs": [{"type": "trade", "id": "158"}]}
+        )
+    assert res.status_code == 400
+    assert "X-Bifrost-Env" in res.json()["detail"]
+    assert patched.status_code == 400
+    ins.assert_not_called()
+    conn.assert_not_called()
+
+
+def test_symbol_note_without_env_header_still_saves(client: TestClient) -> None:
+    created = {"id": "n2", "owner_id": "owner", "body_md": "x", "refs": []}
+    with (
+        patch("bifrost_research.api.journal.connect", return_value=MagicMock()),
+        patch(
+            "bifrost_research.repositories.journal_notes.insert_note", return_value=created
+        ) as ins,
+    ):
+        res = client.post(
+            "/research/journal/notes", json={"body_md": "x", "refs": [{"type": "sym", "id": "q"}]}
+        )
+    assert res.status_code == 200
+    assert ins.call_args.kwargs["env"] is None
+
+
+def test_unknown_env_header_is_400(client: TestClient) -> None:
+    with patch("bifrost_research.api.journal.connect", return_value=MagicMock()):
+        res = client.get("/research/journal/notes", headers={"X-Bifrost-Env": "qa"})
+    assert res.status_code == 400
+
+
+def test_trade_filter_takes_the_env_and_the_new_code(client: TestClient) -> None:
+    with (
+        patch("bifrost_research.api.journal.connect", return_value=MagicMock()),
+        patch(
+            "bifrost_research.repositories.journal_notes.list_notes", return_value=[]
+        ) as ls,
+    ):
+        own = client.get(
+            "/research/journal/notes", headers=ENV, params={"ref_type": "inst", "ref_id": "158"}
+        )
+        other = client.get(
+            "/research/journal/notes",
+            headers=ENV,
+            params={"ref_type": "trade", "ref_id": "dev:158"},
+        )
+        bare_no_env = client.get(
+            "/research/journal/notes", params={"ref_type": "inst", "ref_id": "158"}
+        )
+    assert own.status_code == 200
+    assert other.status_code == 200
+    assert bare_no_env.status_code == 400
+    first, second = (c.kwargs for c in ls.call_args_list)
+    assert (first["ref_type"], first["ref_id"], first["env"]) == ("trade", "prod:158", "prod")
+    assert (second["ref_type"], second["ref_id"]) == ("trade", "dev:158")

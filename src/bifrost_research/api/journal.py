@@ -4,6 +4,11 @@
 research user (§20.5) and stay editable and deletable until the nightly
 distillation references them (§20.1) — a locked mutation answers 409 with the
 memory id, which is exactly what the row's «→ memory M-xx» mark shows.
+
+TD-73: a trade ref is stored per environment (``prod:158``). The environment
+comes from the ``X-Bifrost-Env`` header each Trade gateway stamps on the way
+here; a trade ref or trade filter without it is a 400, never a guess. Notes
+that link no trade work with or without the header.
 """
 
 from __future__ import annotations
@@ -11,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 from bifrost_research.auth.deps import require_owner
@@ -39,6 +44,23 @@ class NotePatch(BaseModel):
     refs: list[dict[str, Any]] | None = None
 
 
+def request_env(
+    x_bifrost_env: str | None = Header(default=None, alias=repo.ENV_HEADER),
+) -> str | None:
+    """The environment the Trade gateway stamped (TD-73); None when absent."""
+    try:
+        return repo.parse_env(x_bifrost_env)
+    except repo.TradeRefEnvError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _refs(raw: Any, env: str | None) -> list[dict[str, str]]:
+    try:
+        return repo.normalize_refs(raw, env)
+    except repo.TradeRefEnvError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def _clean_body(raw: str) -> str:
     body = (raw or "").strip()
     if not body:
@@ -52,8 +74,13 @@ def _clean_body(raw: str) -> str:
 
 
 @router.post("/notes")
-def note_create(body: NoteBody, owner_id: str = Depends(require_owner)) -> dict[str, Any]:
+def note_create(
+    body: NoteBody,
+    owner_id: str = Depends(require_owner),
+    env: str | None = Depends(request_env),
+) -> dict[str, Any]:
     text = _clean_body(body.body_md)
+    refs = _refs(body.refs, env)
     conn = connect()
     try:
         note = repo.insert_note(
@@ -62,7 +89,8 @@ def note_create(body: NoteBody, owner_id: str = Depends(require_owner)) -> dict[
             body_md=text,
             page_route=(body.page_route or "").strip()[:300],
             page_label=(body.page_label or "").strip()[:120],
-            refs=repo.normalize_refs(body.refs),
+            refs=refs,
+            env=env,
         )
         return _ok({"note": note})
     finally:
@@ -77,9 +105,16 @@ def note_index(
     before: str | None = None,
     limit: int = 200,
     owner_id: str = Depends(require_owner),
+    env: str | None = Depends(request_env),
 ) -> dict[str, Any]:
     if ref_type is not None and ref_type not in repo.REF_TYPES:
         raise HTTPException(status_code=400, detail=f"ref_type must be one of {repo.REF_TYPES}")
+    want_id = (ref_id or "").strip() or None
+    if ref_type is not None and want_id is not None and repo.is_trade_ref_type(ref_type):
+        try:
+            ref_type, want_id = repo.TRADE_REF, repo.trade_filter_id(want_id, env)
+        except repo.TradeRefEnvError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     conn = connect()
     try:
         rows = repo.list_notes(
@@ -87,9 +122,10 @@ def note_index(
             owner_id=owner_id,
             q=(q or "").strip() or None,
             ref_type=ref_type,
-            ref_id=(ref_id or "").strip() or None,
+            ref_id=want_id,
             before=before,
             limit=limit,
+            env=env,
         )
         return _ok({"notes": rows, "count": len(rows)})
     finally:
@@ -101,17 +137,21 @@ def note_update_route(
     note_id: str,
     body: NotePatch,
     owner_id: str = Depends(require_owner),
+    env: str | None = Depends(request_env),
 ) -> dict[str, Any]:
     if body.body_md is None and body.refs is None:
         raise HTTPException(status_code=400, detail="nothing to change")
+    text = _clean_body(body.body_md) if body.body_md is not None else None
+    refs = _refs(body.refs, env) if body.refs is not None else None
     conn = connect()
     try:
         note = repo.update_note(
             conn,
             owner_id=owner_id,
             note_id=note_id,
-            body_md=_clean_body(body.body_md) if body.body_md is not None else None,
-            refs=repo.normalize_refs(body.refs) if body.refs is not None else None,
+            body_md=text,
+            refs=refs,
+            env=env,
         )
     except repo.NoteLockedError as exc:
         raise HTTPException(
