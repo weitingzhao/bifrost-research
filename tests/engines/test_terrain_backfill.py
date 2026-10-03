@@ -38,7 +38,7 @@ def test_targets_are_the_opening_sessions_of_instances_that_no_longer_hold() -> 
         {"strategy_instance_id": None, "symbol": "SPY", "trade_date": "2026-08-20"},
     ]
     attributions = [{"strategy_instance_id": 2}]
-    targets, stats = tb.instance_targets(_get(attributions, executions), "http://trade")
+    targets, stats = tb.trade_targets(_get(attributions, executions), "http://trade")
     assert stats == {
         "instances_with_executions": 2,
         "instances_holding": 1,
@@ -55,8 +55,45 @@ def test_an_instance_without_an_opened_at_falls_back_to_its_earliest_trade() -> 
         {"strategy_instance_id": 7, "symbol": "AMD", "trade_date": "2026-04-10"},
         {"strategy_instance_id": 7, "symbol": "AMD", "trade_date": "2026-04-02"},
     ]
-    targets, _ = tb.instance_targets(_get([], executions), "http://trade")
+    targets, _ = tb.trade_targets(_get([], executions), "http://trade")
     assert targets == [("AMD", date(2026, 4, 2))]
+
+
+def _get_items(attributions: list[dict[str, Any]], executions: list[dict[str, Any]]) -> Any:
+    """The Trade API as it answers now: rows under ``items`` only."""
+
+    def _inner(base: str, path: str, params: Any = None) -> Any:
+        if path == "/executions/position-attribution":
+            return {"items": attributions, "count": len(attributions)}
+        assert path == "/executions" and params["since_ts"] == 0
+        return {"items": executions, "count": len(executions), "next_cursor": None}
+
+    return _inner
+
+
+def test_trade_names_and_items_are_read_first() -> None:
+    # api 0.7.0 rows carry trade_id / trade_opened_at_epoch; the old names are absent
+    # here so only the new ones can produce the answer.
+    executions = [
+        {"trade_id": 3, "symbol": "ZZZQ  260320C00050000",
+         "trade_opened_at_epoch": _epoch(MARCH), "trade_date": "2026-03-13"},
+        {"trade_id": 4, "symbol": "QQQZ", "trade_opened_at_epoch": _epoch(AUGUST),
+         "trade_date": "2026-08-20"},
+    ]
+    targets, stats = tb.trade_targets(_get_items([{"trade_id": 4}], executions), "http://trade")
+    assert stats["instances_with_executions"] == 2
+    assert stats["instances_holding"] == 1
+    assert targets == [("ZZZQ", MARCH)]
+
+
+def test_the_new_name_wins_when_both_are_sent() -> None:
+    executions = [
+        {"trade_id": 5, "strategy_instance_id": 5, "symbol": "ZZZQ",
+         "trade_opened_at_epoch": _epoch(AUGUST),
+         "strategy_instance_opened_at_epoch": _epoch(MARCH)},
+    ]
+    targets, _ = tb.trade_targets(_get_items([], executions), "http://trade")
+    assert targets == [("ZZZQ", AUGUST)]
 
 
 def test_an_input_that_does_not_reach_the_session_blocks_it() -> None:

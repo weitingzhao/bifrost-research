@@ -35,7 +35,7 @@ TARGET_LABELS: dict[str, str] = {
 
 FOCUS_HINTS: dict[str, str] = {
     "portfolio_risk": "Emphasize holdings, Greeks, P&L, hedge activity, and risk limits.",
-    "strategy_validation": "Emphasize instances, opportunities, gates, and structure fit.",
+    "strategy_validation": "Emphasize trades, opportunities, gate sets, and structure fit.",
     "event_driven": "Emphasize event radar, OpEx, catalysts, and timing.",
     "coding_landing": "Emphasize actionable specs, APIs, and implementation steps for engineers.",
 }

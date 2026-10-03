@@ -13,7 +13,10 @@ TRADE_TOOL_NAMES = (
     "trade.portfolio.snapshot",
     "trade.portfolio.risk_summary",
     "trade.trading.recent_executions",
+    "trade.strategy.trades",
+    "trade.strategy.gate_sets",
     "trade.strategy.instances",
+    "trade.strategy.gate_safety",
     "trade.strategy.opportunities",
     "trade.market.watchlist",
     "trade.market.quotes",
@@ -198,3 +201,70 @@ def test_position_attribution_reads_items_or_the_legacy_key(
     trade_context.register(fake)
     data = fake.tools["trade.trading.position_attribution"]()["data"]
     assert data["total_available"] == expected
+
+
+def _recording_get(body: Any, seen: list[str]) -> Any:
+    def _inner(base: str, path: str, params: dict[str, Any] | None = None) -> Any:
+        seen.append(path)
+        return body
+
+    return _inner
+
+
+def test_trades_reads_the_trades_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+    body = {"items": [{"trade_id": 1}, {"trade_id": 2}], "count": 2}
+    monkeypatch.setattr(trade_context, "get", _recording_get(body, seen))
+    fake = _fake_mcp()
+    trade_context.register(fake)
+    data = fake.tools["trade.strategy.trades"](limit=1)["data"]
+    assert seen == ["/trades"]
+    assert data == {"trades": [{"trade_id": 1}], "count": 1}
+
+
+def test_the_instances_alias_calls_trades_and_keeps_its_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+    body = {"items": [{"trade_id": 1}], "count": 1}
+    monkeypatch.setattr(trade_context, "get", _recording_get(body, seen))
+    fake = _fake_mcp()
+    trade_context.register(fake)
+    data = fake.tools["trade.strategy.instances"]()["data"]
+    assert seen == ["/trades"]
+    assert data == {"instances": [{"trade_id": 1}], "count": 1}
+
+
+def test_gate_sets_and_the_gate_safety_alias_read_gate_sets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+    body = {"items": [{"gate_safety_strategy_id": 1, "is_active": True},
+                      {"gate_safety_strategy_id": 2, "is_active": False}], "count": 2}
+    monkeypatch.setattr(trade_context, "get", _recording_get(body, seen))
+    fake = _fake_mcp()
+    trade_context.register(fake)
+    new = fake.tools["trade.strategy.gate_sets"](active_only=True)["data"]
+    old = fake.tools["trade.strategy.gate_safety"]()["data"]
+    assert seen == ["/gate-sets", "/gate-sets"]
+    assert new["count"] == 1 and new["gate_sets"][0]["gate_safety_strategy_id"] == 1
+    assert old["count"] == 2 and old["active_count"] == 1 and len(old["gates"]) == 2
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"realized_by_trade": [{"trade_id": 9}],
+         "realized_by_strategy_instance": [{"strategy_instance_id": 9}]},
+        {"realized_by_strategy_instance": [{"trade_id": 9}]},
+    ],
+)
+def test_performance_passes_realized_by_trade(
+    monkeypatch: pytest.MonkeyPatch, body: dict[str, Any]
+) -> None:
+    monkeypatch.setattr(trade_context, "get", lambda *_a, **_k: body)
+    fake = _fake_mcp()
+    trade_context.register(fake)
+    data = fake.tools["trade.trading.performance"]()["data"]
+    assert data["realized_by_trade"] == [{"trade_id": 9}]
+    assert "realized_by_strategy_instance" not in data

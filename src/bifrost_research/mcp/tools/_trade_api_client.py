@@ -8,8 +8,8 @@ module cannot bypass that.
 Endpoints resolve via K8s cluster DNS by default:
 
 - `api-monitor.bifrost-prod.svc.cluster.local:8765`  → `/status`, `/risk_summary`
-- `api-trading.bifrost-prod.svc.cluster.local:8769`  → `/executions`
-- `api-strategy.bifrost-prod.svc.cluster.local:8769` → `/instances`, `/opportunities`
+- `api-trading.bifrost-prod.svc.cluster.local:8769`  → `/executions`, `/performance`
+- `api-strategy.bifrost-prod.svc.cluster.local:8769` → `/trades`, `/gate-sets`, `/strategies/opportunities`
 - `api-market.bifrost-prod.svc.cluster.local:8772`   → `/watchlist`, `/quotes`
 
 Overridable via env vars for dev / staging:

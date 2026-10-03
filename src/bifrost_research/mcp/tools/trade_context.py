@@ -26,6 +26,13 @@ from bifrost_research.mcp.tools._trade_api_client import (
 )
 
 
+#: Old tool names, served as aliases for one version (naming program R2). The Trade API
+#: renamed the routes behind them (/strategies/instances -> /trades,
+#: /strategies/gate-safety -> /gate-sets); the aliases call the new routes too.
+ALIAS_TRADES = "trade.strategy.instances"
+ALIAS_GATE_SETS = "trade.strategy.gate_safety"
+
+
 def _safe(fn: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
     try:
         return ok(fn(*args, **kwargs))
@@ -47,6 +54,15 @@ def _list_rows(data: Any, legacy_key: str) -> list[Any]:
                 return rows
         return []
     return data if isinstance(data, list) else []
+
+
+def _first_list(data: dict[str, Any], *keys: str) -> list[Any]:
+    """The first of ``keys`` that holds a list (new name first, then the old one)."""
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+    return []
 
 
 def _extract_light_status(status: dict[str, Any]) -> dict[str, Any]:
@@ -158,8 +174,12 @@ def register(mcp: FastMCP) -> None:
 
         return _safe(_run)
 
+    def _open_trades(limit: int) -> list[Any]:
+        rows = _list_rows(get(base_strategy(), "/trades"), "instances")
+        return rows[: max(1, min(int(limit), 200))]
+
     @mcp.tool(
-        name="trade.strategy.instances",
+        name="trade.strategy.trades",
         description=(
             "Open trades: positions opened under the rules (an opportunity of the Rules "
             "chain), with account, opened time, label and fill count. Not what the daemon "
@@ -167,17 +187,25 @@ def register(mcp: FastMCP) -> None:
             f"{READ_ONLY_SUFFIX}"
         ),
     )
+    def strategy_trades(limit: int = 50) -> dict[str, Any]:
+        def _run() -> dict[str, Any]:
+            rows = _open_trades(limit)
+            return {"trades": rows, "count": len(rows)}
+
+        return _safe(_run)
+
+    @mcp.tool(
+        name=ALIAS_TRADES,
+        description=(
+            "Deprecated alias of trade.strategy.trades (same rows under the old "
+            "`instances` key); removed in the next version. "
+            f"{READ_ONLY_SUFFIX}"
+        ),
+    )
     def strategy_instances(limit: int = 50) -> dict[str, Any]:
         def _run() -> dict[str, Any]:
-            data = get(base_strategy(), "/strategies/instances")
-            rows = (data or {}).get("items") if isinstance(data, dict) else None
-            if rows is None:
-                rows = (data or {}).get("instances") if isinstance(data, dict) else None
-            if rows is None and isinstance(data, list):
-                rows = data
-            rows = rows or []
-            trimmed = rows[: max(1, min(int(limit), 200))]
-            return {"instances": trimmed, "count": len(trimmed)}
+            rows = _open_trades(limit)
+            return {"instances": rows, "count": len(rows)}
 
         return _safe(_run)
 
@@ -251,26 +279,45 @@ def register(mcp: FastMCP) -> None:
 
         return _safe(_run)
 
+    def _gate_sets(active_only: bool) -> list[Any]:
+        items = _list_rows(get(base_strategy(), "/gate-sets"), "items")
+        if active_only:
+            items = [g for g in items if isinstance(g, dict) and g.get("is_active")]
+        return items
+
     @mcp.tool(
-        name="trade.strategy.gate_safety",
+        name="trade.strategy.gate_sets",
         description=(
-            "Safety gate (guard) configuration for strategies — which gates exist, "
-            "their six dimensions, and whether each is active. Use this to answer "
+            "Gate sets: the limit parameters an allocation hangs on -- which gate sets "
+            "exist, their six dimensions, and whether each is active. Use this to answer "
             "'why did the daemon not open this position?' or 'what is currently "
             "blocking entries?'. Under spine D10 the daemon is frozen, so this is "
             "the observation surface for entry gating. "
             f"{READ_ONLY_SUFFIX}"
         ),
     )
+    def strategy_gate_sets(active_only: bool = False) -> dict[str, Any]:
+        def _run() -> dict[str, Any]:
+            items = _gate_sets(active_only)
+            return {
+                "gate_sets": items,
+                "count": len(items),
+                "active_count": sum(1 for g in items if g.get("is_active")),
+            }
+
+        return _safe(_run)
+
+    @mcp.tool(
+        name=ALIAS_GATE_SETS,
+        description=(
+            "Deprecated alias of trade.strategy.gate_sets (same rows under the old "
+            "`gates` key); removed in the next version. "
+            f"{READ_ONLY_SUFFIX}"
+        ),
+    )
     def strategy_gate_safety(active_only: bool = False) -> dict[str, Any]:
         def _run() -> dict[str, Any]:
-            data = get(base_strategy(), "/strategies/gate-safety")
-            items = (data or {}).get("items") if isinstance(data, dict) else None
-            if items is None and isinstance(data, list):
-                items = data
-            items = items or []
-            if active_only:
-                items = [g for g in items if g.get("is_active")]
+            items = _gate_sets(active_only)
             return {
                 "gates": items,
                 "count": len(items),
@@ -304,8 +351,8 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool(
         name="trade.trading.performance",
         description=(
-            "Realized P&L summary and breakdowns (by account, sec type, strategy "
-            "opportunity / instance). Returns aggregates only — the raw "
+            "Realized P&L summary and breakdowns (by account, sec type, rules "
+            "opportunity and trade). Returns aggregates only — the raw "
             "transaction ledger is deliberately excluded to keep the payload small; "
             "use trade.trading.recent_executions for individual fills. "
             f"{READ_ONLY_SUFFIX}"
@@ -326,8 +373,9 @@ def register(mcp: FastMCP) -> None:
                 "realized_by_strategy_opportunity": data.get(
                     "realized_by_strategy_opportunity", []
                 ),
-                "realized_by_strategy_instance": data.get(
-                    "realized_by_strategy_instance", []
+                # api 0.7.0 names it realized_by_trade; older APIs only had the old key.
+                "realized_by_trade": _first_list(
+                    data, "realized_by_trade", "realized_by_strategy_instance"
                 ),
                 "transaction_count": len(txns) if isinstance(txns, list) else None,
             }

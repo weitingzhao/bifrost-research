@@ -1,7 +1,7 @@
 """Terrain for the days the Owner actually opened positions — measure first, then fill.
 
 ``features.stock_forecast_terrain_daily`` only ever held what the nightly slot
-wrote, so a closed instance opened in March has no regime next to it and every
+wrote, so a closed trade opened in March has no regime next to it and every
 post-mortem reads "regime: —". This module fills those specific sessions.
 
 Measure first, because the nightly slot cannot: ``load_upstream_signals`` takes
@@ -17,8 +17,8 @@ else is reported as a skip with its reason — a gap that is visible is worth mo
 than a regime that is invented.
 
 Targets come from the Trade API over HTTP (executions plus the current position
-attribution): the opening date of every strategy instance that no longer holds a
-position, and the underlyings that instance traded. D10 BLOCKED — advisory only.
+attribution): the opening date of every trade that no longer holds a position,
+and the underlyings that trade traded. D10 BLOCKED — advisory only.
 
 A target whose row the nightly slot already wrote is left alone: recomputing it
 would overwrite tonight's answer with this run's, which has to be an explicit
@@ -70,9 +70,34 @@ def _today() -> date:
 # ── what to fill (Trade API, read-only HTTP) ──────────────────────────────
 
 
+def _first(row: Mapping[str, Any], *keys: str) -> Any:
+    """The first of ``keys`` that is set on ``row`` (the Trade API's new name, then the old)."""
+    for key in keys:
+        value = row.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _trade_id(row: Mapping[str, Any]) -> Any:
+    # Trade API 0.7.0 sends trade_id next to strategy_instance_id (naming program R1).
+    return _first(row, "trade_id", "strategy_instance_id")
+
+
+def _rows(payload: Any, legacy_key: str) -> list[Mapping[str, Any]]:
+    """A Trade API list: ``items`` (api 0.2.3+), else the route's old key."""
+    if not isinstance(payload, Mapping):
+        return []
+    for key in ("items", legacy_key):
+        rows = payload.get(key)
+        if isinstance(rows, list):
+            return rows
+    return []
+
+
 def _open_date(rows: Sequence[Mapping[str, Any]]) -> date | None:
     for row in rows:
-        epoch = row.get("strategy_instance_opened_at_epoch")
+        epoch = _first(row, "trade_opened_at_epoch", "strategy_instance_opened_at_epoch")
         if epoch:
             try:
                 return datetime.fromtimestamp(float(epoch), tz=timezone.utc).date()
@@ -88,24 +113,24 @@ def _open_date(rows: Sequence[Mapping[str, Any]]) -> date | None:
     return min(parsed) if parsed else None
 
 
-def instance_targets(get: Any, base: str) -> tuple[list[tuple[str, date]], dict[str, int]]:
-    """``[(underlying, opened_on)]`` for every instance that no longer holds a position."""
-    attribution = get(base, "/executions/position-attribution") or {}
+def trade_targets(get: Any, base: str) -> tuple[list[tuple[str, date]], dict[str, int]]:
+    """``[(underlying, opened_on)]`` for every trade that no longer holds a position."""
+    attribution = get(base, "/executions/position-attribution")
     still_open = {
-        row.get("strategy_instance_id")
-        for row in attribution.get("attributions") or []
-        if row.get("strategy_instance_id") is not None
+        _trade_id(row)
+        for row in _rows(attribution, "attributions")
+        if _trade_id(row) is not None
     }
-    payload = get(base, "/executions", {"since_ts": 0, "limit": EXECUTIONS_LIMIT}) or {}
-    by_instance: dict[Any, list[Mapping[str, Any]]] = defaultdict(list)
-    for row in payload.get("executions") or []:
-        sid = row.get("strategy_instance_id")
-        if sid is not None:
-            by_instance[sid].append(row)
+    payload = get(base, "/executions", {"since_ts": 0, "limit": EXECUTIONS_LIMIT})
+    by_trade: dict[Any, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in _rows(payload, "executions"):
+        tid = _trade_id(row)
+        if tid is not None:
+            by_trade[tid].append(row)
     targets: set[tuple[str, date]] = set()
     closed = 0
-    for sid, rows in by_instance.items():
-        if sid in still_open:
+    for tid, rows in by_trade.items():
+        if tid in still_open:
             continue
         closed += 1
         opened = _open_date(rows)
@@ -115,8 +140,9 @@ def instance_targets(get: Any, base: str) -> tuple[list[tuple[str, date]], dict[
             underlying = underlying_of(row.get("symbol"))
             if underlying:
                 targets.add((underlying, opened))
+    # The stat names stay as they were: Dagster's materialization history is keyed on them.
     stats = {
-        "instances_with_executions": len(by_instance),
+        "instances_with_executions": len(by_trade),
         "instances_holding": len(still_open),
         "closed_instances": closed,
         "targets": len(targets),
@@ -266,7 +292,7 @@ def run(*, as_of: date | None = None, force: bool = False) -> dict[str, Any]:
 
     day = as_of or _today()
     try:
-        targets, target_stats = instance_targets(get, base_trading())
+        targets, target_stats = trade_targets(get, base_trading())
     except Exception as exc:  # noqa: BLE001 — no target list, no backfill
         logger.warning("terrain backfill skipped: trade api unavailable: %s", exc)
         return {
