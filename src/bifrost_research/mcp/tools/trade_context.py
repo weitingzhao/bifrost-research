@@ -161,8 +161,9 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool(
         name="trade.strategy.instances",
         description=(
-            "Active strategy instances (open positions tied to a strategy). "
-            "Answers 'which strategies is the daemon currently running?'. "
+            "Open trades: positions opened under the rules (an opportunity of the Rules "
+            "chain), with account, opened time, label and fill count. Not what the daemon "
+            "runs -- that is the daemon config (active allocation and gate set). "
             f"{READ_ONLY_SUFFIX}"
         ),
     )
