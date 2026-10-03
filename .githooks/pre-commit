@@ -1,6 +1,39 @@
 #!/usr/bin/env bash
 # Code-health ratchet — refuse commit when value > baseline.
 # Enable once per clone: make install-hooks
+#
+# The scanner lives in the workspace root, <workspace>/scripts/code-health/scan.sh, next to the
+# main checkout. A git worktree (e.g. /tmp/.../bifrost-research) has no ../scripts, so the root
+# is found through --git-common-dir (<main checkout>/.git) instead; BIFROST_CODE_HEALTH_SCAN
+# overrides both. The scan reads this checkout's files, also from a worktree. No scanner found
+# fails the commit — never skip the hook to get past it (TD-84).
 set -euo pipefail
-ROOT="$(git rev-parse --show-toplevel)"
-bash "${ROOT}/../scripts/code-health/scan.sh" --repo bifrost-research
+
+TOP="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
+MAIN="$(dirname "$(cd "$(git rev-parse --git-common-dir)" && pwd -P)")"
+
+candidates=()
+if [[ -n "${BIFROST_CODE_HEALTH_SCAN:-}" ]]; then candidates+=("${BIFROST_CODE_HEALTH_SCAN}"); fi
+candidates+=("${TOP}/../scripts/code-health/scan.sh" "${MAIN}/../scripts/code-health/scan.sh")
+SCAN=""
+for c in "${candidates[@]}"; do
+  if [[ -f "${c}" ]]; then SCAN="${c}"; break; fi
+done
+if [[ -z "${SCAN}" ]]; then
+  echo "pre-commit: code-health scanner not found. Looked at:" >&2
+  printf '  %s\n' "${candidates[@]}" >&2
+  echo "Commit from the Bifrost workspace (or a worktree of its bifrost-research), or set BIFROST_CODE_HEALTH_SCAN." >&2
+  exit 1
+fi
+
+if [[ "${TOP}" == "${MAIN}" ]]; then
+  # Main checkout: scan.sh finds the workspace (and this repo in it) by itself.
+  exec bash "${SCAN}" --repo bifrost-research
+fi
+
+# Worktree: scan.sh scans <root>/bifrost-research, so give it a root whose bifrost-research
+# is this worktree — not the main checkout next to the scanner.
+root="$(mktemp -d)"
+trap 'rm -rf "${root}"' EXIT
+ln -s "${TOP}" "${root}/bifrost-research"
+bash "${SCAN}" --repo bifrost-research --root "${root}"

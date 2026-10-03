@@ -13,7 +13,7 @@ install-hooks:
 	@echo "git hooksPath -> .githooks (code-health pre-commit)"
 
 check-code-health:
-	bash ../scripts/code-health/scan.sh --repo bifrost-research
+	bash .githooks/pre-commit
 
 install-orchestration:
 	pip install -e ".[dev,orchestration]"
