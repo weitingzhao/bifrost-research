@@ -6,18 +6,25 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
-from bifrost_research.api import sepa_reader
+from bifrost_research.api import sepa_reader, tier_reader
 
 router = APIRouter(prefix="/analytics/sepa", tags=["sepa"])
 
 
 @router.get("/criteria-stats")
 def criteria_stats() -> dict[str, Any]:
+    """Per-domain pass/fail stats, plus names per conditions-passed count (0.157.0).
+
+    ``fundamental_distribution`` (8..0) / ``technical_distribution`` (11..0) are
+    ``[{conditions_passed, symbol_count}]`` on each mart's latest eval_date, given
+    as ``fundamental_eval_date`` / ``technical_eval_date``.
+    """
     try:
         raw = sepa_reader.fetch_criteria_stats()
+        dist = sepa_reader.fetch_pass_count_distributions()
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Analytics DB error: {exc}") from exc
-    return {"ok": True, **raw}
+    return {"ok": True, **raw, **dist}
 
 
 @router.get("/fundamental-eval/{symbol}")
@@ -152,3 +159,52 @@ def screening_ranked(
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"ok": True, "count": len(rows), "rows": rows, "limit": limit}
+
+
+# ── Momentum · structure · sentiment tiers (0.157.0, TD-49) ──────────────────
+
+
+def _tier_or_400(tier: str) -> str:
+    if tier not in tier_reader.TIER_COLUMNS:
+        raise HTTPException(status_code=400, detail=f"tier must be one of: {list(tier_reader.TIER_COLUMNS.keys())}")
+    return tier
+
+
+@router.get("/tier-stats")
+def tier_stats(tier: str = Query("momentum", description="momentum | structure | sentiment")) -> dict[str, Any]:
+    """Per-signal pass counts and the signals-passed histogram (0..N) on the tier mart's latest eval_date."""
+    _tier_or_400(tier)
+    try:
+        return tier_reader.fetch_tier_stats(tier)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Analytics DB error: {exc}") from exc
+
+
+@router.get("/tier-filter")
+def tier_filter(
+    tier: str = Query(..., description="momentum | structure | sentiment"),
+    include: str = Query("", description="Comma-separated signal ids (the mart's boolean columns)"),
+    min_score: int = Query(0, description="At least this many signals passed (clamped to 0..N)"),
+    match: str = Query("all", description="all | any of the picked signals"),
+    limit: int = Query(500, description="Names returned (clamped to 1..5000)"),
+) -> dict[str, Any]:
+    """Names passing the picked signals and at least ``min_score`` of them, latest eval_date.
+
+    ``count`` is the whole match (``count(*) OVER ()``), not the page; ``truncated``
+    says the list stops short of it. An unknown signal id is 400.
+    """
+    _tier_or_400(tier)
+    raw_ids = [s.strip() for s in (include or "").split(",") if s.strip()]
+    valid = set(tier_reader.TIER_COLUMNS[tier])
+    unknown = [c for c in raw_ids if c not in valid]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown {tier} signal ids: {', '.join(unknown)}")
+    eff_limit = max(1, min(int(limit), 5000))
+    eff_min = max(0, min(int(min_score or 0), tier_reader.TIER_MAX_SCORE[tier]))
+    eff_match = "any" if match == "any" else "all"
+    if not raw_ids and eff_min == 0:
+        return {"ok": True, "tier": tier, "include": [], "count": 0, "symbols": [], "limit": eff_limit}
+    try:
+        return tier_reader.fetch_tier_filter(tier, raw_ids, eff_min, eff_match, eff_limit)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Analytics DB error: {exc}") from exc

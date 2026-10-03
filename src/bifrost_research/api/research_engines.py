@@ -132,6 +132,69 @@ def momentum_radar(
     }
 
 
+MOMENTUM_GRADES = ("A+", "A", "B", "C", "D")
+
+
+@router.get("/momentum/grades")
+def momentum_grades(
+    grades: str = Query("", description="Comma-separated grades to list names for (A+,A,B,C,D)"),
+    limit: int = Query(2000, description="Names returned (clamped to 1..5000)"),
+) -> dict[str, Any]:
+    """The radar's grades on its latest session: names per grade, and the names in ``grades``.
+
+    ``/momentum/radar`` resolves its latest session only for one symbol; across
+    the universe it returns every session it holds, so a grade read there counts
+    names that held it on any day in months. A screen asks about today, so this
+    reads the latest ``trade_date`` only (0.157.0, TD-49; was a direct read in
+    Trade API). ``count`` is the whole match; ``truncated`` says ``symbols``
+    stops short of it.
+    """
+    picked = [g.strip().upper() for g in (grades or "").split(",") if g.strip()]
+    picked = [g for g in picked if g in MOMENTUM_GRADES]
+    eff_limit = max(1, min(int(limit), 5000))
+    table = "features.stock_signal_momentum_daily"
+    latest = f"trade_date = (SELECT max(trade_date) FROM {table})"
+    conn = _connect_or_503()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT max(trade_date) AS d, grade, count(DISTINCT symbol) AS n FROM {table} "
+                f"WHERE {latest} GROUP BY grade"
+            )
+            count_rows = cur.fetchall() or []
+            names: list[str] = []
+            if picked:
+                cur.execute(
+                    f"SELECT DISTINCT symbol FROM {table} WHERE {latest} AND grade = ANY(%s) "
+                    "ORDER BY symbol LIMIT %s",
+                    (picked, eff_limit),
+                )
+                names = [r[0] for r in (cur.fetchall() or [])]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Analytics DB error: {exc}") from exc
+    finally:
+        conn.close()
+    counts = {g: 0 for g in MOMENTUM_GRADES}
+    trade_date = None
+    for d, grade, n in count_rows:
+        if grade in counts:
+            counts[grade] = int(n or 0)
+        if trade_date is None and d is not None:
+            parsed = _as_date(d)
+            trade_date = parsed.isoformat() if parsed else None
+    total_picked = sum(counts[g] for g in picked)
+    return {
+        "ok": True,
+        "trade_date": trade_date,
+        "counts": counts,
+        "graded": sum(counts.values()),
+        "grades": picked,
+        "count": total_picked,
+        "truncated": total_picked > len(names) if picked else False,
+        "symbols": names,
+    }
+
+
 # ---------------------------------------------------------------------------
 # GEX
 # ---------------------------------------------------------------------------

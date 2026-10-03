@@ -287,3 +287,46 @@ def fetch_screening_ranked(*, limit: int = 500) -> List[Dict[str, Any]]:
                 """
             )
             return [dict(r) for r in (cur.fetchall() or [])]
+
+
+def _pass_count_buckets(cur: Any, table: str, top: int, *, skip_insufficient: bool) -> tuple[List[Dict[str, int]], Optional[str]]:
+    """Names per conditions-passed count (``top``..0) on the table's latest eval_date."""
+    as_of = latest_eval_date(cur, table)
+    if as_of is None:
+        return [], None
+    insufficient = "AND COALESCE(insufficient_data, false) IS NOT TRUE" if skip_insufficient else ""
+    cur.execute(
+        f"""
+        SELECT COALESCE(pass_count, 0)::int AS conditions_passed, COUNT(*)::int AS symbol_count
+        FROM {table}
+        WHERE eval_date = %s
+          {insufficient}
+        GROUP BY 1
+        """,
+        (as_of,),
+    )
+    dist = {int(r["conditions_passed"]): int(r["symbol_count"]) for r in (cur.fetchall() or [])}
+    buckets = [{"conditions_passed": i, "symbol_count": dist.get(i, 0)} for i in range(top, -1, -1)]
+    return buckets, as_of.isoformat()
+
+
+def fetch_pass_count_distributions() -> Dict[str, Any]:
+    """Names per conditions-passed count, fundamental (8..0) and technical (11..0), latest eval_date.
+
+    Fundamental leaves out insufficient-data rows, as its distribution and filter
+    reads do. A table with no rows answers ``[]`` and a null date.
+    """
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            fund, fund_as_of = _pass_count_buckets(
+                cur, _FUND_EVAL_TABLE, len(FUND_CONDITION_COLUMNS), skip_insufficient=True
+            )
+            tech, tech_as_of = _pass_count_buckets(
+                cur, _TECH_EVAL_TABLE, len(TECH_CONDITION_COLUMNS), skip_insufficient=False
+            )
+    return {
+        "fundamental_distribution": fund,
+        "fundamental_eval_date": fund_as_of,
+        "technical_distribution": tech,
+        "technical_eval_date": tech_as_of,
+    }
