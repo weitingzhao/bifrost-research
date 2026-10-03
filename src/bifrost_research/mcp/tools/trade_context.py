@@ -35,6 +35,20 @@ def _safe(fn: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
         return err(f"{type(exc).__name__}: {exc}")
 
 
+def _list_rows(data: Any, legacy_key: str) -> list[Any]:
+    """The rows of a Trade API list: ``items`` (api 0.2.3+), else the route's old key.
+
+    The Trade API sends both for one release, then only ``items``.
+    """
+    if isinstance(data, dict):
+        for key in ("items", legacy_key):
+            rows = data.get(key)
+            if isinstance(rows, list):
+                return rows
+        return []
+    return data if isinstance(data, list) else []
+
+
 def _extract_light_status(status: dict[str, Any]) -> dict[str, Any]:
     """Pare down /status to portfolio + daemon summary; drop verbose config."""
     accounts = status.get("portfolio", {}).get("accounts") or []
@@ -133,7 +147,7 @@ def register(mcp: FastMCP) -> None:
             if account_id:
                 params["account_id"] = account_id
             data = get(base_trading(), "/executions", params=params)
-            rows = (data or {}).get("executions") or []
+            rows = _list_rows(data, "executions")
             trimmed = rows[: max(1, min(int(limit), 500))]
             return {
                 "executions": trimmed,
@@ -276,10 +290,7 @@ def register(mcp: FastMCP) -> None:
     def trading_position_attribution(limit: int = 50) -> dict[str, Any]:
         def _run() -> dict[str, Any]:
             data = get(base_trading(), "/executions/position-attribution")
-            rows = (data or {}).get("attributions") if isinstance(data, dict) else None
-            if rows is None and isinstance(data, list):
-                rows = data
-            rows = rows or []
+            rows = _list_rows(data, "attributions")
             capped = max(1, min(limit, 200))
             return {
                 "attributions": rows[:capped],

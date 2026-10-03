@@ -160,3 +160,41 @@ def test_market_quotes_empty_symbols(monkeypatch: pytest.MonkeyPatch) -> None:
     result = fake.tools["trade.market.quotes"](symbols="   ")
     assert result["ok"] is True
     assert result["data"]["count"] == 0
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"items": [{"symbol": "NVDA"}], "count": 1},
+        {"items": [{"symbol": "NVDA"}], "count": 1, "executions": [{"symbol": "NVDA"}]},
+        {"executions": [{"symbol": "NVDA"}]},
+    ],
+)
+def test_recent_executions_reads_items_or_the_legacy_key(
+    monkeypatch: pytest.MonkeyPatch, body: dict[str, Any]
+) -> None:
+    monkeypatch.setattr(trade_context, "get", lambda *_a, **_k: body)
+    fake = _fake_mcp()
+    trade_context.register(fake)
+    data = fake.tools["trade.trading.recent_executions"](since_hours=24)["data"]
+    assert [r["symbol"] for r in data["executions"]] == ["NVDA"]
+    assert data["returned_from"] == 1
+
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        ({"items": [{"id": 1}, {"id": 2}], "count": 2}, 2),
+        ({"attributions": [{"id": 1}]}, 1),
+        ([{"id": 1}], 1),
+        ({"count": 0}, 0),
+    ],
+)
+def test_position_attribution_reads_items_or_the_legacy_key(
+    monkeypatch: pytest.MonkeyPatch, body: Any, expected: int
+) -> None:
+    monkeypatch.setattr(trade_context, "get", lambda *_a, **_k: body)
+    fake = _fake_mcp()
+    trade_context.register(fake)
+    data = fake.tools["trade.trading.position_attribution"]()["data"]
+    assert data["total_available"] == expected
