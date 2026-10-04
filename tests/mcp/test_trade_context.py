@@ -165,6 +165,23 @@ def test_market_quotes_empty_symbols(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result["data"]["count"] == 0
 
 
+def test_recent_executions_sends_the_new_query_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Trade API 0.6.6 (TD-51): the time range is ``from_ts``; ``since_ts`` is an alias
+    that is logged as deprecated and goes away."""
+    seen: dict[str, Any] = {}
+
+    def _capture(base: str, path: str, params: dict[str, Any] | None = None) -> Any:
+        seen["path"], seen["params"] = path, dict(params or {})
+        return {"items": []}
+
+    monkeypatch.setattr(trade_context, "get", _capture)
+    fake = _fake_mcp()
+    trade_context.register(fake)
+    fake.tools["trade.trading.recent_executions"](since_hours=24, account_id="U0000001")
+    assert seen["path"] == "/executions"
+    assert set(seen["params"]) == {"from_ts", "account_id"}
+
+
 @pytest.mark.parametrize(
     "body",
     [

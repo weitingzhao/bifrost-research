@@ -20,7 +20,7 @@ def _get(attributions: list[dict[str, Any]], executions: list[dict[str, Any]]) -
     def _inner(base: str, path: str, params: Any = None) -> Any:
         if path == "/executions/position-attribution":
             return {"attributions": attributions}
-        assert path == "/executions" and params["since_ts"] == 0
+        assert path == "/executions" and params["from_ts"] == 0
         return {"executions": executions}
 
     return _inner
@@ -65,7 +65,7 @@ def _get_items(attributions: list[dict[str, Any]], executions: list[dict[str, An
     def _inner(base: str, path: str, params: Any = None) -> Any:
         if path == "/executions/position-attribution":
             return {"items": attributions, "count": len(attributions)}
-        assert path == "/executions" and params["since_ts"] == 0
+        assert path == "/executions" and params["from_ts"] == 0
         return {"items": executions, "count": len(executions), "next_cursor": None}
 
     return _inner

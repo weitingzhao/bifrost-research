@@ -121,7 +121,7 @@ def trade_targets(get: Any, base: str) -> tuple[list[tuple[str, date]], dict[str
         for row in _rows(attribution, "attributions")
         if _trade_id(row) is not None
     }
-    payload = get(base, "/executions", {"since_ts": 0, "limit": EXECUTIONS_LIMIT})
+    payload = get(base, "/executions", {"from_ts": 0, "limit": EXECUTIONS_LIMIT})
     by_trade: dict[Any, list[Mapping[str, Any]]] = defaultdict(list)
     for row in _rows(payload, "executions"):
         tid = _trade_id(row)

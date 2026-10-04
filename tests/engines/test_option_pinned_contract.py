@@ -216,7 +216,7 @@ def test_the_happy_path_reads_positions_and_executions_and_writes_pins(monkeypat
                 ]
             }
         assert path == "/executions"
-        since = datetime.fromtimestamp(params["since_ts"], tz=timezone.utc).date()
+        since = datetime.fromtimestamp(params["from_ts"], tz=timezone.utc).date()
         assert since < TODAY - timedelta(days=pinned.CLOSED_RECENT_DAYS)
         return {
             "executions": [

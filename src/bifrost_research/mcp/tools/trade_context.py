@@ -159,7 +159,7 @@ def register(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         def _run() -> dict[str, Any]:
             since_ts = max(0.0, time.time() - max(1, int(since_hours)) * 3600)
-            params: dict[str, Any] = {"since_ts": since_ts}
+            params: dict[str, Any] = {"from_ts": since_ts}
             if account_id:
                 params["account_id"] = account_id
             data = get(base_trading(), "/executions", params=params)

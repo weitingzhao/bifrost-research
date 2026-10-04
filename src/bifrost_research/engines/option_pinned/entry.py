@@ -132,7 +132,7 @@ def load_held_legs(get: Any, base: str) -> list[dict[str, Any]]:
 def load_option_executions(get: Any, base: str, *, since: date) -> list[dict[str, Any]]:
     """Option executions since ``since``, each with the date it happened."""
     since_ts = datetime(since.year, since.month, since.day, tzinfo=timezone.utc).timestamp()
-    payload = get(base, "/executions", {"since_ts": since_ts, "limit": EXECUTIONS_LIMIT})
+    payload = get(base, "/executions", {"from_ts": since_ts, "limit": EXECUTIONS_LIMIT})
     rows = (payload or {}).get("executions") or []
     out: list[dict[str, Any]] = []
     for row in rows:
