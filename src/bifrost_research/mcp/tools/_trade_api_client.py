@@ -1,16 +1,20 @@
 """Shared HTTP client for Bifrost Trade API (Wave RS-F5).
 
-Read-only client — the Research MCP only ever calls GET on the four Trade API
-domains (monitor / trading / strategy / market). No POST / PUT / DELETE path
-is exposed here. D10 (live trading) remains blocked at the Trade side; this
-module cannot bypass that.
+Read-only client — the Research MCP only ever calls GET on three Trade API
+processes (monitor / account / market). No POST / PUT / DELETE path is exposed
+here. D10 (live trading) remains blocked at the Trade side; this module cannot
+bypass that.
 
-Endpoints resolve via K8s cluster DNS by default:
+Endpoints resolve via K8s cluster DNS by default, one Service per process
+(TD-55, Owner 2026-10-04 option B):
 
-- `api-monitor.bifrost-prod.svc.cluster.local:8765`  → `/status`, `/risk_summary`
-- `api-trading.bifrost-prod.svc.cluster.local:8769`  → `/executions`, `/performance`
-- `api-strategy.bifrost-prod.svc.cluster.local:8769` → `/trades`, `/gate-sets`, `/strategies/opportunities`
-- `api-market.bifrost-prod.svc.cluster.local:8772`   → `/watchlist`, `/quotes`
+- `api-monitor.bifrost-prod.svc.cluster.local:8765` → `/status`, `/risk_summary`
+- `api-account.bifrost-prod.svc.cluster.local:8769` → `/executions`, `/performance`
+  (base_trading) and `/trades`, `/gate-sets`, `/strategies/opportunities` (base_strategy)
+- `api-market.bifrost-prod.svc.cluster.local:8772`  → `/watchlist`, `/quotes`
+
+`api-trading` and `api-strategy` are alias Services of api-account that Trade
+removes in TD-55 B2; Research must not name them.
 
 Overridable via env vars for dev / staging:
 
@@ -45,14 +49,14 @@ def base_monitor() -> str:
 def base_trading() -> str:
     return _get_env(
         "TRADE_API_TRADING_URL",
-        "http://api-trading.bifrost-prod.svc.cluster.local:8769",
+        "http://api-account.bifrost-prod.svc.cluster.local:8769",
     )
 
 
 def base_strategy() -> str:
     return _get_env(
         "TRADE_API_STRATEGY_URL",
-        "http://api-strategy.bifrost-prod.svc.cluster.local:8769",
+        "http://api-account.bifrost-prod.svc.cluster.local:8769",
     )
 
 

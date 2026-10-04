@@ -129,7 +129,7 @@ spec:
             # Trade read-only API; a run that cannot reach it skips instead of
             # writing an empty pin list.
             - name: TRADE_API_TRADING_URL
-              value: "http://api-trading.bifrost-prod.svc.cluster.local:8769"
+              value: "http://api-account.bifrost-prod.svc.cluster.local:8769"
             - name: TRADE_API_TIMEOUT
               value: "8.0"
           volumeMounts:
@@ -241,7 +241,7 @@ spec:
             # Trade read-only API; a run that cannot reach it skips instead of
             # writing an empty pin list.
             - name: TRADE_API_TRADING_URL
-              value: "http://api-trading.bifrost-prod.svc.cluster.local:8769"
+              value: "http://api-account.bifrost-prod.svc.cluster.local:8769"
             - name: TRADE_API_TIMEOUT
               value: "8.0"
           volumeMounts:

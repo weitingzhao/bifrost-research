@@ -48,9 +48,9 @@ spec:
             - name: TRADE_API_MONITOR_URL
               value: "http://api-monitor.bifrost-prod.svc.cluster.local:8765"
             - name: TRADE_API_TRADING_URL
-              value: "http://api-trading.bifrost-prod.svc.cluster.local:8769"
+              value: "http://api-account.bifrost-prod.svc.cluster.local:8769"
             - name: TRADE_API_STRATEGY_URL
-              value: "http://api-strategy.bifrost-prod.svc.cluster.local:8769"
+              value: "http://api-account.bifrost-prod.svc.cluster.local:8769"
             - name: TRADE_API_MARKET_URL
               value: "http://api-market.bifrost-prod.svc.cluster.local:8772"
             - name: TRADE_API_TIMEOUT
