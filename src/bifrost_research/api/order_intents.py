@@ -12,9 +12,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
+from bifrost_research.auth.deps import require_owner
 from bifrost_research.copilot.harness.order_intent_schema import OrderIntent
 from bifrost_research.db.conn import connect
 from bifrost_research.repositories import ai_action_log as action_repo
@@ -70,7 +71,7 @@ def list_order_intents(
     )
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(require_owner)])
 def create_order_intent(body: OrderIntentCreate) -> dict[str, Any]:
     """Create pending order_intent draft (propose only)."""
     conn = _connect_or_503()
@@ -100,7 +101,7 @@ def create_order_intent(body: OrderIntentCreate) -> dict[str, Any]:
     return _ok({"draft": draft, "action": action, "advisory": True, "d10": "BLOCKED"})
 
 
-@router.post("/{draft_id}/expire")
+@router.post("/{draft_id}/expire", dependencies=[Depends(require_owner)])
 def expire_order_intent(draft_id: str) -> dict[str, Any]:
     conn = _connect_or_503()
     try:

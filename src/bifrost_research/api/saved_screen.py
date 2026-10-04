@@ -17,9 +17,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
+from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.repositories import saved_screen as repo
 
@@ -99,7 +100,7 @@ def get_screen(screen_id: str) -> dict[str, Any]:
     return _ok(row)
 
 
-@router.patch("/{screen_id}")
+@router.patch("/{screen_id}", dependencies=[Depends(require_owner)])
 def patch_screen(screen_id: str, body: ScreenPatch) -> dict[str, Any]:
     updates = body.model_dump(exclude_unset=True)
     conn = _connect_or_503()
@@ -115,7 +116,7 @@ def patch_screen(screen_id: str, body: ScreenPatch) -> dict[str, Any]:
     return _ok(row)
 
 
-@router.post("/{screen_id}/retire")
+@router.post("/{screen_id}/retire", dependencies=[Depends(require_owner)])
 def retire_screen(screen_id: str) -> dict[str, Any]:
     conn = _connect_or_503()
     try:

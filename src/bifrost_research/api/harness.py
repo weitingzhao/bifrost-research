@@ -234,7 +234,7 @@ def run_objective(objective_id: str) -> dict[str, Any]:
     return _ok(result)
 
 
-@router.post("/objectives/{objective_id}/batch-run")
+@router.post("/objectives/{objective_id}/batch-run", dependencies=[Depends(require_owner)])
 def batch_run_objective(
     objective_id: str,
     body: BatchRunBody | None = None,
@@ -314,7 +314,7 @@ def objective_run_estimate(
     return _ok(est)
 
 
-@router.post("/objective-runs/{run_id}/rate")
+@router.post("/objective-runs/{run_id}/rate", dependencies=[Depends(require_owner)])
 def rate_objective_run(run_id: str) -> dict[str, Any]:
     """Rate a run after the fact, from the candidate batch it stored.
 
