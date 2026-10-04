@@ -9,9 +9,10 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.settlement import (
     aggregate_accuracy,
@@ -231,7 +232,7 @@ class TerrainComputeBody(BaseModel):
     iv: dict[str, Any] | None = None
 
 
-@router.post("/forecast/terrain/compute")
+@router.post("/forecast/terrain/compute", dependencies=[Depends(require_owner)])
 def compute_terrain(body: TerrainComputeBody) -> dict[str, Any]:
     terrain = compute_market_terrain(
         body.symbol,
@@ -361,7 +362,7 @@ class ForecastComputeBody(BaseModel):
     enrich: bool = True
 
 
-@router.post("/forecast/sessions/compute")
+@router.post("/forecast/sessions/compute", dependencies=[Depends(require_owner)])
 def compute_forecast_session(body: ForecastComputeBody) -> dict[str, Any]:
     terrain = compute_market_terrain(
         body.symbol,
@@ -636,7 +637,7 @@ class EventRadarBody(BaseModel):
     collected_at: date | None = None
 
 
-@router.post("/event-radar/run")
+@router.post("/event-radar/run", dependencies=[Depends(require_owner)])
 def event_radar_run(body: EventRadarBody) -> dict[str, Any]:
     result = run_pipeline(
         body.payload,
@@ -719,7 +720,7 @@ def list_event_radar(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/events/ingest")
+@router.post("/events/ingest", dependencies=[Depends(require_owner)])
 def event_ingest(body: EventRadarBody) -> dict[str, Any]:
     """Alias for event-radar/run — accepts raw text, returns PipelineResult."""
     result = run_pipeline(
@@ -969,7 +970,7 @@ class AggregateBody(BaseModel):
     symbol: str | None = None
 
 
-@router.post("/backtest/settle")
+@router.post("/backtest/settle", dependencies=[Depends(require_owner)])
 def run_settlement(body: SettlementBody) -> dict[str, Any]:
     result = settle_forecast(
         session_id=body.session_id,
@@ -983,7 +984,7 @@ def run_settlement(body: SettlementBody) -> dict[str, Any]:
     return result.to_dict()
 
 
-@router.post("/backtest/aggregate")
+@router.post("/backtest/aggregate", dependencies=[Depends(require_owner)])
 def run_aggregate(body: AggregateBody) -> dict[str, Any]:
     from bifrost_research.engines.backtest.settlement import ForecastSettlement, HourlyActual
 
@@ -1182,7 +1183,7 @@ def forecast_hit_rate(
         conn.close()
 
 
-@router.post("/forecast/settle")
+@router.post("/forecast/settle", dependencies=[Depends(require_owner)])
 def trigger_settlement(body: SettlementBody) -> dict[str, Any]:
     """Manual settlement trigger for a single session."""
     result = settle_forecast(

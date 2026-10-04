@@ -48,7 +48,7 @@ class RunBody(BaseModel):
     dry_run: bool = False
 
 
-@agents_router.post("/morning/run")
+@agents_router.post("/morning/run", dependencies=[Depends(require_owner)])
 def run_morning(body: RunBody | None = None) -> dict[str, Any]:
     from bifrost_research.copilot.agents.morning_prep import run_morning_prep
 
@@ -77,7 +77,7 @@ class DigestRunBody(BaseModel):
     use_llm: bool = True
 
 
-@agents_router.post("/digest/run")
+@agents_router.post("/digest/run", dependencies=[Depends(require_owner)])
 def run_digest_now(body: DigestRunBody | None = None) -> dict[str, Any]:
     """Post today's digest (D2) — a no-op when the day already has one unless ``force``."""
     from bifrost_research.copilot.agents.daily_digest import run_daily_digest
@@ -100,7 +100,7 @@ class WeeklyReviewBody(BaseModel):
     days: int = Field(default=90, ge=7, le=730)
 
 
-@agents_router.post("/weekly-policy/run")
+@agents_router.post("/weekly-policy/run", dependencies=[Depends(require_owner)])
 def run_weekly_policy_now(body: WeeklyReviewBody | None = None) -> dict[str, Any]:
     """Review every active objective against its settled outcomes (D3) — a no-op per objective when this week already has a proposal, unless ``force``."""
     from bifrost_research.copilot.agents.weekly_policy_review import run_weekly_policy_review
@@ -114,7 +114,7 @@ def run_weekly_policy_now(body: WeeklyReviewBody | None = None) -> dict[str, Any
     return _ok(result)
 
 
-@agents_router.post("/eod/run")
+@agents_router.post("/eod/run", dependencies=[Depends(require_owner)])
 def run_eod(body: RunBody | None = None) -> dict[str, Any]:
     from bifrost_research.copilot.agents.eod_review import run_eod_review
 
