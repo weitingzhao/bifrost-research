@@ -55,9 +55,6 @@ TOOL_NAMES: tuple[str, ...] = (
     "trade.trading.recent_executions",
     "trade.strategy.trades",
     "trade.strategy.gate_sets",
-    # old names of the two above, aliases for one version (naming program R2)
-    "trade.strategy.instances",
-    "trade.strategy.gate_safety",
     "trade.strategy.opportunities",
     "trade.market.watchlist",
     "trade.market.quotes",

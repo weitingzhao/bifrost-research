@@ -26,13 +26,6 @@ from bifrost_research.mcp.tools._trade_api_client import (
 )
 
 
-#: Old tool names, served as aliases for one version (naming program R2). The Trade API
-#: renamed the routes behind them (/strategies/instances -> /trades,
-#: /strategies/gate-safety -> /gate-sets); the aliases call the new routes too.
-ALIAS_TRADES = "trade.strategy.instances"
-ALIAS_GATE_SETS = "trade.strategy.gate_safety"
-
-
 def _safe(fn: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
     try:
         return ok(fn(*args, **kwargs))
@@ -54,15 +47,6 @@ def _list_rows(data: Any, legacy_key: str) -> list[Any]:
                 return rows
         return []
     return data if isinstance(data, list) else []
-
-
-def _first_list(data: dict[str, Any], *keys: str) -> list[Any]:
-    """The first of ``keys`` that holds a list (new name first, then the old one)."""
-    for key in keys:
-        value = data.get(key)
-        if isinstance(value, list):
-            return value
-    return []
 
 
 def _extract_light_status(status: dict[str, Any]) -> dict[str, Any]:
@@ -195,21 +179,6 @@ def register(mcp: FastMCP) -> None:
         return _safe(_run)
 
     @mcp.tool(
-        name=ALIAS_TRADES,
-        description=(
-            "Deprecated alias of trade.strategy.trades (same rows under the old "
-            "`instances` key); removed in the next version. "
-            f"{READ_ONLY_SUFFIX}"
-        ),
-    )
-    def strategy_instances(limit: int = 50) -> dict[str, Any]:
-        def _run() -> dict[str, Any]:
-            rows = _open_trades(limit)
-            return {"instances": rows, "count": len(rows)}
-
-        return _safe(_run)
-
-    @mcp.tool(
         name="trade.strategy.opportunities",
         description=(
             "Configured strategy opportunities (patterns the daemon may execute). "
@@ -308,25 +277,6 @@ def register(mcp: FastMCP) -> None:
         return _safe(_run)
 
     @mcp.tool(
-        name=ALIAS_GATE_SETS,
-        description=(
-            "Deprecated alias of trade.strategy.gate_sets (same rows under the old "
-            "`gates` key); removed in the next version. "
-            f"{READ_ONLY_SUFFIX}"
-        ),
-    )
-    def strategy_gate_safety(active_only: bool = False) -> dict[str, Any]:
-        def _run() -> dict[str, Any]:
-            items = _gate_sets(active_only)
-            return {
-                "gates": items,
-                "count": len(items),
-                "active_count": sum(1 for g in items if g.get("is_active")),
-            }
-
-        return _safe(_run)
-
-    @mcp.tool(
         name="trade.trading.position_attribution",
         description=(
             "Per-position attribution linking executions to the positions they "
@@ -373,9 +323,8 @@ def register(mcp: FastMCP) -> None:
                 "realized_by_strategy_opportunity": data.get(
                     "realized_by_strategy_opportunity", []
                 ),
-                # api 0.7.0 names it realized_by_trade; older APIs only had the old key.
-                "realized_by_trade": _first_list(
-                    data, "realized_by_trade", "realized_by_strategy_instance"
+                "realized_by_trade": (
+                    data["realized_by_trade"] if isinstance(data.get("realized_by_trade"), list) else []
                 ),
                 "transaction_count": len(txns) if isinstance(txns, list) else None,
             }

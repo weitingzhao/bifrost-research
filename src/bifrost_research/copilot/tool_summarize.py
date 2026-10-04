@@ -37,7 +37,6 @@ def generic_summary(data: Any) -> list[str]:
         "rows",
         "executions",
         "trades",
-        "instances",
         "gate_sets",
         "opportunities",
         "quotes",

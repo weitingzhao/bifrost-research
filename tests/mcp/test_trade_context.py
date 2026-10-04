@@ -15,8 +15,6 @@ TRADE_TOOL_NAMES = (
     "trade.trading.recent_executions",
     "trade.strategy.trades",
     "trade.strategy.gate_sets",
-    "trade.strategy.instances",
-    "trade.strategy.gate_safety",
     "trade.strategy.opportunities",
     "trade.market.watchlist",
     "trade.market.quotes",
@@ -26,6 +24,12 @@ TRADE_TOOL_NAMES = (
 def test_trade_tools_in_canonical_list() -> None:
     for name in TRADE_TOOL_NAMES:
         assert name in server_mod.TOOL_NAMES
+
+
+def test_the_r2_alias_tool_names_are_gone() -> None:
+    # naming R4 (0.162.0): the one-version aliases of trade.strategy.trades / gate_sets.
+    for name in ("trade.strategy.instances", "trade.strategy.gate_safety"):
+        assert name not in server_mod.TOOL_NAMES
 
 
 def test_trade_tools_registered() -> None:
@@ -239,20 +243,7 @@ def test_trades_reads_the_trades_route(monkeypatch: pytest.MonkeyPatch) -> None:
     assert data == {"trades": [{"trade_id": 1}], "count": 1}
 
 
-def test_the_instances_alias_calls_trades_and_keeps_its_key(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    seen: list[str] = []
-    body = {"items": [{"trade_id": 1}], "count": 1}
-    monkeypatch.setattr(trade_context, "get", _recording_get(body, seen))
-    fake = _fake_mcp()
-    trade_context.register(fake)
-    data = fake.tools["trade.strategy.instances"]()["data"]
-    assert seen == ["/trades"]
-    assert data == {"instances": [{"trade_id": 1}], "count": 1}
-
-
-def test_gate_sets_and_the_gate_safety_alias_read_gate_sets(
+def test_gate_sets_read_gate_sets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: list[str] = []
@@ -262,26 +253,26 @@ def test_gate_sets_and_the_gate_safety_alias_read_gate_sets(
     fake = _fake_mcp()
     trade_context.register(fake)
     new = fake.tools["trade.strategy.gate_sets"](active_only=True)["data"]
-    old = fake.tools["trade.strategy.gate_safety"]()["data"]
+    every = fake.tools["trade.strategy.gate_sets"]()["data"]
     assert seen == ["/gate-sets", "/gate-sets"]
     assert new["count"] == 1 and new["gate_sets"][0]["gate_safety_strategy_id"] == 1
-    assert old["count"] == 2 and old["active_count"] == 1 and len(old["gates"]) == 2
+    assert every["count"] == 2 and every["active_count"] == 1 and len(every["gate_sets"]) == 2
 
 
 @pytest.mark.parametrize(
-    "body",
+    ("body", "expected"),
     [
-        {"realized_by_trade": [{"trade_id": 9}],
-         "realized_by_strategy_instance": [{"strategy_instance_id": 9}]},
-        {"realized_by_strategy_instance": [{"trade_id": 9}]},
+        ({"realized_by_trade": [{"trade_id": 9}]}, [{"trade_id": 9}]),
+        # an API before 0.7.0 is not read any more (naming R4)
+        ({"realized_by_strategy_instance": [{"strategy_instance_id": 9}]}, []),
     ],
 )
 def test_performance_passes_realized_by_trade(
-    monkeypatch: pytest.MonkeyPatch, body: dict[str, Any]
+    monkeypatch: pytest.MonkeyPatch, body: dict[str, Any], expected: list[Any]
 ) -> None:
     monkeypatch.setattr(trade_context, "get", lambda *_a, **_k: body)
     fake = _fake_mcp()
     trade_context.register(fake)
     data = fake.tools["trade.trading.performance"]()["data"]
-    assert data["realized_by_trade"] == [{"trade_id": 9}]
+    assert data["realized_by_trade"] == expected
     assert "realized_by_strategy_instance" not in data

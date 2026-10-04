@@ -28,16 +28,16 @@ def _get(attributions: list[dict[str, Any]], executions: list[dict[str, Any]]) -
 
 def test_targets_are_the_opening_sessions_of_instances_that_no_longer_hold() -> None:
     executions = [
-        {"strategy_instance_id": 1, "symbol": "NVDA  260320C00120000",
-         "strategy_instance_opened_at_epoch": _epoch(MARCH), "trade_date": "2026-03-12"},
-        {"strategy_instance_id": 1, "symbol": "NVDA", "trade_date": "2026-03-13",
-         "strategy_instance_opened_at_epoch": _epoch(MARCH)},
-        {"strategy_instance_id": 2, "symbol": "MU    260821P00180000",
-         "strategy_instance_opened_at_epoch": _epoch(AUGUST), "trade_date": "2026-08-20"},
-        # No instance link — cannot be attributed to an opening session.
-        {"strategy_instance_id": None, "symbol": "SPY", "trade_date": "2026-08-20"},
+        {"trade_id": 1, "symbol": "NVDA  260320C00120000",
+         "trade_opened_at_epoch": _epoch(MARCH), "trade_date": "2026-03-12"},
+        {"trade_id": 1, "symbol": "NVDA", "trade_date": "2026-03-13",
+         "trade_opened_at_epoch": _epoch(MARCH)},
+        {"trade_id": 2, "symbol": "MU    260821P00180000",
+         "trade_opened_at_epoch": _epoch(AUGUST), "trade_date": "2026-08-20"},
+        # No trade link — cannot be attributed to an opening session.
+        {"trade_id": None, "symbol": "SPY", "trade_date": "2026-08-20"},
     ]
-    attributions = [{"strategy_instance_id": 2}]
+    attributions = [{"trade_id": 2}]
     targets, stats = tb.trade_targets(_get(attributions, executions), "http://trade")
     assert stats == {
         "instances_with_executions": 2,
@@ -52,8 +52,8 @@ def test_targets_are_the_opening_sessions_of_instances_that_no_longer_hold() -> 
 
 def test_an_instance_without_an_opened_at_falls_back_to_its_earliest_trade() -> None:
     executions = [
-        {"strategy_instance_id": 7, "symbol": "AMD", "trade_date": "2026-04-10"},
-        {"strategy_instance_id": 7, "symbol": "AMD", "trade_date": "2026-04-02"},
+        {"trade_id": 7, "symbol": "AMD", "trade_date": "2026-04-10"},
+        {"trade_id": 7, "symbol": "AMD", "trade_date": "2026-04-02"},
     ]
     targets, _ = tb.trade_targets(_get([], executions), "http://trade")
     assert targets == [("AMD", date(2026, 4, 2))]
@@ -86,14 +86,15 @@ def test_trade_names_and_items_are_read_first() -> None:
     assert targets == [("ZZZQ", MARCH)]
 
 
-def test_the_new_name_wins_when_both_are_sent() -> None:
+def test_the_old_names_are_not_read() -> None:
+    # Trade API 0.9.0 (naming R4) sends only the new names; an old-name row is unattributed.
     executions = [
-        {"trade_id": 5, "strategy_instance_id": 5, "symbol": "ZZZQ",
-         "trade_opened_at_epoch": _epoch(AUGUST),
+        {"strategy_instance_id": 5, "symbol": "ZZZQ",
          "strategy_instance_opened_at_epoch": _epoch(MARCH)},
     ]
-    targets, _ = tb.trade_targets(_get_items([], executions), "http://trade")
-    assert targets == [("ZZZQ", AUGUST)]
+    targets, stats = tb.trade_targets(_get_items([], executions), "http://trade")
+    assert targets == []
+    assert stats["instances_with_executions"] == 0
 
 
 def test_an_input_that_does_not_reach_the_session_blocks_it() -> None:

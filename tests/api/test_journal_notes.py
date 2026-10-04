@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from bifrost_research.api.app import create_app
 from bifrost_research.repositories.journal_notes import (
+    REF_TYPES,
     NoteLockedError,
     TradeRefEnvError,
     normalize_refs,
@@ -43,7 +44,7 @@ def test_normalize_refs_keeps_the_designs_shape() -> None:
             {"type": "sym", "id": "zztm"},
             {"type": "sym", "id": "ZZTM"},  # duplicate after uppercasing
             {"type": "obj", "id": "obj-daily-stock"},
-            {"type": "inst", "id": ""},  # blank id falls out
+            {"type": "trade", "id": ""},  # blank id falls out
             {"type": "nope", "id": "x"},  # unknown type falls out
             "not-a-dict",
         ]
@@ -122,8 +123,8 @@ ENV = {"X-Bifrost-Env": "prod"}
 def test_trade_ref_is_stored_env_qualified_under_its_new_code() -> None:
     refs = normalize_refs(
         [
-            {"type": "inst", "id": "158"},  # the old code, still accepted
-            {"type": "trade", "id": "#158"},  # same trade → duplicate
+            {"type": "inst", "id": "158"},  # the old code: not a type since naming R4
+            {"type": "trade", "id": "#158"},
             {"type": "trade", "id": "prod:159"},  # already this env's
             {"type": "trade", "id": "not-a-number"},  # falls out like a blank id
         ],
@@ -135,9 +136,15 @@ def test_trade_ref_is_stored_env_qualified_under_its_new_code() -> None:
     ]
 
 
+def test_the_old_inst_code_is_no_ref_type() -> None:
+    # naming R4 (0.162.0): `inst` was accepted one release and stored as `trade`; 0 stored.
+    assert "inst" not in REF_TYPES
+    assert normalize_refs([{"type": "inst", "id": "158"}], "prod") == []
+
+
 def test_trade_ref_without_env_or_from_another_env_raises() -> None:
     with pytest.raises(TradeRefEnvError):
-        normalize_refs([{"type": "inst", "id": "158"}])
+        normalize_refs([{"type": "trade", "id": "158"}])
     with pytest.raises(TradeRefEnvError):
         normalize_refs([{"type": "trade", "id": "dev:158"}], "prod")
     # Notes that link no trade need no environment (old clients keep working).
@@ -169,7 +176,7 @@ def test_create_with_trade_ref_and_env_header_qualifies(client: TestClient) -> N
         res = client.post(
             "/research/journal/notes",
             headers=ENV,
-            json={"body_md": "hello", "refs": [{"type": "inst", "id": "158"}]},
+            json={"body_md": "hello", "refs": [{"type": "trade", "id": "158"}]},
         )
     assert res.status_code == 200
     assert ins.call_args.kwargs["refs"] == [{"type": "trade", "id": "prod:158"}]
@@ -185,7 +192,7 @@ def test_trade_ref_without_env_header_is_400_and_writes_nothing(client: TestClie
     ):
         res = client.post(
             "/research/journal/notes",
-            json={"body_md": "hello", "refs": [{"type": "inst", "id": "158"}]},
+            json={"body_md": "hello", "refs": [{"type": "trade", "id": "158"}]},
         )
         patched = client.patch(
             "/research/journal/notes/n1", json={"refs": [{"type": "trade", "id": "158"}]}
@@ -226,7 +233,7 @@ def test_trade_filter_takes_the_env_and_the_new_code(client: TestClient) -> None
         ) as ls,
     ):
         own = client.get(
-            "/research/journal/notes", headers=ENV, params={"ref_type": "inst", "ref_id": "158"}
+            "/research/journal/notes", headers=ENV, params={"ref_type": "trade", "ref_id": "158"}
         )
         other = client.get(
             "/research/journal/notes",
@@ -234,11 +241,15 @@ def test_trade_filter_takes_the_env_and_the_new_code(client: TestClient) -> None
             params={"ref_type": "trade", "ref_id": "dev:158"},
         )
         bare_no_env = client.get(
-            "/research/journal/notes", params={"ref_type": "inst", "ref_id": "158"}
+            "/research/journal/notes", params={"ref_type": "trade", "ref_id": "158"}
+        )
+        old_code = client.get(
+            "/research/journal/notes", headers=ENV, params={"ref_type": "inst", "ref_id": "158"}
         )
     assert own.status_code == 200
     assert other.status_code == 200
     assert bare_no_env.status_code == 400
+    assert old_code.status_code == 400  # naming R4: `inst` is not a ref type
     first, second = (c.kwargs for c in ls.call_args_list)
     assert (first["ref_type"], first["ref_id"], first["env"]) == ("trade", "prod:158", "prod")
     assert (second["ref_type"], second["ref_id"]) == ("trade", "dev:158")

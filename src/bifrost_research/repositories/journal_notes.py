@@ -18,12 +18,11 @@ from psycopg2.extras import RealDictCursor
 
 from bifrost_research.schema.schemas import TABLE_JOURNAL_NOTE
 
-# A trade's ref is stored as ``trade`` (naming R0, design Rev .111); ``inst`` is
-# its old code, still accepted on write and read for one release and stored as
-# ``trade`` so the two never split one trade's notes.
+# A trade's ref is stored as ``trade`` (naming R0, design Rev .111). Its old code
+# ``inst`` was accepted for one release and stored as ``trade``; naming R4 (0.162.0)
+# stops accepting it (0 refs were ever stored under it).
 TRADE_REF = "trade"
-LEGACY_TRADE_REFS = ("inst",)
-REF_TYPES = ("sym", "obj", TRADE_REF, *LEGACY_TRADE_REFS)
+REF_TYPES = ("sym", "obj", TRADE_REF)
 MAX_REFS = 12
 MAX_BODY_CHARS = 20_000
 
@@ -48,7 +47,7 @@ class TradeRefEnvError(ValueError):
 
 
 def is_trade_ref_type(t: str) -> bool:
-    return t == TRADE_REF or t in LEGACY_TRADE_REFS
+    return t == TRADE_REF
 
 
 def parse_env(raw: str | None) -> str | None:

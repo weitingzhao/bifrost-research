@@ -70,18 +70,9 @@ def _today() -> date:
 # ── what to fill (Trade API, read-only HTTP) ──────────────────────────────
 
 
-def _first(row: Mapping[str, Any], *keys: str) -> Any:
-    """The first of ``keys`` that is set on ``row`` (the Trade API's new name, then the old)."""
-    for key in keys:
-        value = row.get(key)
-        if value is not None:
-            return value
-    return None
-
-
 def _trade_id(row: Mapping[str, Any]) -> Any:
-    # Trade API 0.7.0 sends trade_id next to strategy_instance_id (naming program R1).
-    return _first(row, "trade_id", "strategy_instance_id")
+    # The Trade's id (strategy_instance_id until Trade API 0.9.0, naming program R4).
+    return row.get("trade_id")
 
 
 def _rows(payload: Any, legacy_key: str) -> list[Mapping[str, Any]]:
@@ -97,7 +88,7 @@ def _rows(payload: Any, legacy_key: str) -> list[Mapping[str, Any]]:
 
 def _open_date(rows: Sequence[Mapping[str, Any]]) -> date | None:
     for row in rows:
-        epoch = _first(row, "trade_opened_at_epoch", "strategy_instance_opened_at_epoch")
+        epoch = row.get("trade_opened_at_epoch")
         if epoch:
             try:
                 return datetime.fromtimestamp(float(epoch), tz=timezone.utc).date()
