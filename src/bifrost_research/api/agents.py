@@ -616,8 +616,14 @@ def approve_draft(
 
 
 @drafts_router.post("/{draft_id}/dismiss")
-def dismiss_draft(draft_id: str, body: ApproveBody | None = None) -> dict[str, Any]:
-    approved_by = (body.approved_by if body else "owner") or "owner"
+def dismiss_draft(
+    draft_id: str,
+    body: ApproveBody | None = None,
+    owner_id: str = Depends(require_owner),
+) -> dict[str, Any]:
+    # Same gate as approve: a dismissal is just as final (the draft, its action
+    # row and, for a candidate_batch, the batch's open pool rows all close).
+    approved_by = (body.approved_by if body else owner_id) or owner_id
     conn = connect()
     try:
         draft = draft_repo.get_draft(conn, draft_id)
