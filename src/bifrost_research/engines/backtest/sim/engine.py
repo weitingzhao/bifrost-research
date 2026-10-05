@@ -14,6 +14,7 @@ figures as optimistic by up to a session's move.
 
 from __future__ import annotations
 
+import bisect
 import logging
 import math
 import random
@@ -22,6 +23,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Sequence
 
+from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.engines.backtest.sim.chain import ChainStore, OptBar
 from bifrost_research.engines.backtest.sim.rules import (
     SimConfig,
@@ -30,6 +32,7 @@ from bifrost_research.engines.backtest.sim.rules import (
     naked_short_requirement,
 )
 from bifrost_research.engines.backtest.sim.structures import STRUCTURES, SimLeg
+from bifrost_research.repositories.listing_lineage import listing_end, live_label
 
 logger = logging.getLogger(__name__)
 
@@ -308,14 +311,35 @@ def _manage(pos: _Position, store: ChainStore, d: date, cfg: SimConfig) -> dict[
 # -- one symbol -------------------------------------------------------------------
 
 
-def _run_symbol(store: ChainStore, start: date, end: date, cfg: SimConfig) -> tuple[list[dict[str, Any]], dict[date, tuple[float, float, int]], dict[str, int]]:
+def _event_entries(sessions: Sequence[date], events: Sequence[date], offset: int) -> set[date]:
+    """The session ``offset`` from each event; offset 0 is the first session on or after it."""
+    out: set[date] = set()
+    for ev in events:
+        i = bisect.bisect_left(sessions, ev)
+        j = i + int(offset)
+        if i < len(sessions) and 0 <= j < len(sessions):
+            out.add(sessions[j])
+    return out
+
+
+def _run_symbol(
+    store: ChainStore,
+    start: date,
+    end: date,
+    cfg: SimConfig,
+    *,
+    events: Sequence[date] | None = None,
+) -> tuple[list[dict[str, Any]], dict[date, tuple[float, float, int]], dict[str, int]]:
     trades: list[dict[str, Any]] = []
     curve: dict[date, tuple[float, float, int]] = {}
     skips: dict[str, int] = {}
     open_: list[_Position] = []
     realized = 0.0
     entry_sessions = [d for d in store.sessions if start <= d <= end]
-    entry_set = {d for i, d in enumerate(entry_sessions) if i % max(1, cfg.entry_every_sessions) == 0}
+    if events is None:
+        entry_set = {d for i, d in enumerate(entry_sessions) if i % max(1, cfg.entry_every_sessions) == 0}
+    else:
+        entry_set = {d for d in _event_entries(store.sessions, events, cfg.entry_offset_sessions) if start <= d <= end}
     for d in store.sessions:
         if d < start:
             continue
@@ -342,8 +366,11 @@ def _run_symbol(store: ChainStore, start: date, end: date, cfg: SimConfig) -> tu
             len(open_),
         )
     last = store.sessions[-1] if store.sessions else end
+    # A delisted name's open positions close at its last marks (B7): leaving them
+    # out would drop exactly the trades the listing's end went against.
+    reason = "delisted" if store.delisted_on is not None and last == store.delisted_on else "end_of_data"
     for pos in open_:
-        done = _close(pos, last, "end_of_data", cfg)
+        done = _close(pos, last, reason, cfg)
         trades.append(done)
         realized += done["pnl"]
     if open_ and last in curve:
@@ -405,6 +432,38 @@ def summarize(trades: list[dict[str, Any]], equity: list[dict[str, Any]], cfg: S
 # -- entry point ------------------------------------------------------------------
 
 
+def _entry_rule(
+    conn: Any, symbols: Sequence[str], start: date, end: date, cfg: SimConfig
+) -> tuple[dict[str, list[date]] | None, dict[str, Any]]:
+    """Event dates per symbol when ``cfg.entry_event`` is set, and the rule as reported.
+
+    The stub earnings calendar is refused: a position opened on an invented date
+    would be a trade nobody could have made.
+    """
+    if not cfg.entry_event:
+        return None, {"kind": "schedule", "every_sessions": cfg.entry_every_sessions}
+    from bifrost_research.engines.backtest.event_defs import EventDef
+    from bifrost_research.engines.backtest.event_query import resolve_events_between
+
+    raw = dict(cfg.entry_event)
+    params = {**dict(raw.get("params") or {}), "symbols": [str(s).strip().upper() for s in symbols]}
+    event_def = EventDef.from_dict({"kind": raw.get("kind"), "params": params})
+    resolved = resolve_events_between(conn, event_def, start, end)
+    by_symbol: dict[str, list[date]] = {}
+    if resolved.source != "stub":
+        for sym, d in resolved.events:
+            by_symbol.setdefault(live_label(sym), []).append(d)
+    return by_symbol, {
+        "kind": "event",
+        "event_def": event_def.to_dict(),
+        "offset_sessions": cfg.entry_offset_sessions,
+        "source": resolved.source,
+        "events": sum(len(v) for v in by_symbol.values()),
+        "notes": resolved.notes or ("stub calendar refused: no real event dates" if resolved.source == "stub" else ""),
+    }
+
+
+
 def run_sim(
     conn: Any,
     symbols: Sequence[str],
@@ -427,6 +486,7 @@ def run_sim(
     curves: list[dict[date, tuple[float, float, int]]] = []
     skips: dict[str, int] = {}
     per_symbol: dict[str, dict[str, Any]] = {}
+    events_by_symbol, entry_rule = _entry_rule(conn, symbols, start, end, cfg)
     for raw in symbols:
         sym = str(raw).strip().upper()
         if not sym:
@@ -436,7 +496,10 @@ def run_sim(
             skips["no_stock"] = skips.get("no_stock", 0) + 1
             per_symbol[sym] = {"n_trades": 0, "skipped": "no_stock"}
             continue
-        trades, curve, sk = _run_symbol(store, start, end, cfg)
+        if store.delisted_on is None and conn is not None:
+            store.delisted_on = listing_end(conn, sym, as_of=date.today())
+        events = None if events_by_symbol is None else events_by_symbol.get(live_label(sym), [])
+        trades, curve, sk = _run_symbol(store, start, end, cfg, events=events)
         for k, v in sk.items():
             skips[k] = skips.get(k, 0) + v
         all_trades.extend(trades)
@@ -470,6 +533,8 @@ def run_sim(
     summary["skipped_entries"] = skips
     summary["per_symbol"] = per_symbol
     summary["window"] = {"start": start.isoformat(), "end": end.isoformat()}
+    summary["entry_rule"] = entry_rule
+    summary["evaluation"] = evaluation("option_simulator")
     summary["advisory"] = "D10 BLOCKED — historical replay only"
     return SimResult(summary=summary, trades=all_trades, equity=equity, params=cfg.to_dict())
 

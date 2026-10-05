@@ -19,6 +19,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.schema.schemas import (
@@ -117,7 +118,11 @@ def get_summary(
 ) -> dict[str, Any]:
     conn = connect()
     try:
-        return {"ok": True, "data": build_summary(conn, source=source, days=days)}
+        return {
+            "ok": True,
+            "data": build_summary(conn, source=source, days=days),
+            "evaluation": evaluation("candidate_outcome"),
+        }
     except Exception as exc:
         logger.warning("candidate_outcome summary failed: %s", exc)
         raise HTTPException(status_code=500, detail="candidate outcome summary failed") from exc
@@ -164,7 +169,11 @@ def get_rows(
             )
             cols = [d[0] for d in cur.description]
             rows = [dict(zip(cols, r)) for r in cur.fetchall() or []]
-        return {"ok": True, "data": {"rows": rows, "count": len(rows)}}
+        return {
+            "ok": True,
+            "data": {"rows": rows, "count": len(rows)},
+            "evaluation": evaluation("candidate_outcome"),
+        }
     except Exception as exc:
         logger.warning("candidate_outcome rows failed: %s", exc)
         raise HTTPException(status_code=500, detail="candidate outcome rows failed") from exc

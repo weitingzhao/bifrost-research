@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query
 
+from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.canonical_pnl import STRUCTURES
 from bifrost_research.engines.canonical_pnl import coverage_report, simulate_entry
@@ -26,7 +27,8 @@ router = APIRouter(prefix="/research/canonical-pnl", tags=["research-canonical-p
 
 
 def _ok(data: Any) -> dict[str, Any]:
-    return {"ok": True, "data": data}
+    # A model price, not a traded one: said on every response (W2).
+    return {"ok": True, "data": data, "evaluation": evaluation("canonical_pnl")}
 
 
 def _connect_or_503() -> Any:

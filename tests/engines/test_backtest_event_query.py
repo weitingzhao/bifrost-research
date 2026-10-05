@@ -58,6 +58,8 @@ class _FakeState:
     sepa_rows: list[tuple[str, date, float]] = field(default_factory=list)  # sym, td, score
     iv_rows: list[tuple[str, date, float]] = field(default_factory=list)    # sym, td, iv_pct
     treasury: list[tuple[date, float]] = field(default_factory=list)  # yield_date, 1m pct
+    filings_8k: list[tuple[str, date, str]] = field(default_factory=list)  # sym, filed, items_text (all 2.02)
+    inactive: set[str] = field(default_factory=set)  # raw_market.ticker active = false
 
 
 def _ticker(opt: "_OptionBar") -> str:
@@ -77,6 +79,23 @@ class _FakeCursor:
         q = " ".join(query.split()).lower()
         self.parent.statements.append((q, params))
         state = self.parent.state
+
+        if "from raw_market.sec_8k_filing" in q:
+            lo, hi, tickers, _t2 = params
+            wanted = set(tickers) if tickers else None
+            self._fetched = [
+                (sym, filed, text)
+                for (sym, filed, text) in state.filings_8k
+                if lo <= filed <= hi and (wanted is None or sym in wanted)
+            ]
+            return
+
+        if "from raw_market.ticker" in q:
+            sym, _sym2 = params
+            bars = state.stock.get(sym.upper(), [])
+            last = max((b.bar_date for b in bars), default=None)
+            self._fetched = [(last, False if sym in state.inactive else True)]
+            return
 
         if "from raw_market.corporate_action" in q:
             start, end, universe, _u2 = params
@@ -728,3 +747,4 @@ def test_short_strangle_30d_is_registered() -> None:
         ("sell", "C", 0.16),
         ("sell", "P", 0.16),
     ]
+

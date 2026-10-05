@@ -9,7 +9,8 @@ Sources (the lens list is the registry's decay lenses):
 - Terrain regime: features.stock_forecast_terrain_daily.regime (crash-risk only)
 - Order sentiment: features.option_flow_sentiment_daily, tape-sourced rows only
 
-Forward returns from raw_market.stock_daily (T+5 / T+20 sessions); the hit rule
+Forward returns from raw_market.stock_daily (T+5 / T+20 sessions), across a
+rename and up to a delisting (``repositories.listing_lineage``); the hit rule
 per lens (mean-revert / follow / magnitude) comes from the registry.
 """
 
@@ -39,6 +40,7 @@ from bifrost_research.engines.signal_hit.build import (
 )
 from bifrost_research.lenses.registry import decay_lens_ids
 from bifrost_research.lenses.slope_tenor import SLOPE_30D_WHERE_BINDS, slope_30d_sql
+from bifrost_research.repositories.listing_lineage import forward_leg
 from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_LENS_HIT_DAILY
 
 logger = logging.getLogger(__name__)
@@ -110,27 +112,14 @@ def _trading_days(conn: Any, start: date, end: date) -> list[date]:
 
 
 def _fwd_return(conn: Any, symbol: str, as_of: date, horizon: int) -> float | None:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT bar_date, close::float
-            FROM raw_market.stock_daily
-            WHERE symbol = %s
-              AND bar_date >= %s
-              AND close IS NOT NULL AND close > 0
-            ORDER BY bar_date ASC
-            LIMIT %s
-            """,
-            (symbol.upper(), as_of, horizon + 1),
-        )
-        rows = cur.fetchall() or []
-    if len(rows) < horizon + 1:
-        return None
-    c0 = float(rows[0][1])
-    c1 = float(rows[horizon][1])
-    if c0 <= 0:
-        return None
-    return (c1 / c0) - 1.0
+    """Close-to-close return over ``horizon`` sessions from ``as_of``.
+
+    Read through ``repositories.listing_lineage`` (B7): a renamed name reads on
+    under its new ticker, and a name delisted inside the window is judged on its
+    last close instead of being left out of the rate for good.
+    """
+    leg = forward_leg(conn, symbol, as_of, horizon, today=_today_ny())
+    return leg.ret if leg is not None else None
 
 
 def _load_iv_triggers(conn: Any, trade_date: date) -> list[tuple[str, str, float]]:

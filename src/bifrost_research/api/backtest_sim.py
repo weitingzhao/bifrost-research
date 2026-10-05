@@ -32,6 +32,12 @@ router = APIRouter(prefix="/research/backtest", tags=["research-backtest"])
 MAX_SYMBOLS = 10
 
 
+class SimEntryEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["earnings", "opex", "sepa_hit", "iv_percentile_threshold"]
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
 class SimBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     symbols: list[str] = Field(..., min_length=1, max_length=MAX_SYMBOLS)
@@ -43,6 +49,10 @@ class SimBody(BaseModel):
     wing_width_pct: float = Field(0.05, gt=0.0, le=0.5)
     quantity: int = Field(1, ge=1, le=100)
     entry_every_sessions: int = Field(5, ge=1, le=60)
+    # An event in place of the schedule: open ``entry_offset_sessions`` from each
+    # one and let the simulator manage it (W2, 0.171.0).
+    entry_event: SimEntryEvent | None = None
+    entry_offset_sessions: int = Field(-1, ge=-10, le=10)
     max_open_per_symbol: int = Field(3, ge=1, le=20)
     profit_take_pct: float | None = Field(0.5, gt=0.0, le=1.0)
     stop_loss_mult: float | None = Field(2.0, gt=0.0, le=20.0)
@@ -85,6 +95,8 @@ def simulate(body: SimBody) -> dict[str, Any]:
         wing_width_pct=body.wing_width_pct,
         quantity=body.quantity,
         entry_every_sessions=body.entry_every_sessions,
+        entry_event=body.entry_event.model_dump() if body.entry_event else None,
+        entry_offset_sessions=body.entry_offset_sessions,
         max_open_per_symbol=body.max_open_per_symbol,
         profit_take_pct=body.profit_take_pct,
         stop_loss_mult=body.stop_loss_mult,

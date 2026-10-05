@@ -267,15 +267,28 @@ def create_sim_run(
     # ``event_def`` is what the run list shows; ``params`` (the full config)
     # is only on the 0.170.0 column the list does not select. The symbols and
     # window go here too so a listed sim run says what it ran on.
-    event_def = {
-        "kind": "schedule",
-        "params": {
-            "symbols": list(params.get("symbols") or []),
-            "start": params.get("start"),
-            "end": params.get("end"),
-            "every_sessions": params.get("entry_every_sessions"),
-        },
-    }
+    entry_event = params.get("entry_event") or None
+    if entry_event:
+        event_def = {
+            "kind": entry_event.get("kind"),
+            "params": {
+                **dict(entry_event.get("params") or {}),
+                "symbols": list(params.get("symbols") or []),
+                "start": params.get("start"),
+                "end": params.get("end"),
+                "offset_sessions": params.get("entry_offset_sessions"),
+            },
+        }
+    else:
+        event_def = {
+            "kind": "schedule",
+            "params": {
+                "symbols": list(params.get("symbols") or []),
+                "start": params.get("start"),
+                "end": params.get("end"),
+                "every_sessions": params.get("entry_every_sessions"),
+            },
+        }
     fill_cfg = {
         "price_field": params.get("price_field"),
         "slippage_scale": params.get("slippage_scale"),

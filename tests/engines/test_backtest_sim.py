@@ -196,3 +196,28 @@ def test_chain_store_load_reads_as_traded_spot_standard_contracts_and_rates() ->
     assert store.chain_on(START, "P")[1].price("vwap") == 1.2  # no vwap → close
     assert store.rate(START) == pytest.approx(0.0431)
     assert store.rate(START + timedelta(days=40)) == 0.0
+
+
+def test_a_delisted_name_closes_its_open_position_as_delisted() -> None:
+    # B7: the listing ends 20 sessions in, with a 45-DTE put still open.
+    full = _store(lambda i: 100.0, n=80)
+    cut = full.sessions[19]
+    bars = [b for by_day in full._by_ticker.values() for b in by_day.values() if b.bar_date <= cut]
+    store = ChainStore("X", {d: px for d, px in full.spot.items() if d <= cut}, bars)
+    store.delisted_on = cut
+    cfg = SimConfig(structure="short_put", target_dte=45, entry_every_sessions=200, profit_take_pct=None, stop_loss_mult=None, dte_exit=None)
+    res = run_sim(None, ["X"], store.sessions[0], store.sessions[-1], cfg, stores={"X": store})
+    assert [t["exit_reason"] for t in res.trades] == ["delisted"]
+    assert res.trades[0]["exit_date"] == store.sessions[-1].isoformat()
+
+
+def test_event_entry_opens_one_session_before_each_event() -> None:
+    from bifrost_research.engines.backtest.sim.engine import _event_entries, _run_symbol
+
+    store = _store(lambda i: 100.0, n=120)
+    days = store.sessions
+    events = [days[20], days[70] + timedelta(days=1)]  # the second falls between sessions
+    assert _event_entries(days, events, -1) == {days[19], days[70]}
+    cfg = SimConfig(structure="short_put", target_dte=45, entry_offset_sessions=-1)
+    trades, _curve, _skips = _run_symbol(store, days[0], days[100], cfg, events=events)
+    assert sorted(t["entry_date"] for t in trades) == [days[19].isoformat(), days[70].isoformat()]

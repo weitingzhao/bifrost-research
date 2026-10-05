@@ -17,6 +17,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Literal, Mapping
 
 from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
+from bifrost_research.repositories.listing_lineage import live_label, stock_clause
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,9 @@ class ChainStore:
         rates: Mapping[date, float] | None = None,
     ) -> None:
         self.symbol = symbol
+        # Set by the run when the listing was retired: its last close. Positions
+        # still open then close there as ``delisted``, not ``end_of_data``.
+        self.delisted_on: date | None = None
         self.sessions: list[date] = sorted(spot)
         self.spot: dict[date, float] = dict(spot)
         self._by_day: dict[tuple[date, str], list[OptBar]] = {}
@@ -74,7 +78,10 @@ class ChainStore:
 
     @classmethod
     def load(cls, conn: Any, symbol: str, start: date, end: date, *, max_dte: int) -> "ChainStore":
-        sym = symbol.strip().upper()
+        # Options sit under the ticker the company trades as now (Plugin 0.51.0);
+        # the stock closes splice in the old ticker's bars across a rename (B7).
+        sym = live_label(symbol)
+        clause, sym_params = stock_clause(conn, sym)
         # Positions opened near ``end`` run on toward their expiry; keep the
         # sessions and the bars that far so they can be marked and settled.
         tail = end + timedelta(days=int(max_dte) * 2 + 14)
@@ -83,15 +90,15 @@ class ChainStore:
         rates: dict[date, float] = {}
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT bar_date, COALESCE(close_unadjusted, close) AS close_as_traded
                 FROM raw_market.stock_daily
-                WHERE symbol = %s
+                WHERE {clause}
                   AND bar_date BETWEEN %s AND %s
                   AND close > 0
                 ORDER BY bar_date
                 """,
-                (sym, start, tail),
+                (*sym_params, start, tail),
             )
             for r in cur.fetchall() or []:
                 d, px = _d(_col(r, 0, "bar_date")), _col(r, 1, "close_as_traded")

@@ -19,8 +19,9 @@ Notes on data source gaps (Wave RS-C1):
   ``fills.compute_fill_price`` layers a mid ± slippage model on top and
   degrades back to ``close`` when bid/ask are unavailable — keeping this
   entry point backward compatible.
-- Earnings dates come from ``raw_market.stock_financials.filing_date`` — when
-  the 10-Q / 10-K was filed, ~15 years deep. The resolver falls back through:
+- Earnings dates are the name's 8-K Item 2.02 filings (the results release),
+  from ``raw_market.sec_8k_filing`` (0.171.0, B6; before that the 10-Q / 10-K
+  filing date, weeks after the print). The resolver falls back through:
   (a) ``raw_market.corporate_action`` (only if it grows an ``earnings``
   action_type — currently only splits/dividends); (b)
   ``features.event_signal_radar_daily`` heuristics; and (c) a small hard-coded
@@ -46,6 +47,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
 
 from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
+from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.engines.backtest.event_defs import EventDef
 from bifrost_research.engines.backtest.strategy_templates import (
     LegSpec,
@@ -55,6 +57,13 @@ from bifrost_research.engines.backtest.strategy_templates import (
     resolve_trading_window,
 )
 from bifrost_research.engines.opex_cycle.calendar import third_friday
+from bifrost_research.repositories.earnings_filings import (
+    RELEASE_WITHIN_DAYS,
+    distinct_prints,
+    speaks_of_results,
+    split_releases,
+)
+from bifrost_research.repositories.listing_lineage import labels, listing_end, live_label, stock_clause
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +153,60 @@ def _params_symbols(params: Mapping[str, Any]) -> list[str]:
     return symbols
 
 
+def _rollback(conn: Any) -> None:
+    rollback = getattr(conn, "rollback", None)
+    if callable(rollback):
+        try:
+            rollback()
+        except Exception:  # noqa: BLE001, S110
+            pass
+
+
+def _earnings_prints_8k(
+    conn: Any, universe: Sequence[str], start: date, end: date
+) -> list[tuple[str, date]]:
+    """(symbol, filing day) of each results release in [start, end], by date.
+
+    Filings are read ``RELEASE_WITHIN_DAYS`` past ``end`` so a filing near the
+    end is judged the same way as one in the middle: whether a 2.02 filing that
+    says nothing about results is set aside depends on a release following it.
+    Filings within ``SAME_PRINT_DAYS`` of a kept one (8-K/A, follow-ups) are the
+    same print. A renamed company's filings under its old ticker count, and
+    every event comes back under the ticker it trades as now.
+    """
+    tickers = sorted({t for sym in universe for t in labels(sym)})
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT UPPER(TRIM(symbol)), filing_date, items_text
+            FROM raw_market.sec_8k_filing
+            WHERE '2.02' = ANY(items)
+              AND filing_date BETWEEN %s AND %s
+              AND (%s::text[] IS NULL OR symbol = ANY(%s::text[]))
+            """,
+            (
+                start - timedelta(days=RELEASE_WITHIN_DAYS),
+                end + timedelta(days=RELEASE_WITHIN_DAYS),
+                tickers or None,
+                tickers or None,
+            ),
+        )
+        rows = cur.fetchall() or []
+    by_symbol: dict[str, list[tuple[date, bool]]] = {}
+    for sym, filed, text in rows:
+        if isinstance(filed, datetime):
+            filed = filed.date()
+        if not isinstance(filed, date):
+            continue
+        by_symbol.setdefault(live_label(str(sym)), []).append((filed, speaks_of_results(text)))
+    out: list[tuple[str, date]] = []
+    for sym, filings in by_symbol.items():
+        kept, _aside = split_releases(filings)
+        out.extend((sym, d) for d in distinct_prints(kept) if start <= d <= end)
+    out.sort(key=lambda e: (e[1], e[0]))
+    return out
+
+
 def _resolve_earnings_events(
     conn: Any,
     params: Mapping[str, Any],
@@ -153,8 +216,12 @@ def _resolve_earnings_events(
     """Resolve earnings events using best-available Golden Source data.
 
     Priority:
-      0. ``raw_market.stock_financials.filing_date`` — when the 10-Q / 10-K was
-         actually filed. ~15 years deep across ~4.4k symbols.
+      0. The name's own 8-K filings carrying Item 2.02 (results of operations),
+         from ``raw_market.sec_8k_filing``, less the 2.02 filings that are not a
+         results release (``repositories.earnings_filings``: Tesla's delivery
+         reports and the like). The event date is the filing day: the release
+         came before that day's open or after its close, so an entry at offset
+         -1 or earlier is the last one surely before the print.
       1. ``raw_market.corporate_action`` filtered to an ``earnings`` action_type
          (currently only split/dividend rows exist — this branch simply falls
          through when zero rows match).
@@ -162,6 +229,12 @@ def _resolve_earnings_events(
          ILIKE '%earnings%' or '%财报%'.
       3. Hard-coded stub with the trailing 8 quarters (roughly every ~91 days)
          for the canonical universe.
+
+    Until 0.171.0 rung 0 was ``raw_market.stock_financials.filing_date`` — when
+    the 10-Q / 10-K reached EDGAR, 24–31 days after the results release on NVDA.
+    An entry "one session before earnings" sat weeks after the print (B6). It is
+    not a fallback either: a name without an 8-K on file is left out and named
+    in ``notes`` rather than dated a month late.
 
     The stub stays as the last rung: a run with no real dates should say so
     rather than return nothing.
@@ -171,38 +244,22 @@ def _resolve_earnings_events(
 
     events: list[tuple[str, date]] = []
 
-    # (0) stock_financials.filing_date — the real reporting date.
-    #
-    # period_date is the fiscal period END; filing_date is when the report was
-    # filed, and the gap varies (24-31 days on NVDA), so the two are not
-    # interchangeable for an event study.
-    #
-    # DISTINCT: stock_financials is a view over six entity tables, so one filing
-    # surfaces once per statement kind. Fiscal-Q4 quarterly rows carry no
-    # filing_date — the matching annual row does — so both kinds are read.
+    # (0) 8-K Item 2.02 — the results release.
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT DISTINCT UPPER(TRIM(symbol)), filing_date
-                FROM raw_market.stock_financials
-                WHERE filing_date IS NOT NULL
-                  AND filing_date BETWEEN %s AND %s
-                  AND (%s::text[] IS NULL OR symbol = ANY(%s::text[]))
-                ORDER BY filing_date
-                """,
-                (start, end, universe or None, universe or None),
+        prints = _earnings_prints_8k(conn, universe, start, end)
+        if prints:
+            covered = {sym for sym, _d in prints}
+            missing = [sym for sym in universe if live_label(sym) not in covered]
+            notes = (
+                "event_date is the 8-K Item 2.02 filing day; the release was before its open "
+                "or after its close, so only entries at offset <= -1 are surely before the print"
             )
-            rows = cur.fetchall() or []
-        filings: list[tuple[str, date]] = []
-        for sym, filed in rows:
-            if isinstance(filed, datetime):
-                filed = filed.date()
-            filings.append((str(sym), filed))
-        if filings:
-            return ResolvedEvents(events=filings, source="financials_filing")
+            if missing:
+                notes += f"; no results 8-K on file in the window, left out: {', '.join(missing)}"
+            return ResolvedEvents(events=prints, source="sec_8k_item_2_02", notes=notes)
     except Exception as exc:  # pragma: no cover - depends on DB schema
-        logger.debug("earnings stock_financials fallback: %s", exc)
+        logger.debug("earnings sec_8k_filing fallback: %s", exc)
+        _rollback(conn)
 
     # (1) corporate_action
     try:
@@ -406,6 +463,11 @@ def resolve_events(
     today: date | None = None,
 ) -> ResolvedEvents:
     start, end = _lookback_window(lookback_years, today=today)
+    return resolve_events_between(conn, event_def, start, end)
+
+
+def resolve_events_between(conn: Any, event_def: EventDef, start: date, end: date) -> ResolvedEvents:
+    """``resolve_events`` over an explicit window — the simulator's entry rule."""
     kind = event_def.kind
     params = event_def.params or {}
     if kind == "earnings":
@@ -433,18 +495,19 @@ def _fetch_stock_price(conn: Any, symbol: str, on_or_before: date) -> dict[str, 
     ``close_as_traded`` is the printed close, the scale an option leg's strikes
     were listed on (they differ after a later split or spin-off).
     """
+    clause, sym_params = stock_clause(conn, symbol)
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT bar_date, open, close, COALESCE(close_unadjusted, close) AS close_as_traded
                 FROM raw_market.stock_daily
-                WHERE symbol = %s
+                WHERE {clause}
                   AND bar_date <= %s
                 ORDER BY bar_date DESC
                 LIMIT 1
                 """,
-                (symbol.strip().upper(), on_or_before),
+                (*sym_params, on_or_before),
             )
             row = cur.fetchone()
     except Exception as exc:  # pragma: no cover
@@ -468,17 +531,18 @@ def _fetch_stock_price(conn: Any, symbol: str, on_or_before: date) -> dict[str, 
 
 
 def _trading_sessions(conn: Any, symbol: str, start: date, end: date) -> list[date]:
-    """The underlying's trading days in ``[start, end]``, ascending."""
+    """The underlying's trading days in ``[start, end]``, ascending (across a rename)."""
+    clause, sym_params = stock_clause(conn, symbol)
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT bar_date FROM raw_market.stock_daily
-                WHERE symbol = %s
+                WHERE {clause}
                   AND bar_date BETWEEN %s AND %s
                 ORDER BY bar_date
                 """,
-                (symbol.strip().upper(), start, end),
+                (*sym_params, start, end),
             )
             rows = cur.fetchall() or []
     except Exception as exc:  # pragma: no cover
@@ -756,6 +820,7 @@ def _price_option_leg(
     fill_config: Any | None = None,
     anchor: LegPricing | None = None,
     rate_cache: dict[date, float] | None = None,
+    delisted_on: date | None = None,
 ) -> LegPricing | None:
     stock_entry = _fetch_stock_price(conn, symbol, entry_date)
     if not stock_entry or stock_entry.get("close") is None:
@@ -799,6 +864,7 @@ def _price_option_leg(
         expiry = expiry.date()
     exit_side = "sell" if leg.side == "buy" else "buy"
     settled_at_expiry = exit_date >= expiry
+    exit_pricing_source = "option_close"
     if settled_at_expiry:
         # Held to expiry: the contract is worth its intrinsic value against the
         # underlying's close that day. Until 0.169.0 the exit re-picked with
@@ -815,6 +881,18 @@ def _price_option_leg(
         exit_leg_date = expiry
     else:
         exit_option = _fetch_contract_bar(conn, str(entry_option.get("option_ticker")), exit_date)
+        exit_pricing_source = "option_close"
+        if not exit_option and delisted_on is not None and exit_date == delisted_on:
+            # The underlying stopped trading and the contract left no print to
+            # close at: it is worth its intrinsic value against the last close.
+            stock_last = _fetch_stock_price(conn, symbol, delisted_on)
+            if not stock_last or stock_last.get("close") is None:
+                return None
+            spot_last = float(stock_last.get("close_as_traded") or stock_last["close"])
+            strike = float(entry_option["strike"])
+            intrinsic = max(0.0, spot_last - strike) if right == "C" else max(0.0, strike - spot_last)
+            exit_option = {"close": intrinsic, "bar_date": stock_last.get("bar_date"), "stale_days": 0}
+            exit_pricing_source = "delisting_intrinsic"
         if not exit_option:
             return None
         exit_price = _apply_fill(leg, exit_option, side=exit_side, fill_config=fill_config)
@@ -834,7 +912,7 @@ def _price_option_leg(
     pnl = gross - commission
     fill_details: dict[str, Any] = {
         "pricing_source": "option_close",
-        "exit_pricing_source": "expiry_intrinsic" if settled_at_expiry else "option_close",
+        "exit_pricing_source": "expiry_intrinsic" if settled_at_expiry else exit_pricing_source,
         "option_ticker": entry_option.get("option_ticker"),
         "spot": round(spot, 6),
         "strike_target": round(strike_target, 6),
@@ -909,17 +987,18 @@ def _mfe_mae_for_run(
     """
     if exit_date < entry_date:
         entry_date, exit_date = exit_date, entry_date
+    clause, sym_params = stock_clause(conn, symbol)
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT bar_date, high, low, close
                 FROM raw_market.stock_daily
-                WHERE symbol = %s
+                WHERE {clause}
                   AND bar_date BETWEEN %s AND %s
                 ORDER BY bar_date
                 """,
-                (symbol.strip().upper(), entry_date, exit_date),
+                (*sym_params, entry_date, exit_date),
             )
             rows = cur.fetchall() or []
     except Exception:  # pragma: no cover
@@ -1008,6 +1087,23 @@ def _summarize(runs: Sequence[EventRun]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _clip_to_listing_end(leg: LegSpec, event_date: date, sessions: Sequence[date]) -> tuple[date, date] | None:
+    """The leg's window with its exit pulled back to the last session.
+
+    Only for a delisted underlying (B7): there is no later price, so the last
+    close is the exit. The entry still has to fall inside the listing's life.
+    """
+    days = sorted(set(sessions))
+    anchor = next((i for i, d in enumerate(days) if d >= event_date), None)
+    if anchor is None:
+        return None
+    lo, hi = sorted((int(leg.entry_offset_days), int(leg.exit_offset_days)))
+    i_entry, i_exit = anchor + lo, min(anchor + hi, len(days) - 1)
+    if i_entry < 0 or i_entry >= len(days) or i_exit < i_entry:
+        return None
+    return days[i_entry], days[i_exit]
+
+
 def run_event_query(
     event_def: EventDef | Mapping[str, Any],
     template_name: str,
@@ -1054,7 +1150,12 @@ def run_event_query(
         hi_off = max(max(int(lg.entry_offset_days), int(lg.exit_offset_days)) for lg in legs)
         pad_before = int(abs(min(lo_off, 0)) * 1.5) + 10
         pad_after = int(max(hi_off, 0) * 1.5) + 10
-        for symbol, event_date in resolved.events[: max(1, int(max_events))]:
+        as_of = today or date.today()
+        delisted_exits = 0
+        for raw_symbol, event_date in resolved.events[: max(1, int(max_events))]:
+            # Options sit under the ticker the company trades as now (Plugin
+            # 0.51.0); the stock reads splice the old ticker's bars in (B7).
+            symbol = live_label(raw_symbol)
             sessions = _trading_sessions(
                 conn,
                 symbol,
@@ -1069,8 +1170,17 @@ def run_event_query(
             entry_dates: list[date] = []
             exit_dates: list[date] = []
             skip_run = False
+            delisted_on: date | None = None
+            ended_checked = False
             for leg in legs:
                 window = resolve_trading_window(leg, event_date, sessions)
+                if window is None and not ended_checked:
+                    ended_checked = True
+                    end = listing_end(conn, symbol, as_of=as_of)
+                    if end is not None and sessions and sessions[-1] == end:
+                        delisted_on = end
+                if window is None and delisted_on is not None:
+                    window = _clip_to_listing_end(leg, event_date, sessions)
                 if window is None:
                     # The exit has not happened yet (or the history starts after
                     # the entry): there is nothing honest to price it at.
@@ -1093,6 +1203,7 @@ def run_event_query(
                         fill_config=fill_config,
                         anchor=anchor,
                         rate_cache=rate_cache,
+                        delisted_on=delisted_on,
                     )
                 if pricing is None:
                     # Which data was missing decides whether an empty result means
@@ -1112,6 +1223,10 @@ def run_event_query(
             exit_ts = max(exit_dates)
             pnl = sum(lp.pnl for lp in leg_pricings)
             mfe, mae = _mfe_mae_for_run(conn, symbol, entry_ts, exit_ts, direction_sign)
+            notes = "D10 BLOCKED — historical replay only"
+            if delisted_on is not None and exit_ts == delisted_on:
+                delisted_exits += 1
+                notes = f"delisted: closed at the last close {delisted_on.isoformat()}; " + notes
             runs.append(
                 EventRun(
                     event_date=event_date.isoformat(),
@@ -1122,7 +1237,7 @@ def run_event_query(
                     mfe=mfe,
                     mae=mae,
                     legs=leg_pricings,
-                    notes="D10 BLOCKED — historical replay only",
+                    notes=notes,
                 )
             )
     finally:
@@ -1137,8 +1252,10 @@ def run_event_query(
     summary["skipped_no_option"] = skipped_no_option
     summary["skipped_no_stock"] = skipped_no_stock
     summary["skipped_incomplete_window"] = skipped_incomplete_window
+    summary["delisted_exits"] = delisted_exits
     summary["offset_unit"] = "trading_sessions"
     summary["event_source"] = resolved.source
+    summary["evaluation"] = evaluation("event_backtest")
     return {
         "runs": [_run_to_dict(r) for r in runs],
         "summary": summary,
@@ -1184,6 +1301,7 @@ __all__ = [
     "LegPricing",
     "ResolvedEvents",
     "resolve_events",
+    "resolve_events_between",
     "run_event_query",
     "summarize_runs",
 ]

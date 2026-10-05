@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
+from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.signal_hit.build import expected_sign
 from bifrost_research.lenses.registry import decay_lens_ids
@@ -34,7 +35,8 @@ VALID_REGIMES = frozenset({"any", "bull", "rangy", "bear"})
 
 
 def _ok(data: Any) -> dict[str, Any]:
-    return {"ok": True, "data": data}
+    # A signal evaluation, not a backtest: said on every response (W2).
+    return {"ok": True, "data": data, "evaluation": evaluation("lens_hit_rate")}
 
 
 def _connect_or_503() -> Any:

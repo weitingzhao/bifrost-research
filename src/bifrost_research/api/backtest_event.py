@@ -3,6 +3,7 @@
 Response envelope: ``{"ok": bool, "data": ..., "error"?: str}``.
 
 Routes:
+    GET  /research/backtest/catalog
     POST /research/backtest/event-query
     GET  /research/backtest/runs?hypothesis_id=&limit=&offset=
     GET  /research/backtest/run/{run_id}
@@ -24,6 +25,7 @@ from bifrost_research.engines.backtest.benchmark import (
     spy_buy_hold_metrics,
     zero_signal_control,
 )
+from bifrost_research.engines.backtest.catalog import EVALUATIONS
 from bifrost_research.engines.backtest.event_defs import EventDef
 from bifrost_research.engines.backtest.event_query import run_event_query
 from bifrost_research.engines.backtest.fills import FillConfig
@@ -84,6 +86,13 @@ def _validate_template(name: str) -> None:
                 f"unknown strategy_template {name!r}; available: {sorted(TEMPLATES)}"
             ),
         )
+
+
+@router.get("/catalog")
+def evaluation_catalog() -> dict[str, Any]:
+    """Every Research evaluation with its class — backtest, model reference or
+    signal evaluation — what it answers and on which prices (W2, 0.171.0)."""
+    return _ok({"evaluations": EVALUATIONS})
 
 
 @router.post("/event-query", dependencies=[Depends(require_owner)])

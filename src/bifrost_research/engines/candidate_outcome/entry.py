@@ -29,6 +29,7 @@ from bifrost_research.engines.candidate_outcome.build import (
     DEFAULT_LOOKBACK_DAYS,
     excess_hit,
 )
+from bifrost_research.repositories.listing_lineage import forward_leg
 from bifrost_research.schema.schemas import (
     TABLE_RESEARCH_CANDIDATE_OUTCOME,
     TABLE_RESEARCH_CANDIDATE_POOL,
@@ -83,24 +84,15 @@ def _forward_leg(
     A richer form of ``engines/signal_hit/entry.py::_fwd_return`` — that one
     needs only the scalar return, this one stores the legs it came from so a
     number on the page can be checked against real prices.
+
+    Read through ``repositories.listing_lineage`` (B7): across a rename, and up
+    to the last close when the name was delisted inside the window — the exit
+    date is then that session and the benchmark is priced over the same span.
     """
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT bar_date, close::float
-            FROM raw_market.stock_daily
-            WHERE symbol = %s
-              AND bar_date >= %s
-              AND close IS NOT NULL AND close > 0
-            ORDER BY bar_date ASC
-            LIMIT %s
-            """,
-            (symbol.upper(), as_of, horizon + 1),
-        )
-        rows = cur.fetchall() or []
-    if len(rows) < horizon + 1:
+    leg = forward_leg(conn, symbol, as_of, horizon, today=date.today())
+    if leg is None:
         return None, None, None, None
-    return float(rows[0][1]), float(rows[horizon][1]), rows[horizon][0], rows[0][0]
+    return leg.entry_close, leg.exit_close, leg.exit_date, leg.entry_date
 
 
 def _close_on(conn: Any, symbol: str, day: date) -> float | None:

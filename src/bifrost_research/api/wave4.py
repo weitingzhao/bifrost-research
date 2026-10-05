@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.settlement import (
@@ -428,7 +429,8 @@ def list_forecast_sessions(
         rows = [_row_dict(r, cols) for r in raw]
     finally:
         conn.close()
-    return {"rows": rows, "count": len(rows)}
+    # A signal evaluation, not a backtest, whatever the table is called (W2).
+    return {"rows": rows, "count": len(rows), "evaluation": evaluation("forecast_settlement")}
 
 
 def calibration_rows(raw: list[tuple[Any, ...]]) -> list[dict[str, Any]]:
@@ -759,7 +761,8 @@ def list_event_batches(
         rows = [_row_dict(r, batch_cols) for r in raw]
     finally:
         conn.close()
-    return {"rows": rows, "count": len(rows)}
+    # A signal evaluation, not a backtest, whatever the table is called (W2).
+    return {"rows": rows, "count": len(rows), "evaluation": evaluation("forecast_settlement")}
 
 
 @router.get("/events/batch/{batch_id}")
@@ -826,7 +829,8 @@ def event_themes() -> dict[str, Any]:
         rows = [_row_dict(r, cols) for r in raw]
     finally:
         conn.close()
-    return {"rows": rows, "count": len(rows)}
+    # A signal evaluation, not a backtest, whatever the table is called (W2).
+    return {"rows": rows, "count": len(rows), "evaluation": evaluation("forecast_settlement")}
 
 
 @router.get("/event-radar/macro/gap")
@@ -1072,7 +1076,8 @@ def get_forecast_settlement(
         rows = [_enrich_settlement_row(_row_dict(r, cols)) for r in raw]
     finally:
         conn.close()
-    return {"rows": rows, "count": len(rows)}
+    # A signal evaluation, not a backtest, whatever the table is called (W2).
+    return {"rows": rows, "count": len(rows), "evaluation": evaluation("forecast_settlement")}
 
 
 @router.get("/forecast/hit-rate")
@@ -1298,7 +1303,8 @@ def get_settlement_summary(
         rows = [_enrich_settlement_row(_row_dict(r, cols)) for r in raw]
     finally:
         conn.close()
-    return {"rows": rows, "count": len(rows)}
+    # A signal evaluation, not a backtest, whatever the table is called (W2).
+    return {"rows": rows, "count": len(rows), "evaluation": evaluation("forecast_settlement")}
 
 
 # ---------------------------------------------------------------------------

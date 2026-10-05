@@ -21,6 +21,11 @@ class SimConfig:
         holds to expiry.
       - ``max_stale_sessions``: close when any leg has gone this many sessions
         without a print — the mark is no longer a price.
+
+    Entry: every ``entry_every_sessions`` by default. With ``entry_event`` (an
+    ``EventDef`` dict such as ``{"kind": "earnings"}``) a position opens
+    ``entry_offset_sessions`` from each event instead — the event backtest's
+    trigger with the simulator managing the position (W2, 0.171.0).
     """
 
     structure: str = "short_put"
@@ -30,6 +35,8 @@ class SimConfig:
     wing_width_pct: float = 0.05
     quantity: int = 1
     entry_every_sessions: int = 5
+    entry_event: dict[str, Any] | None = None
+    entry_offset_sessions: int = -1
     max_open_per_symbol: int = 3
     profit_take_pct: float | None = 0.5
     stop_loss_mult: float | None = 2.0
