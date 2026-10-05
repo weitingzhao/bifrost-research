@@ -1,0 +1,171 @@
+"""Option position simulator HTTP routes — P2 (0.170.0).
+
+Routes:
+    POST /research/backtest/sim               run (and by default store) a simulation
+    GET  /research/backtest/sim/{run_id}/detail   stored trades + equity curve
+
+Synchronous: a run loads each symbol's chain over the window into memory, so
+keep it to a handful of symbols; a parameter sweep belongs in a Dagster job.
+
+D10 BLOCKED — historical replay only. No execution path is touched.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+from datetime import date, timedelta
+from typing import Any, Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Path
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from bifrost_research.auth.deps import require_owner
+from bifrost_research.db.conn import connect
+from bifrost_research.engines.backtest.sim import STRUCTURES, SimConfig, run_sim
+from bifrost_research.repositories import backtest_run as repo
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/research/backtest", tags=["research-backtest"])
+
+MAX_SYMBOLS = 10
+
+
+class SimBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    symbols: list[str] = Field(..., min_length=1, max_length=MAX_SYMBOLS)
+    start: date | None = None
+    end: date | None = None
+    structure: Literal["short_put", "put_credit_spread", "short_strangle", "iron_condor"] = "short_put"
+    target_dte: int = Field(45, ge=7, le=80)
+    short_delta: float = Field(0.20, gt=0.0, lt=0.6)
+    wing_width_pct: float = Field(0.05, gt=0.0, le=0.5)
+    quantity: int = Field(1, ge=1, le=100)
+    entry_every_sessions: int = Field(5, ge=1, le=60)
+    max_open_per_symbol: int = Field(3, ge=1, le=20)
+    profit_take_pct: float | None = Field(0.5, gt=0.0, le=1.0)
+    stop_loss_mult: float | None = Field(2.0, gt=0.0, le=20.0)
+    dte_exit: int | None = Field(21, ge=0, le=80)
+    max_stale_sessions: int = Field(3, ge=1, le=20)
+    price_field: Literal["vwap", "close"] = "vwap"
+    slippage_scale: float = Field(1.0, ge=0.0, le=10.0)
+    commission_per_contract: float = Field(0.65, ge=0.0, le=10.0)
+    capital: float = Field(100_000.0, gt=0.0)
+    persist: bool = True
+    persist_trades: bool = True
+    hypothesis_id: str | None = None
+
+    @model_validator(mode="after")
+    def _window(self) -> "SimBody":
+        end = self.end or date.today()
+        start = self.start or (end - timedelta(days=730))
+        if start >= end:
+            raise ValueError("start must be before end")
+        if (end - start).days > 366 * 5:
+            raise ValueError("window longer than five years")
+        self.start, self.end = start, end
+        return self
+
+
+def _connect_or_503() -> Any:
+    try:
+        return connect()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
+
+
+@router.post("/sim", dependencies=[Depends(require_owner)])
+def simulate(body: SimBody) -> dict[str, Any]:
+    assert body.start is not None and body.end is not None
+    cfg = SimConfig(
+        structure=body.structure,
+        target_dte=body.target_dte,
+        short_delta=body.short_delta,
+        wing_width_pct=body.wing_width_pct,
+        quantity=body.quantity,
+        entry_every_sessions=body.entry_every_sessions,
+        max_open_per_symbol=body.max_open_per_symbol,
+        profit_take_pct=body.profit_take_pct,
+        stop_loss_mult=body.stop_loss_mult,
+        dte_exit=body.dte_exit,
+        max_stale_sessions=body.max_stale_sessions,
+        price_field=body.price_field,
+        slippage_scale=body.slippage_scale,
+        commission_per_contract=body.commission_per_contract,
+        capital=body.capital,
+    )
+    conn = _connect_or_503()
+    try:
+        try:
+            result = run_sim(conn, body.symbols, body.start, body.end, cfg)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        params = {**result.params, "symbols": [s.strip().upper() for s in body.symbols]}
+        run: dict[str, Any] = {"id": None, "persisted": False}
+        if body.persist:
+            try:
+                run = repo.create_sim_run(
+                    conn,
+                    params=params,
+                    summary=result.summary,
+                    trades=result.trades,
+                    equity=result.equity,
+                    lookback_years=max(1, math.ceil((body.end - body.start).days / 365)),
+                    persist_trades=body.persist_trades,
+                    hypothesis_id=body.hypothesis_id,
+                )
+            except Exception as exc:  # noqa: BLE001 — e.g. the 0.170.0 DDL not applied yet
+                logger.exception("sim run persist failed; returning it unpersisted")
+                run = {"id": None, "persisted": False, "error": str(exc)[:300]}
+            if body.hypothesis_id and run.get("id"):
+                try:
+                    repo.append_to_hypothesis(conn, body.hypothesis_id, run["id"])
+                except Exception:  # noqa: BLE001
+                    logger.exception("append_to_hypothesis failed for %s", body.hypothesis_id)
+        return {
+            "ok": True,
+            "data": {
+                "run_id": run.get("id"),
+                "run": run,
+                "summary": result.summary,
+                "trades": result.trades,
+                "equity": result.equity,
+                "params": params,
+                "advisory": "D10 BLOCKED — historical replay only",
+            },
+        }
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@router.get("/sim/structures", dependencies=[Depends(require_owner)])
+def structures() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "data": {name: [leg.label for leg in legs] for name, legs in STRUCTURES.items()},
+    }
+
+
+@router.get("/sim/{run_id}/detail", dependencies=[Depends(require_owner)])
+def sim_detail(run_id: str = Path(..., min_length=1, max_length=64)) -> dict[str, Any]:
+    conn = _connect_or_503()
+    try:
+        row = repo.get_run(conn, run_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"backtest_run {run_id} not found")
+        detail = repo.get_sim_detail(conn, run_id)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("sim detail failed")
+        raise HTTPException(status_code=503, detail=str(exc)[:300]) from exc
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return {"ok": True, "data": {"row": row, **detail}}

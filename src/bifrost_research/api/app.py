@@ -12,6 +12,7 @@ from bifrost_research.api.agent_persona import router as agent_persona_router
 from bifrost_research.api.agents import agents_router, drafts_router
 from bifrost_research.api.alerts import router as alerts_router
 from bifrost_research.api.backtest_event import router as backtest_event_router
+from bifrost_research.api.backtest_sim import router as backtest_sim_router
 from bifrost_research.api.canonical_pnl import router as canonical_pnl_router
 from bifrost_research.api.candidates import router as candidates_router
 from bifrost_research.api.copilot import router as copilot_router
@@ -105,6 +106,7 @@ def create_app() -> FastAPI:
     app.include_router(risk_stats_router)
     app.include_router(opex_cycle_router)
     app.include_router(backtest_event_router)
+    app.include_router(backtest_sim_router)
     app.include_router(copilot_router)
     app.include_router(symbol_verdicts_router)
     app.include_router(copilot_sessions_router)

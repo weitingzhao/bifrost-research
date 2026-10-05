@@ -13,6 +13,9 @@ TABLE_RESEARCH_SAVED_SCREEN = f"{SCHEMA_RESEARCH}.saved_screen"
 
 # Wave RS-C4 — event-driven backtest runs (colocated with hypotheses).
 TABLE_RESEARCH_BACKTEST_RUN = f"{SCHEMA_RESEARCH}.backtest_run"
+# P2 (0.170.0) — the simulator's per-trade and per-session record of a run.
+TABLE_RESEARCH_BACKTEST_TRADE = f"{SCHEMA_RESEARCH}.backtest_trade"
+TABLE_RESEARCH_BACKTEST_EQUITY = f"{SCHEMA_RESEARCH}.backtest_equity"
 
 # Wave RS-E3 — AI draft inbox + action audit log (D-RS-E-e/g).
 TABLE_RESEARCH_AI_ACTION_LOG = f"{SCHEMA_RESEARCH}.ai_action_log"
