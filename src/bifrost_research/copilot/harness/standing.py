@@ -351,49 +351,93 @@ def policy_suggestion_writes(payload: Mapping[str, Any]) -> int:
     )
 
 
-def pending_decision_calls(conn: Any) -> dict[str, int]:
-    """The Decision Inbox queue as calls, matching what that page shows.
+def pending_decision_calls(conn: Any) -> dict[str, Any]:
+    """The Decision Inbox queue as calls, counted the way that page counts it.
 
     ``pending_memos`` counts candidate batches for the active objectives, which
     is the right number on an objective row and the wrong one on the Inbox
-    badge: the badge sat on a page offering twenty-four calls and said three.
-    Same queue, counted two ways — the failure this module already carries a
-    fix for once, on the folding of repeated batches.
+    badge. This is the badge's number.
 
-    ``calls`` applies the page's own three rules: briefings are not calls,
-    repeats of the same batch are one call, and a policy suggestion that would
-    write nothing is not a call.
+    ``calls`` is the Inbox's cards (``inboxCards.ts``, design Rev .143): every
+    pending draft that is not a briefing, folded the way the page folds —
+
+    - a hypothesis's ``decision_draft`` and ``order_intent`` are one call; a
+      blank ``hypothesis_id`` never merges;
+    - an objective's ``candidate_batch`` runs are one card, the newest covering
+      the earlier ones whatever names they proposed; so are its
+      objective-scoped ``policy_suggestion`` patches;
+    - everything else is a card of its own (``playbook_note`` among them).
+
+    The page's "To decide" is these cards plus the rule proposals it derives
+    from Review habits, which are not drafts and are not counted here, minus
+    any earlier runs the reader hid in that browser.
+
+    A card that would write nothing is still a card on the page — it says so
+    on the card — so it is in ``calls`` and named again in ``inert``.
+
+    Counted in SQL over the whole pending set. The earlier count read the
+    newest 500 pending drafts of every kind and classified those; on DEV
+    (2026-10-04) 443 of those 500 were briefings, so 57 of the 144 decision
+    drafts reached the count and the badge said 57 where the Inbox drew 58
+    cards — and 443 briefings where 725 were pending.
     """
     from bifrost_research.repositories import ai_draft as draft_repo
 
-    out = {"calls": 0, "drafts": 0, "folded": 0, "inert": 0, "briefings": 0}
+    out: dict[str, Any] = {
+        "calls": 0,
+        "drafts": 0,
+        "folded": 0,
+        "inert": 0,
+        "briefings": 0,
+        "pending": 0,
+        "by_kind": {},
+    }
     try:
-        rows = draft_repo.list_drafts(conn, status="pending", limit=500)
+        by_kind = draft_repo.count_pending_by_kind(conn)
+        cards = draft_repo.pending_inbox_cards(conn, exclude_kinds=BRIEFING_KINDS)
     except Exception as exc:  # noqa: BLE001
         logger.warning("pending decision count failed: %s", exc)
+        # A failed statement leaves the transaction aborted; the rest of the
+        # page reads on this connection after us.
+        rollback = getattr(conn, "rollback", None)
+        if callable(rollback):
+            try:
+                rollback()
+            except Exception:  # noqa: BLE001
+                pass
         return out
 
-    seen: set[tuple[str, tuple[str, ...]]] = set()
-    for r in rows:
-        kind = str(r.get("kind") or "")
-        if kind in BRIEFING_KINDS:
-            out["briefings"] += 1
-            continue
-        out["drafts"] += 1
-        payload = _as_map(r.get("payload"))
-        if kind == "policy_suggestion" and policy_suggestion_writes(payload) == 0:
-            out["inert"] += 1
-            continue
-        if kind == "candidate_batch":
-            key = batch_call_key(payload)
-            # A batch with no symbols cannot be matched to another; it stands alone.
-            if key[1]:
-                if key in seen:
-                    out["folded"] += 1
-                    continue
-                seen.add(key)
+    out["by_kind"] = dict(sorted(by_kind.items()))
+    out["pending"] = sum(by_kind.values())
+    out["briefings"] = sum(n for k, n in by_kind.items() if k in BRIEFING_KINDS)
+    for card in cards:
+        n = int(card.get("n") or 0)
         out["calls"] += 1
+        out["drafts"] += n
+        key = str(card.get("card_key") or "")
+        if key.startswith("call:"):
+            # The newest verdict and the newest vehicle head a call; the rest fold.
+            heads = min(int(card.get("verdicts") or 0), 1) + min(int(card.get("vehicles") or 0), 1)
+            out["folded"] += max(n - heads, 0)
+            continue
+        out["folded"] += max(n - 1, 0)
+        if not _head_writes(str(card.get("kind") or ""), _as_map(card.get("payload"))):
+            out["inert"] += 1
     return out
+
+
+#: Kinds whose Approve writes something (``api/agents.py``
+#: ``apply_draft_approval``; the frontend's ``APPROVE_WRITES_KINDS``). Any other
+#: kind is approved as an advisory pass-through that only changes its status.
+APPROVE_WRITES_KINDS = frozenset({"candidate_batch", "policy_suggestion", "playbook_rule", "playbook_note"})
+
+
+def _head_writes(kind: str, payload: Mapping[str, Any]) -> bool:
+    if kind not in APPROVE_WRITES_KINDS:
+        return False
+    if kind == "policy_suggestion":
+        return policy_suggestion_writes(payload) > 0
+    return True
 
 
 def all_standings(conn: Any, *, status: str = "active", runs_per_objective: int = 30) -> list[dict[str, Any]]:
@@ -462,6 +506,7 @@ def autopilot_standing(conn: Any) -> dict[str, Any]:
 
 
 __all__ = [
+    "APPROVE_WRITES_KINDS",
     "BRIEFING_KINDS",
     "all_standings",
     "autopilot_standing",

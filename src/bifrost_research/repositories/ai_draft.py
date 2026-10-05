@@ -256,6 +256,111 @@ def count_pending(conn: _Connection, *, kind: str | None = None) -> int:
     return int(row[0] or 0)
 
 
+def count_pending_by_kind(conn: _Connection) -> dict[str, int]:
+    """Pending rows per kind, counted in SQL — no page size, so no ceiling."""
+    sql = f"""
+        SELECT kind, COUNT(*)
+        FROM {TABLE_RESEARCH_AI_DRAFT}
+        WHERE status = 'pending'
+        GROUP BY kind
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        rows = cur.fetchall() or []
+    out: dict[str, int] = {}
+    for row in rows:
+        kind, n = (row["kind"], row["count"]) if isinstance(row, Mapping) else (row[0], row[1])
+        out[str(kind)] = int(n or 0)
+    return out
+
+
+#: The Decision Inbox's card key (bifrost-trade-frontend
+#: ``lib/harness/inboxCards.ts`` ``inboxCardKey``), in SQL. A value counts only
+#: when it is a non-blank string, as ``nonEmpty`` there: a blank
+#: ``hypothesis_id`` never merges calls, so it falls through to ``draft:<id>``.
+_INBOX_CARD_KEY_SQL = """
+    CASE
+        WHEN a.kind IN ('decision_draft', 'order_intent') AND k.hyp IS NOT NULL
+            THEN 'call:' || k.hyp
+        WHEN a.kind = 'candidate_batch' AND k.obj IS NOT NULL
+            THEN 'pool:' || k.obj
+        WHEN a.kind = 'policy_suggestion' AND a.scope LIKE 'objective:%%' AND k.obj IS NOT NULL
+            THEN 'patch:' || k.obj
+        ELSE 'draft:' || a.id
+    END
+"""
+
+
+def pending_inbox_cards(conn: _Connection, *, exclude_kinds: frozenset[str] | set[str]) -> list[dict[str, Any]]:
+    """One row per Decision Inbox card over every pending draft not in ``exclude_kinds``.
+
+    Grouped in SQL, so the count does not depend on how many rows a page holds:
+    the earlier count read the newest 500 pending drafts of every kind, and with
+    hundreds of briefings in the queue most of the calls never reached it.
+
+    Each row carries the card key, how many drafts it holds (``n``), how many
+    of them are verdicts / vehicles (for the call fold), and the newest draft's
+    kind and scope. The payload comes back only for a ``policy_suggestion``
+    head, the one kind whose payload decides whether Approve writes anything.
+    """
+    sql = f"""
+        WITH d AS (
+            SELECT
+                a.id,
+                a.kind,
+                a.scope,
+                a.payload,
+                a.created_at,
+                {_INBOX_CARD_KEY_SQL} AS card_key
+            FROM {TABLE_RESEARCH_AI_DRAFT} a
+            CROSS JOIN LATERAL (
+                SELECT
+                    CASE WHEN jsonb_typeof(a.payload -> 'hypothesis_id') = 'string'
+                         THEN NULLIF(BTRIM(a.payload ->> 'hypothesis_id'), '') END AS hyp,
+                    COALESCE(
+                        CASE WHEN jsonb_typeof(a.payload -> 'objective_id') = 'string'
+                             THEN NULLIF(BTRIM(a.payload ->> 'objective_id'), '') END,
+                        CASE WHEN a.scope LIKE 'objective:%%'
+                             THEN NULLIF(BTRIM(SUBSTRING(a.scope FROM 11)), '') END
+                    ) AS obj
+            ) k
+            WHERE a.status = 'pending'
+              AND NOT (a.kind = ANY(%s))
+        )
+        SELECT DISTINCT ON (card_key)
+            card_key,
+            COUNT(*) OVER w AS n,
+            COUNT(*) FILTER (WHERE kind = 'decision_draft') OVER w AS verdicts,
+            COUNT(*) FILTER (WHERE kind = 'order_intent') OVER w AS vehicles,
+            kind,
+            scope,
+            CASE WHEN kind = 'policy_suggestion' THEN payload END AS payload
+        FROM d
+        WINDOW w AS (PARTITION BY card_key)
+        ORDER BY card_key, created_at DESC, id DESC
+    """
+    cols = ("card_key", "n", "verdicts", "vehicles", "kind", "scope", "payload")
+    with conn.cursor() as cur:
+        cur.execute(sql, (sorted(exclude_kinds),))
+        rows = cur.fetchall() or []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        rec = {c: row[c] for c in cols} if isinstance(row, Mapping) else dict(zip(cols, row, strict=False))
+        payload = rec.get("payload")
+        if isinstance(payload, (bytes, bytearray)):
+            payload = payload.decode("utf-8", errors="replace")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = None
+        rec["payload"] = payload
+        for c in ("n", "verdicts", "vehicles"):
+            rec[c] = int(rec.get(c) or 0)
+        out.append(rec)
+    return out
+
+
 def update_draft_status(
     conn: _Connection,
     draft_id: str,
