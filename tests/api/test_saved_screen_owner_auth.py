@@ -1,9 +1,9 @@
-"""Editing or retiring a saved screen needs a research user.
+"""Saving, editing or retiring a saved screen needs a research user.
 
 Trade's result face renders a saved screen read-only by id, so a PATCH changes
-what that face shows and a retire takes it away. Nothing calls either over HTTP
-today. Create is not gated yet: the frontend saves screens without the research
-bearer.
+what that face shows and a retire takes it away; a create adds one to My
+screens. The frontend's screensApi (createSavedScreen) sends the research
+bearer; nothing calls PATCH or retire over HTTP today. Reads stay open for now.
 """
 
 from __future__ import annotations
@@ -62,7 +62,12 @@ def env(monkeypatch: pytest.MonkeyPatch) -> _Env:
         e.writes.append(("retire", screen_id))
         return {"id": screen_id, "is_active": False}
 
+    def _create(conn: Any, **kw: Any) -> dict[str, Any]:
+        e.writes.append(("create", kw["name"]))
+        return {"id": "scr_new", **kw}
+
     monkeypatch.setattr("bifrost_research.api.saved_screen.connect", _connect)
+    monkeypatch.setattr("bifrost_research.api.saved_screen.repo.create_screen", _create)
     monkeypatch.setattr("bifrost_research.api.saved_screen.repo.patch_screen", _patch)
     monkeypatch.setattr("bifrost_research.api.saved_screen.repo.retire_screen", _retire)
     return e
@@ -74,6 +79,7 @@ def client() -> TestClient:
 
 
 _CALLS = (
+    ("POST", "/research/screens", {"name": "Mine", "definition": {}}),
     ("PATCH", "/research/screens/scr_1", {"name": "Renamed"}),
     ("POST", "/research/screens/scr_1/retire", None),
 )
@@ -121,3 +127,14 @@ def test_research_user_can_retire(client: TestClient, env: _Env, auth_on: None) 
     )
     assert resp.status_code == 200, resp.text
     assert env.writes == [("retire", "scr_1")]
+
+
+def test_research_user_can_create(client: TestClient, env: _Env, auth_on: None) -> None:
+    resp = client.post(
+        "/research/screens",
+        json={"name": "Mine", "definition": {}},
+        headers={"Authorization": "Bearer tok_alice"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["id"] == "scr_new"
+    assert env.writes == [("create", "Mine")]

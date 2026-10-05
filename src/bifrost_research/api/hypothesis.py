@@ -182,7 +182,7 @@ def list_hypotheses(
     return _ok({"rows": rows, "count": len(rows), "limit": limit, "offset": offset})
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(require_owner)])
 def create_hypothesis(body: HypothesisCreate) -> dict[str, Any]:
     conn = _connect_or_503()
     try:
@@ -236,7 +236,7 @@ def get_hypothesis(hypothesis_id: str) -> dict[str, Any]:
     return _ok(row)
 
 
-@router.patch("/{hypothesis_id}")
+@router.patch("/{hypothesis_id}", dependencies=[Depends(require_owner)])
 def patch_hypothesis(hypothesis_id: str, body: HypothesisPatch) -> dict[str, Any]:
     updates = body.to_updates()
     conn = _connect_or_503()
@@ -272,7 +272,7 @@ def retire_hypothesis(hypothesis_id: str) -> dict[str, Any]:
     return _ok(row)
 
 
-@router.post("/{hypothesis_id}/refresh-trajectory")
+@router.post("/{hypothesis_id}/refresh-trajectory", dependencies=[Depends(require_owner)])
 def refresh_trajectory(
     hypothesis_id: str,
     structure: str = Query("short_strangle"),

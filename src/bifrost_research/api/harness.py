@@ -118,7 +118,12 @@ def list_objectives(
 
 
 @router.post("/objectives")
-def create_objective(body: ObjectiveCreate) -> dict[str, Any]:
+def create_objective(
+    body: ObjectiveCreate,
+    owner_id: str = Depends(require_owner),
+) -> dict[str, Any]:
+    # A body that names its owner keeps it; otherwise the caller owns the objective.
+    objective_owner = body.owner_id if "owner_id" in body.model_fields_set else owner_id
     conn = _connect_or_503()
     try:
         try:
@@ -129,7 +134,7 @@ def create_objective(body: ObjectiveCreate) -> dict[str, Any]:
                 schedule=body.schedule,
                 policy_json=body.policy_json,
                 persona=body.persona,
-                owner_id=body.owner_id,
+                owner_id=objective_owner,
                 mode=body.mode,
                 subject=body.subject,
             )
@@ -140,7 +145,7 @@ def create_objective(body: ObjectiveCreate) -> dict[str, Any]:
     return _ok(row)
 
 
-@router.patch("/objectives/{objective_id}")
+@router.patch("/objectives/{objective_id}", dependencies=[Depends(require_owner)])
 def patch_objective(objective_id: str, body: ObjectiveStatusPatch) -> dict[str, Any]:
     """Edit an objective in place: status, title, description, schedule, persona, mode, subject.
 
@@ -184,7 +189,7 @@ def patch_objective(objective_id: str, body: ObjectiveStatusPatch) -> dict[str, 
     return _ok(row)
 
 
-@router.delete("/objectives/{objective_id}")
+@router.delete("/objectives/{objective_id}", dependencies=[Depends(require_owner)])
 def delete_objective(objective_id: str) -> dict[str, Any]:
     """Delete an objective that never ran.
 
@@ -214,7 +219,7 @@ def delete_objective(objective_id: str) -> dict[str, Any]:
     return _ok({"id": objective_id, "deleted": True})
 
 
-@router.post("/objectives/{objective_id}/run")
+@router.post("/objectives/{objective_id}/run", dependencies=[Depends(require_owner)])
 def run_objective(objective_id: str) -> dict[str, Any]:
     """Trigger an objective run (synchronous lightweight harness for DEV)."""
     from bifrost_research.copilot.harness.runtime import run_objective as harness_run
@@ -396,7 +401,7 @@ def list_objective_runs(
     return _ok({"items": rows, "count": len(rows)})
 
 
-@router.delete("/objective-runs/{run_id}")
+@router.delete("/objective-runs/{run_id}", dependencies=[Depends(require_owner)])
 def delete_run(
     run_id: str,
     force: Annotated[bool, Query()] = False,
@@ -434,7 +439,7 @@ def delete_run(
     return _ok({"id": run_id, "deleted": True, "force": False})
 
 
-@router.post("/objective-runs/{run_id}/curate")
+@router.post("/objective-runs/{run_id}/curate", dependencies=[Depends(require_owner)])
 def curate_run(run_id: str) -> dict[str, Any]:
     """Headless CuratorRun for an objective run (LO-1)."""
     from bifrost_research.copilot.curator.runtime import run_curator_for_run

@@ -21,9 +21,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
+from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.repositories import loop_policy_template as tpl_repo
 from bifrost_research.repositories.loop_policy_template import PolicyValidationError
@@ -97,7 +98,12 @@ def validate_policy_body(body: PolicyBody) -> dict[str, Any]:
 
 
 @router.post("")
-def create_policy_template(body: TemplateCreate) -> dict[str, Any]:
+def create_policy_template(
+    body: TemplateCreate,
+    owner_id: str = Depends(require_owner),
+) -> dict[str, Any]:
+    # A body that names its owner keeps it; otherwise the caller owns the template.
+    template_owner = body.owner_id if "owner_id" in body.model_fields_set else owner_id
     conn = _connect_or_503()
     try:
         row = tpl_repo.create_template(
@@ -106,7 +112,7 @@ def create_policy_template(body: TemplateCreate) -> dict[str, Any]:
             policy_json=body.policy_json,
             description=body.description,
             is_default=body.is_default,
-            owner_id=body.owner_id,
+            owner_id=template_owner,
         )
         _, warnings = tpl_repo.validate_policy(row.get("policy_json") or {})
         return _ok({**row, "warnings": warnings})
@@ -131,7 +137,7 @@ def get_policy_template(template_id: str) -> dict[str, Any]:
         conn.close()
 
 
-@router.patch("/{template_id}")
+@router.patch("/{template_id}", dependencies=[Depends(require_owner)])
 def patch_policy_template(template_id: str, body: TemplatePatch) -> dict[str, Any]:
     conn = _connect_or_503()
     try:
@@ -155,7 +161,7 @@ def patch_policy_template(template_id: str, body: TemplatePatch) -> dict[str, An
         conn.close()
 
 
-@router.delete("/{template_id}")
+@router.delete("/{template_id}", dependencies=[Depends(require_owner)])
 def delete_policy_template(template_id: str) -> dict[str, Any]:
     """Delete a template nothing was created from.
 

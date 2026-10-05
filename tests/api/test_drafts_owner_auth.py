@@ -1,8 +1,13 @@
-"""Draft decisions need a research user: dismiss is gated exactly like approve.
+"""Draft decisions and the draft list need a research user.
 
 Dismiss is as final as approve — the draft closes, its action row is rejected
 and, for a candidate_batch, the batch's open pool rows are marked dismissed —
 so an anonymous caller must not reach it.
+
+The list (``GET /research/drafts``) carries the Loop's pending decisions, their
+rationale and the daily digest. Every frontend reader goes through draftsApi,
+which sends the research bearer, and shows "Research user not set" on a 401
+rather than an empty queue.
 """
 
 from __future__ import annotations
@@ -53,6 +58,7 @@ class _Env:
         }
         self.status_updates: list[dict[str, Any]] = []
         self.action_updates: list[dict[str, Any]] = []
+        self.list_calls: list[dict[str, Any]] = []
 
 
 @pytest.fixture
@@ -84,6 +90,12 @@ def env(monkeypatch: pytest.MonkeyPatch) -> _Env:
     monkeypatch.setattr(
         "bifrost_research.api.agents.action_repo.update_action_status", _update_action
     )
+    def _list(conn, **k):
+        e.list_calls.append(k)
+        return [e.draft]
+
+    monkeypatch.setattr("bifrost_research.api.agents.draft_repo.list_drafts", _list)
+    monkeypatch.setattr("bifrost_research.api.agents.draft_repo.count_pending", lambda conn: 1)
     monkeypatch.setattr(
         "bifrost_research.api.agents.action_repo.insert_action",
         lambda conn, **k: {"id": "aal_new", **k},
@@ -142,3 +154,30 @@ def test_dismiss_keeps_body_approved_by(client: TestClient, env: _Env, auth_on: 
     )
     assert resp.status_code == 200, resp.text
     assert env.action_updates[0]["approved_by"] == "owner"
+
+
+def test_anonymous_list_is_refused(client: TestClient, env: _Env, auth_on: None) -> None:
+    resp = client.get("/research/drafts")
+    assert resp.status_code == 401, resp.text
+    assert resp.json()["detail"] == "research authorization required"
+    assert env.connects == 0
+    assert env.list_calls == []
+
+
+def test_unknown_token_list_is_refused(client: TestClient, env: _Env, auth_on: None) -> None:
+    resp = client.get("/research/drafts", headers={"Authorization": "Bearer tok_mallory"})
+    assert resp.status_code == 401, resp.text
+    assert resp.json()["detail"] == "invalid research token"
+    assert env.connects == 0
+    assert env.list_calls == []
+
+
+def test_research_user_can_list(client: TestClient, env: _Env, auth_on: None) -> None:
+    resp = client.get(
+        "/research/drafts?kind=morning_brief",
+        headers={"Authorization": "Bearer tok_alice"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["count"] == 1 and data["pending_count"] == 1
+    assert env.list_calls[0]["kind"] == "morning_brief"

@@ -13,9 +13,10 @@ import logging
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
+from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.repositories import candidate_pool as repo
 from bifrost_research.repositories import hypothesis as hyp_repo
@@ -94,7 +95,12 @@ def list_candidates(
 
 
 @router.post("")
-def create_candidates(body: CandidateBatchCreate) -> dict[str, Any]:
+def create_candidates(
+    body: CandidateBatchCreate,
+    owner_id: str = Depends(require_owner),
+) -> dict[str, Any]:
+    # A body that names its owner keeps it; otherwise the caller signs the rows.
+    batch_owner = body.owner_id if "owner_id" in body.model_fields_set else owner_id
     conn = _connect_or_503()
     created: list[dict[str, Any]] = []
     try:
@@ -109,7 +115,7 @@ def create_candidates(body: CandidateBatchCreate) -> dict[str, Any]:
                     score=item.score,
                     lens_snapshot=item.lens_snapshot,
                     tags=item.tags,
-                    owner_id=body.owner_id,
+                    owner_id=batch_owner,
                     ttl_days=item.ttl_days,
                 )
                 created.append(row)
@@ -120,7 +126,7 @@ def create_candidates(body: CandidateBatchCreate) -> dict[str, Any]:
     return _ok({"items": created, "count": len(created)})
 
 
-@router.post("/{candidate_id}/promote")
+@router.post("/{candidate_id}/promote", dependencies=[Depends(require_owner)])
 def promote_candidate(candidate_id: str, body: PromoteBody | None = None) -> dict[str, Any]:
     body = body or PromoteBody()
     conn = _connect_or_503()
@@ -171,7 +177,7 @@ def promote_candidate(candidate_id: str, body: PromoteBody | None = None) -> dic
     return _ok({"candidate": updated, "hypothesis": hyp})
 
 
-@router.post("/{candidate_id}/dismiss")
+@router.post("/{candidate_id}/dismiss", dependencies=[Depends(require_owner)])
 def dismiss_candidate(candidate_id: str) -> dict[str, Any]:
     conn = _connect_or_503()
     try:

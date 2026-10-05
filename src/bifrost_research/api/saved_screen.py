@@ -69,7 +69,7 @@ def list_screens(include_retired: bool = Query(False)) -> dict[str, Any]:
     return _ok({"screens": rows, "count": len(rows)})
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(require_owner)])
 def create_screen(body: ScreenCreate) -> dict[str, Any]:
     conn = _connect_or_503()
     try:

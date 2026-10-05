@@ -226,7 +226,7 @@ def create_draft(
         conn.close()
 
 
-@drafts_router.get("")
+@drafts_router.get("", dependencies=[Depends(require_owner)])
 def list_drafts(
     status: str | None = Query(default="pending"),
     kind: str | None = Query(default=None),

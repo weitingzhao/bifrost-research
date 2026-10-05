@@ -15,9 +15,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, ConfigDict, Field
 
+from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.benchmark import (
     spy_buy_hold_metrics,
@@ -81,7 +82,7 @@ def _validate_template(name: str) -> None:
         )
 
 
-@router.post("/event-query")
+@router.post("/event-query", dependencies=[Depends(require_owner)])
 def event_query(body: EventQueryBody) -> dict[str, Any]:
     _validate_template(body.strategy_template)
     event_def = EventDef(kind=body.event_def.kind, params=body.event_def.params or {})
