@@ -296,12 +296,14 @@ def _manage(pos: _Position, store: ChainStore, d: date, cfg: SimConfig) -> dict[
         lg.stale += 1
     pnl = pos.open_pnl()
     pos.path.append(pnl)
-    credit = pos.credit()
+    # The premium at stake: the credit taken in, or the debit paid for a
+    # structure bought (only ``walk_legs`` opens those; ``_open`` refuses them).
+    basis = abs(pos.credit())
     if cfg.max_stale_sessions is not None and any(lg.stale >= cfg.max_stale_sessions for lg in pos.legs):
         return _close(pos, d, "stale", cfg)
-    if cfg.profit_take_pct is not None and pnl >= cfg.profit_take_pct * credit:
+    if cfg.profit_take_pct is not None and pnl >= cfg.profit_take_pct * basis:
         return _close(pos, d, "profit_take", cfg)
-    if cfg.stop_loss_mult is not None and pnl <= -cfg.stop_loss_mult * credit:
+    if cfg.stop_loss_mult is not None and pnl <= -cfg.stop_loss_mult * basis:
         return _close(pos, d, "stop", cfg)
     if cfg.dte_exit is not None and (pos.expiry - d).days <= cfg.dte_exit:
         return _close(pos, d, "dte_exit", cfg)

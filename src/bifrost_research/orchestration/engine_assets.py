@@ -254,6 +254,22 @@ def candidate_outcome(context: AssetExecutionContext) -> MaterializeResult:
 
 
 @asset(
+    key=AssetKey(["engines", "suggestion_ledger"]),
+    deps=[AssetKey(["engines", "volatility"]), *_MARKET],
+    group_name="python_analytics",
+    description=(
+        "Suggestion ledger: issue the mechanical suggestions (SPY 30-delta put baseline, "
+        "live simulator configs) → research.suggestion, then settle option suggestions "
+        "with the simulator's walk → research.suggestion_settlement. Append-only."
+    ),
+)
+def suggestion_ledger(context: AssetExecutionContext) -> MaterializeResult:
+    result = runners.run_suggestion_ledger()
+    context.log.info("suggestion_ledger result=%s", result)
+    return MaterializeResult(metadata=_metadata(result))
+
+
+@asset(
     key=AssetKey(["engines", "option_universe"]),
     deps=[_SEPA, *_MARKET],
     group_name="python_analytics",
@@ -321,6 +337,7 @@ ENGINE_ASSETS = [
     scan,
     pine_signals,
     candidate_outcome,
+    suggestion_ledger,
     signal_hit_fwd_fill,
     option_universe,
     option_pinned_contract,

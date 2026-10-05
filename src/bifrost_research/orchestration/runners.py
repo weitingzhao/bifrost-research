@@ -288,3 +288,13 @@ def run_candidate_outcome(*, lookback_days: int | None = None) -> dict[str, Any]
     result["engine"] = "candidate_outcome"
     result["advisory"] = "D10 BLOCKED"
     return result
+
+
+def run_suggestion_ledger() -> dict[str, Any]:
+    """Issue the mechanical suggestions (SPY baseline, live simulator configs), then settle."""
+    from bifrost_research.engines.suggestion.entry import run
+
+    result = run()
+    result["engine"] = "suggestion_ledger"
+    result["advisory"] = "D10 BLOCKED"
+    return result

@@ -126,6 +126,11 @@ def apply_research_workflow_ddl(conn: _Connection) -> None:
         cur.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_RESEARCH}")
         _create_research_workflow_tables(cur)
         _grant_research_schema_privileges(cur)
+        # After the grant sweep: the ledger revokes UPDATE / DELETE / TRUNCATE
+        # that the sweep (and the schema's default privileges) just handed out.
+        from bifrost_research.schema.suggestion_ledger_ddl import create_suggestion_ledger
+
+        create_suggestion_ledger(cur)
     conn.commit()
 
 

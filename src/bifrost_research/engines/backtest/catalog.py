@@ -37,6 +37,16 @@ EVALUATIONS: dict[str, dict[str, Any]] = {
         "store": "research.backtest_run (engine='sim'), research.backtest_trade, research.backtest_equity",
         "route": "POST /research/backtest/sim",
     },
+    "suggestion_settlement": {
+        "class": "backtest",
+        "title": "Suggestion settlement",
+        "answers": "What a suggestion's own legs earned under its own rules, from the session after it was issued.",
+        "price_basis": "the simulator's walk: next session's vwap plus tiered slippage (x1.5 for model_stress); expiry at intrinsic",
+        "entry": "each settleable suggestion; baseline_paired opens SPY with the same structure, delta and DTE",
+        "code": "engines/suggestion, engines/backtest/sim/walk.py",
+        "store": "research.suggestion, research.suggestion_settlement (append-only)",
+        "route": "none yet (scoreboard is S6)",
+    },
     "event_backtest": {
         "class": "backtest",
         "title": "Event backtest (one print in, one print out)",
