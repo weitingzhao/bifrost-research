@@ -34,7 +34,7 @@ MAX_SYMBOLS = 10
 
 class SimEntryEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["earnings", "opex", "sepa_hit", "iv_percentile_threshold"]
+    kind: Literal["earnings", "opex", "sepa_hit", "iv_percentile_threshold", "indicator_signal"]
     params: dict[str, Any] = Field(default_factory=dict)
 
 

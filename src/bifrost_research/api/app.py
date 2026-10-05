@@ -42,6 +42,7 @@ from bifrost_research.api.candidate_outcome import router as candidate_outcome_r
 from bifrost_research.api.universe_reach import router as universe_reach_router
 from bifrost_research.api.signal_decay import router as signal_decay_router
 from bifrost_research.api.sepa import router as sepa_router
+from bifrost_research.api.indicators import router as indicators_router
 from bifrost_research.api.signal_health import router as signal_health_router
 from bifrost_research.api.orchestration import router as orchestration_router
 from bifrost_research.api.similar_regime import router as similar_regime_router
@@ -107,6 +108,7 @@ def create_app() -> FastAPI:
     app.include_router(opex_cycle_router)
     app.include_router(backtest_event_router)
     app.include_router(backtest_sim_router)
+    app.include_router(indicators_router)
     app.include_router(copilot_router)
     app.include_router(symbol_verdicts_router)
     app.include_router(copilot_sessions_router)

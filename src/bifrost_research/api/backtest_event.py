@@ -43,7 +43,7 @@ router = APIRouter(prefix="/research/backtest", tags=["research-backtest"])
 
 class EventDefModel(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    kind: Literal["earnings", "opex", "sepa_hit", "iv_percentile_threshold", "sql"]
+    kind: Literal["earnings", "opex", "sepa_hit", "iv_percentile_threshold", "indicator_signal", "sql"]
     params: dict[str, Any] = Field(default_factory=dict)
 
 

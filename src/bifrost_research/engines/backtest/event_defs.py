@@ -9,6 +9,9 @@ resolved to a set of ``(symbol, event_date)`` pairs by the event resolver in
 - ``opex``                   — US monthly OpEx third Friday
 - ``sepa_hit``               — days where the SEPA composite score crossed a threshold
 - ``iv_percentile_threshold``— days where IV percentile crossed a threshold
+- ``indicator_signal``       — days a standard indicator signal fired on the
+                               symbol's daily closes (MACD / RSI / Bollinger /
+                               EMA crossings; ``engines.indicators``)
 - ``sql``                    — user-supplied ``SELECT`` returning
                                ``(symbol, event_date)``; not implemented in v1
 
@@ -25,11 +28,12 @@ EventKind = Literal[
     "opex",
     "sepa_hit",
     "iv_percentile_threshold",
+    "indicator_signal",
     "sql",
 ]
 
 _ALLOWED_KINDS: frozenset[EventKind] = frozenset(
-    ("earnings", "opex", "sepa_hit", "iv_percentile_threshold", "sql")
+    ("earnings", "opex", "sepa_hit", "iv_percentile_threshold", "indicator_signal", "sql")
 )
 
 

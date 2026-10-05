@@ -125,7 +125,7 @@ class EventRun:
 @dataclass
 class ResolvedEvents:
     events: list[tuple[str, date]]  # (symbol, event_date)
-    source: str  # "sec_8k_item_2_02" | "stub" | "corporate_action" | "event_radar" | "opex" | "sepa" | "iv" | "unavailable"
+    source: str  # "sec_8k_item_2_02" | "stub" | "corporate_action" | "event_radar" | "opex" | "sepa" | "iv" | "indicator" | "unavailable"
     notes: str = ""
     # A source that could not be read (permission, missing table), named with
     # its error. An empty result is not an error; a failed read never passes
@@ -480,6 +480,51 @@ def _resolve_sql_events(
     )
 
 
+MAX_INDICATOR_SYMBOLS = 50
+
+
+def _resolve_indicator_signal_events(
+    conn: Any,
+    params: Mapping[str, Any],
+    start: date,
+    end: date,
+) -> ResolvedEvents:
+    """Sessions where a standard indicator signal fired, per symbol, from daily closes.
+
+    Computed on the fly from ``raw_market.stock_daily`` with a warm-up before
+    ``start``; nothing is stored. Needs explicit symbols — scanning the whole
+    universe bar by bar belongs in a batch job, not a request.
+    """
+    from bifrost_research.engines.indicators import get_signal, signal_dates
+    from bifrost_research.engines.indicators.bars import load_bars
+
+    spec = get_signal(str(params.get("signal") or ""))
+    sig_params = spec.params(params)
+    symbols = _params_symbols(params)
+    if not symbols:
+        raise ValueError("indicator_signal needs params.symbols")
+    if len(symbols) > MAX_INDICATOR_SYMBOLS:
+        raise ValueError(f"indicator_signal takes at most {MAX_INDICATOR_SYMBOLS} symbols")
+    events: list[tuple[str, date]] = []
+    errors: list[str] = []
+    for sym in symbols:
+        try:
+            bars = load_bars(conn, sym, start, end, warmup_sessions=spec.warmup(sig_params) * 3)
+        except Exception as exc:  # noqa: BLE001
+            _read_failed(conn, f"raw_market.stock_daily[{sym}]", exc, errors)
+            continue
+        dates = [b["date"] for b in bars]
+        closes = [b["close"] for b in bars]
+        events.extend((sym, d) for d in signal_dates(dates, closes, spec.id, sig_params) if start <= d <= end)
+    events.sort(key=lambda e: (e[1], e[0]))
+    return ResolvedEvents(
+        events=events,
+        source="indicator" if not errors else "unavailable",
+        errors=errors,
+        notes=f"{spec.label} {sig_params} on adjusted daily closes; fires on the crossing session's close",
+    )
+
+
 def resolve_events(
     conn: Any,
     event_def: EventDef,
@@ -503,6 +548,8 @@ def resolve_events_between(conn: Any, event_def: EventDef, start: date, end: dat
         return _resolve_sepa_hit_events(conn, params, start, end)
     if kind == "iv_percentile_threshold":
         return _resolve_iv_percentile_events(conn, params, start, end)
+    if kind == "indicator_signal":
+        return _resolve_indicator_signal_events(conn, params, start, end)
     if kind == "sql":
         return _resolve_sql_events(conn, params, start, end)
     raise ValueError(f"unknown event kind {kind!r}")
