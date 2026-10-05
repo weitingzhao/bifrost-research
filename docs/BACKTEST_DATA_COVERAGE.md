@@ -1,5 +1,13 @@
 # Backtest data coverage — what the event engine can and cannot answer
 
+> **Superseded numbers (2026-10-05).** The option backfill has since landed:
+> `raw_market.option_daily` spans 2024-10-01 → present (~46M rows, 688
+> underlyings; each contract's last ~90 days before expiry, strikes within ±30%
+> of spot), and `raw_market.stock_daily` spans five rolling years. Option-leg
+> event studies now price wherever an event falls inside that window. The
+> 2026-08-31 measurements below are kept as the record of why the backfill was
+> needed.
+
 Measured 2026-08-31 against `bifrost_golden_source`. Re-run the queries at the
 bottom before relying on these numbers.
 

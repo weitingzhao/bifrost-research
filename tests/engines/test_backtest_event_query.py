@@ -57,6 +57,15 @@ class _FakeState:
     event_radar: list[tuple[str, date, str]] = field(default_factory=list)  # sym, collected, text
     sepa_rows: list[tuple[str, date, float]] = field(default_factory=list)  # sym, td, score
     iv_rows: list[tuple[str, date, float]] = field(default_factory=list)    # sym, td, iv_pct
+    treasury: list[tuple[date, float]] = field(default_factory=list)  # yield_date, 1m pct
+
+
+def _ticker(opt: "_OptionBar") -> str:
+    return f"{opt.underlying}-{opt.expiry.isoformat()}-{opt.option_right}-{opt.strike}"
+
+
+def _row(opt: "_OptionBar") -> tuple[Any, ...]:
+    return (_ticker(opt), opt.expiry, opt.strike, opt.bar_date, opt.open, opt.high, opt.low, opt.close)
 
 
 class _FakeCursor:
@@ -121,6 +130,20 @@ class _FakeCursor:
             self._fetched = hits
             return
 
+        if q.startswith("select bar_date from raw_market.stock_daily"):
+            sym, start, end = params
+            self._fetched = [
+                (b.bar_date,) for b in state.stock.get(sym.upper(), []) if start <= b.bar_date <= end
+            ]
+            return
+
+        if "from raw_market.treasury_yield" in q:
+            on, floor = params
+            self._fetched = [
+                (pct,) for (d, pct) in sorted(state.treasury, reverse=True) if floor < d <= on
+            ][:1]
+            return
+
         if "from raw_market.stock_daily" in q and "between" in q:
             sym, start, end = params
             bars = state.stock.get(sym.upper(), [])
@@ -140,32 +163,28 @@ class _FakeCursor:
             self._fetched = [(b.bar_date, b.open, b.close)]
             return
 
+        if "from raw_market.option_daily" in q and "where option_ticker = %s" in q:
+            ticker, lo, on = params
+            rows = [
+                _row(opt)
+                for opt in state.options
+                if _ticker(opt) == ticker and lo <= opt.bar_date <= on and opt.close > 0
+            ]
+            rows.sort(key=lambda r: r[3], reverse=True)
+            self._fetched = rows[:1]
+            return
+
         if "from raw_market.option_daily" in q:
-            sym, right, on_or_before, _same = params
-            rows: list[Any] = []
-            for opt in state.options:
-                if opt.underlying != sym.upper():
-                    continue
-                if opt.option_right != right:
-                    continue
-                if opt.bar_date > on_or_before:
-                    continue
-                if opt.expiry <= on_or_before:
-                    continue
-                rows.append(
-                    (
-                        opt.expiry,
-                        opt.strike,
-                        opt.close,
-                        opt.open,
-                        opt.high,
-                        opt.low,
-                        opt.bar_date,
-                        f"{opt.underlying}-{opt.expiry.isoformat()}-{opt.option_right}-{opt.strike}",
-                    )
-                )
-            rows.sort(key=lambda r: r[6], reverse=True)
-            self._fetched = rows[:400]
+            sym, right, lo, on, exp_lo, exp_hi = params
+            self._fetched = [
+                _row(opt)
+                for opt in state.options
+                if opt.underlying == sym.upper()
+                and opt.option_right == right
+                and lo <= opt.bar_date <= on
+                and exp_lo <= opt.expiry <= exp_hi
+                and opt.close > 0
+            ]
             return
 
         self._fetched = []
@@ -537,3 +556,175 @@ def test_summarize_runs_from_dicts() -> None:
     assert s["n_events"] == 3
     assert 0.0 <= s["win_rate"] <= 1.0
     assert s["max_drawdown"] <= 0.0
+
+
+# ---------------------------------------------------------------------------
+# 0.169.0 — correctness fixes (B3 B4 B5 B8 B9)
+# ---------------------------------------------------------------------------
+
+from bifrost_research.engines.backtest.canonical_pnl import bs_price  # noqa: E402
+from bifrost_research.engines.backtest.strategy_templates import (  # noqa: E402
+    LegSpec,
+    resolve_trading_window,
+)
+
+
+def _weekday_bars(sym: str, start: date, end: date, spot: float = 100.0) -> list[_StockBar]:
+    out: list[_StockBar] = []
+    d = start
+    while d <= end:
+        if d.weekday() < 5:
+            out.append(_StockBar(bar_date=d, open=spot, close=spot, high=spot, low=spot))
+        d += timedelta(days=1)
+    return out
+
+
+def _bs_chain(
+    state: _FakeState,
+    sym: str,
+    on: date,
+    expiry: date,
+    spot: float,
+    iv: float = 0.30,
+    strikes: range = range(70, 131, 1),
+) -> None:
+    t = (expiry - on).days / 365.0
+    for k in strikes:
+        for right in ("C", "P"):
+            px = bs_price(spot, float(k), t, iv, right=right)
+            if px > 0.01:
+                _add_option_series(state, sym, expiry, float(k), right, [on], [round(px, 4)])
+
+
+def test_offsets_count_trading_sessions_not_calendar_days() -> None:
+    friday = date(2026, 5, 15)
+    sessions = [d.bar_date for d in _weekday_bars("X", friday - timedelta(days=10), friday + timedelta(days=10))]
+    leg = LegSpec(kind="stock", side="buy", entry_offset_days=-1, exit_offset_days=1)
+    entry, exit_ = resolve_trading_window(leg, friday, sessions)
+    assert entry == date(2026, 5, 14)  # Thursday
+    assert exit_ == date(2026, 5, 18)  # Monday, not Saturday-falls-back-to-Friday
+    # An event on a Saturday anchors on Monday; -1 is the Friday before it.
+    entry, exit_ = resolve_trading_window(leg, date(2026, 5, 16), sessions)
+    assert (entry, exit_) == (date(2026, 5, 15), date(2026, 5, 19))
+
+
+def test_a_window_past_the_last_session_is_skipped_not_priced_on_the_last_bar() -> None:
+    today = date(2026, 6, 1)
+    event = date(2026, 5, 29)  # Friday; +5 sessions runs past the data
+    state = _FakeState()
+    state.stock["NVDA"] = _weekday_bars("NVDA", event - timedelta(days=30), today)
+    state.corp_actions.append(("NVDA", "earnings", event))
+    result = run_event_query(
+        EventDef(kind="earnings", params={"symbols": ["NVDA"]}),
+        template_name="long_stock_event",
+        lookback_years=1,
+        conn=_FakeConn(state),
+        today=today,
+        entry_offset_days=-1,
+        exit_offset_days=5,
+    )
+    assert result["summary"]["n_events"] == 0
+    assert result["summary"]["skipped_incomplete_window"] == 1
+    assert result["summary"]["offset_unit"] == "trading_sessions"
+
+
+def test_target_expiry_is_found_when_other_contracts_flood_the_session() -> None:
+    # B3: 500 far-dated bars on the entry session used to fill the LIMIT 400.
+    on = date(2026, 3, 2)
+    state = _FakeState()
+    state.stock["NVDA"] = _weekday_bars("NVDA", on - timedelta(days=20), on + timedelta(days=60))
+    target = on + timedelta(days=30)
+    _add_option_series(state, "NVDA", target, 100.0, "C", [on], [3.0])
+    for i in range(500):
+        _add_option_series(state, "NVDA", on + timedelta(days=55), 50.0 + i * 0.1, "C", [on], [9.0])
+    from bifrost_research.engines.backtest import event_query
+
+    pick = event_query._pick_option(_FakeConn(state), "NVDA", on, "C", 30, 100.0)
+    assert pick is not None and pick["expiry"] == target and pick["strike"] == 100.0
+
+
+def test_held_to_expiry_settles_on_the_same_contract_at_intrinsic() -> None:
+    # B8: the exit used to re-pick with expiry > exit_date, which excluded the
+    # contract the leg opened and priced the next expiry's instead.
+    entry = date(2026, 3, 2)
+    expiry = date(2026, 3, 20)
+    state = _FakeState()
+    bars = _weekday_bars("XYZ", entry - timedelta(days=10), expiry + timedelta(days=40), spot=100.0)
+    for b in bars:
+        if b.bar_date >= expiry:
+            b.close = 108.0
+    state.stock["XYZ"] = bars
+    _add_option_series(state, "XYZ", expiry, 105.0, "C", [entry], [1.50])
+    # The next month's same strike: what the old exit priced.
+    nxt = date(2026, 4, 17)
+    _add_option_series(state, "XYZ", nxt, 105.0, "C", [entry, expiry + timedelta(days=3)], [3.0, 6.0])
+    from bifrost_research.engines.backtest import event_query
+
+    leg = LegSpec(kind="option", side="sell", option_right="C", target_dte=18, target_moneyness_offset=0.05)
+    lp = event_query._price_option_leg(_FakeConn(state), "XYZ", entry, expiry + timedelta(days=3), leg)
+    assert lp is not None
+    assert lp.expiry == expiry.isoformat()
+    assert lp.fill_details["exit_pricing_source"] == "expiry_intrinsic"
+    assert lp.exit_price == pytest.approx(3.0)  # 108 - 105
+    assert lp.exit_date == expiry.isoformat()
+    assert lp.pnl == pytest.approx(-(3.0 - 1.50) * 100)
+
+
+def test_exit_reads_the_contract_the_leg_opened() -> None:
+    entry, exit_ = date(2026, 3, 2), date(2026, 3, 4)
+    expiry = date(2026, 4, 2)
+    state = _FakeState()
+    state.stock["XYZ"] = _weekday_bars("XYZ", entry - timedelta(days=10), exit_ + timedelta(days=10))
+    _add_option_series(state, "XYZ", expiry, 100.0, "P", [entry, exit_], [2.0, 2.5])
+    # A neighbour that only trades on the exit day must not be picked up.
+    _add_option_series(state, "XYZ", expiry, 101.0, "P", [exit_], [9.9])
+    from bifrost_research.engines.backtest import event_query
+
+    leg = LegSpec(kind="option", side="buy", option_right="P", target_dte=31)
+    lp = event_query._price_option_leg(_FakeConn(state), "XYZ", entry, exit_, leg)
+    assert lp is not None
+    assert lp.strike == 100.0 and lp.exit_price == 2.5
+    assert lp.fill_details["option_ticker"].endswith("-P-100.0")
+    assert lp.fill_details["exit_stale_days"] == 0
+
+
+def test_iron_condor_sells_its_delta_and_buys_wings_beyond_the_shorts() -> None:
+    # B5: target_delta was ignored, so both shorts sold ATM — an iron butterfly.
+    today = date(2026, 6, 1)
+    event = date(2026, 3, 4)
+    entry = date(2026, 3, 3)
+    expiry = entry + timedelta(days=30)
+    state = _FakeState()
+    state.stock["NVDA"] = _weekday_bars("NVDA", event - timedelta(days=30), event + timedelta(days=30))
+    state.corp_actions.append(("NVDA", "earnings", event))
+    state.treasury = [(entry - timedelta(days=1), 4.3)]
+    _bs_chain(state, "NVDA", entry, expiry, spot=100.0)
+    for opt in list(state.options):
+        _add_option_series(state, "NVDA", opt.expiry, opt.strike, opt.option_right, [date(2026, 3, 5)], [opt.close])
+    result = run_event_query(
+        EventDef(kind="earnings", params={"symbols": ["NVDA"]}),
+        template_name="short_30d_iron_condor",
+        lookback_years=1,
+        conn=_FakeConn(state),
+        today=today,
+        short_delta=0.25,
+        wing_width_pct=0.05,
+    )
+    assert result["summary"]["n_events"] == 1, result["summary"]
+    legs = {lp["label"]: lp for lp in result["runs"][0]["legs"]}
+    short_call, short_put = legs["short 25-delta call"], legs["short 25-delta put"]
+    assert short_call["strike"] > 100 and short_put["strike"] < 100
+    assert abs(short_call["fill_details"]["entry_delta"] - 0.25) < 0.03
+    assert abs(short_put["fill_details"]["entry_delta"] + 0.25) < 0.03
+    assert short_call["fill_details"]["rate"] == pytest.approx(0.043)
+    assert legs["long call wing"]["strike"] == pytest.approx(short_call["strike"] + 5)
+    assert legs["long put wing"]["strike"] == pytest.approx(short_put["strike"] - 5)
+    assert {lp["expiry"] for lp in legs.values()} == {expiry.isoformat()}
+
+
+def test_short_strangle_30d_is_registered() -> None:
+    legs = build_legs("short_strangle_30d")
+    assert [(lg.side, lg.option_right, lg.target_delta) for lg in legs] == [
+        ("sell", "C", 0.16),
+        ("sell", "P", 0.16),
+    ]
