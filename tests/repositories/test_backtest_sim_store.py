@@ -59,7 +59,7 @@ _EQ = {"as_of": "2025-01-02", "equity": 100000.0, "margin_used": 2400.0, "open_p
 
 def _store(conn: _Conn, **kw: Any) -> dict[str, Any]:
     return repo.create_sim_run(
-        conn, params={"structure": "short_put"}, summary={"n_trades": 1},
+        conn, params={"structure": "short_put", "symbols": ["NVDA"]}, summary={"n_trades": 1},
         trades=[_TRADE], equity=[_EQ], lookback_years=1, **kw,
     )
 
@@ -70,6 +70,7 @@ def test_run_trades_and_curve_commit_together() -> None:
     assert out["engine"] == "sim"
     run_sql, run_params = conn.log[0][1], conn.log[0][2]
     assert "'sim'" in run_sql and run_params[3] == "sim:short_put"
+    assert json.loads(run_params[2])["params"]["symbols"] == ["NVDA"]
     trades = conn.log[1][2]
     assert json.loads(trades[0][7]) == [{"ticker": "O:NVDA"}]  # legs serialized
     assert conn.log[2][2][0][1:] == ("2025-01-02", 100000.0, 2400.0, 1)

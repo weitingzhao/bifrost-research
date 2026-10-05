@@ -101,7 +101,12 @@ def simulate(body: SimBody) -> dict[str, Any]:
             result = run_sim(conn, body.symbols, body.start, body.end, cfg)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        params = {**result.params, "symbols": [s.strip().upper() for s in body.symbols]}
+        params = {
+            **result.params,
+            "symbols": [s.strip().upper() for s in body.symbols],
+            "start": body.start.isoformat(),
+            "end": body.end.isoformat(),
+        }
         run: dict[str, Any] = {"id": None, "persisted": False}
         if body.persist:
             try:
