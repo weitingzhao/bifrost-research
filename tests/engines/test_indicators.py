@@ -111,3 +111,14 @@ def test_indicator_signal_needs_symbols() -> None:
     ed = EventDef.from_dict({"kind": "indicator_signal", "params": {"signal": "macd_cross_up"}})
     with pytest.raises(ValueError):
         event_query.resolve_events_between(None, ed, date(2024, 1, 1), date(2024, 6, 1))
+
+
+def test_sim_refuses_entering_before_an_indicator_signal() -> None:
+    from pydantic import ValidationError
+
+    from bifrost_research.api.backtest_sim import SimBody
+
+    ev = {"kind": "indicator_signal", "params": {"signal": "macd_cross_up"}}
+    with pytest.raises(ValidationError):
+        SimBody(symbols=["SPY"], entry_event=ev, entry_offset_sessions=-1)
+    assert SimBody(symbols=["SPY"], entry_event=ev, entry_offset_sessions=1).entry_offset_sessions == 1

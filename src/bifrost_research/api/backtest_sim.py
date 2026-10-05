@@ -75,6 +75,8 @@ class SimBody(BaseModel):
         if (end - start).days > 366 * 5:
             raise ValueError("window longer than five years")
         self.start, self.end = start, end
+        if self.entry_event and self.entry_event.kind == "indicator_signal" and self.entry_offset_sessions < 0:
+            raise ValueError("indicator_signal fires on a session's close: entry_offset_sessions must be 0 or later")
         return self
 
 

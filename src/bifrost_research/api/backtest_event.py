@@ -98,6 +98,13 @@ def evaluation_catalog() -> dict[str, Any]:
 @router.post("/event-query", dependencies=[Depends(require_owner)])
 def event_query(body: EventQueryBody) -> dict[str, Any]:
     _validate_template(body.strategy_template)
+    if body.event_def.kind == "indicator_signal":
+        off = (body.template_kwargs or {}).get("entry_offset_days", -1)
+        if not isinstance(off, (int, float)) or off < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="indicator_signal fires on a session's close: entry_offset_days must be 0 or later",
+            )
     event_def = EventDef(kind=body.event_def.kind, params=body.event_def.params or {})
     fill_cfg = (
         FillConfig(
