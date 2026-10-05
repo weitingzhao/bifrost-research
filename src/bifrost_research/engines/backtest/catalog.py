@@ -68,6 +68,16 @@ EVALUATIONS: dict[str, dict[str, Any]] = {
         "store": "features.stock_signal_lens_hit_daily",
         "route": "GET /research/signal-decay/*",
     },
+    "indicator_signal": {
+        "class": "signal_evaluation",
+        "title": "Indicator signal win rate",
+        "answers": "Whether the stock moved the way a MACD / RSI / Bollinger / EMA crossing said, N sessions on, next to every session.",
+        "price_basis": "adjusted stock close to close",
+        "entry": "each crossing session's close",
+        "code": "engines/indicators",
+        "store": "none (computed on request)",
+        "route": "GET /research/indicators/signal-stats",
+    },
     "candidate_outcome": {
         "class": "signal_evaluation",
         "title": "Candidate and hypothesis settlement",
