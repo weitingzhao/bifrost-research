@@ -89,3 +89,21 @@ def test_one_objective_failing_does_not_stop_the_review(monkeypatch) -> None:
     assert out["proposed"] == ["draft_1"]
     assert out["reviewed"][1] == {"objective_id": "obj_broken", "error": "ledger unreadable"}
     assert len(w["drafts"]) == 1
+
+
+def test_a_proposal_covered_by_a_newer_suggestion_still_counts_for_its_week(monkeypatch) -> None:
+    # 0.166.0: a later suggestion on the objective expires this week's proposal;
+    # a rerun in the same week must not propose it again.
+    w = _wire(monkeypatch, summary=WEAK)
+    expired = [{"id": "draft_w36", "status": "expired", "payload": {"source": "weekly_outcomes", "week": "2026-W36"}}]
+    seen: list[str] = []
+
+    def _list(conn, **kw):
+        seen.append(kw.get("status"))
+        return expired if kw.get("status") == "expired" else []
+
+    monkeypatch.setattr(W.draft_repo, "list_drafts", _list)
+    out = W.run_weekly_policy_review(object(), day=date(2026, 9, 6))
+    assert out["reviewed"][0]["skipped"] is True and out["reviewed"][0]["draft_id"] == "draft_w36"
+    assert seen == ["pending", "expired"]
+    assert w["drafts"] == []

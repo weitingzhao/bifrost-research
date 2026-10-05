@@ -616,7 +616,6 @@ def run_daily_digest(
             scope=digest_scope(day),
             generated_by=AGENT_ID,
             linked_action_id=action["id"],
-            expire_prior_pending=True,
         )
         return {
             "ok": True,

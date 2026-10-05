@@ -92,7 +92,7 @@ def approve_all_for_run(
 
     for did in draft_ids:
         draft = draft_repo.get_draft(conn, did)
-        if draft is None or draft.get("status") != "pending":
+        if draft is None or draft.get("status") != "pending" or draft_repo.expired_state(draft):
             continue
         kind = str(draft.get("kind") or "")
         if whitelist and kind not in whitelist:

@@ -54,7 +54,18 @@ def _latest_persona(conn: _Connection, objective_id: str) -> dict[str, Any] | No
 
 
 def _already_proposed(conn: _Connection, objective_id: str, week: str) -> dict[str, Any] | None:
-    rows = draft_repo.list_drafts(conn, status="pending", kind="policy_suggestion", scope=f"objective:{objective_id}", limit=20)
+    """This week's proposal, still pending or already covered by a newer suggestion.
+
+    Expired ones count too (0.166.0): a later suggestion on the objective
+    supersedes this one, and a rerun in the same week must not propose it again.
+    """
+    rows = [
+        row
+        for status in ("pending", "expired")
+        for row in draft_repo.list_drafts(
+            conn, status=status, kind="policy_suggestion", scope=f"objective:{objective_id}", limit=20
+        )
+    ]
     for row in rows:
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
         if payload.get("source") == SUGGESTION_SOURCE and payload.get("week") == week:

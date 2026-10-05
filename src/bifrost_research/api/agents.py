@@ -416,6 +416,15 @@ def _promote_candidate_batch(
     }
 
 
+def _raise_if_expired(draft: dict[str, Any]) -> None:
+    """409 for an expired draft (0.166.0, D1): an open tab must not approve or
+    dismiss what the sweep or a newer draft already closed. ``detail`` is a
+    dict with ``code = "draft_expired"`` and the recorded ``reason``."""
+    state = draft_repo.expired_state(draft)
+    if state is not None:
+        raise HTTPException(status_code=409, detail=state)
+
+
 def apply_draft_approval(
     conn: Any,
     draft: dict[str, Any],
@@ -429,6 +438,7 @@ def apply_draft_approval(
     """
     if draft is None:
         _err("draft not found", 404)
+    _raise_if_expired(draft)
     if draft.get("status") != "pending":
         _err(f"draft status is {draft.get('status')}, expected pending", 409)
 
@@ -629,6 +639,7 @@ def dismiss_draft(
         draft = draft_repo.get_draft(conn, draft_id)
         if draft is None:
             _err("draft not found", 404)
+        _raise_if_expired(draft)
         if draft["status"] != "pending":
             _err(f"draft status is {draft['status']}, expected pending", 409)
 

@@ -199,6 +199,17 @@ def run_eod_review(
             print(json.dumps(result, indent=2, default=str))
             return result
 
+        # D5: close yesterday's queue before writing today's. Verdicts the
+        # next EOD would cover, batches whose names left the pool, drafts
+        # about a settled hypothesis or an archived objective (0.166.0). A
+        # failure here must not cost the review its drafts either.
+        try:
+            expiry = draft_repo.expire_due(conn, by=AGENT_ID)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("EOD draft expiry skipped: %s", str(exc)[:160])
+            rollback_quietly(conn)
+            expiry = {"ok": False, "error": str(exc)[:200]}
+
         # B3: the outcome rule first. What it settles leaves the active list
         # and needs no draft; what it cannot settle carries its evidence into
         # the draft below. A failure here must not cost the review its drafts.
@@ -229,6 +240,7 @@ def run_eod_review(
                 "draft_ids": [],
                 "active_hypotheses": 0,
                 "resolution": resolution_summary,
+                "expiry": expiry,
                 "message": "no active hypotheses",
             }
 
@@ -278,6 +290,7 @@ def run_eod_review(
             "draft_ids": [d["id"] for d in drafts_out],
             "active_hypotheses": len(active),
             "resolution": resolution_summary,
+            "expiry": expiry,
         }
     finally:
         if owns_conn and conn is not None:

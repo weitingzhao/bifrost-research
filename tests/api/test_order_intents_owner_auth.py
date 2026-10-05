@@ -82,6 +82,16 @@ def env(monkeypatch: pytest.MonkeyPatch) -> _Env:
     monkeypatch.setattr(
         "bifrost_research.api.order_intents.draft_repo.update_draft_status", _update
     )
+
+    # A pending intent expires through the shared path (payload.expired + action row).
+    def _expire_ids(conn: Any, ids: list[str], *, reason: str, by: str) -> dict[str, Any]:
+        for did in ids:
+            e.status_updates.append({"draft_id": did, "status": "expired", "reason": reason, "by": by})
+        return {"expired": len(ids), "actions_expired": 0, "ids": ids}
+
+    monkeypatch.setattr(
+        "bifrost_research.api.order_intents.draft_expiry.expire_ids", _expire_ids
+    )
     return e
 
 
@@ -138,4 +148,6 @@ def test_research_user_can_expire(client: TestClient, env: _Env, auth_on: None) 
         headers={"Authorization": "Bearer tok_alice"},
     )
     assert resp.status_code == 200, resp.text
-    assert env.status_updates == [{"draft_id": "aid_1", "status": "expired"}]
+    assert env.status_updates == [
+        {"draft_id": "aid_1", "status": "expired", "reason": "manual", "by": "owner:alice"}
+    ]

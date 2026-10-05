@@ -108,3 +108,18 @@ def test_other_whitelisted_kinds_still_approve_and_policy_suggestions_never_do(w
     world["draft"] = {"id": "d1", "kind": "eod_verdict", "status": "pending", "payload": {"items": []}}
     out = B.approve_all_for_run(_Conn(), "run_1", kinds_whitelist=B.RESEARCH_AUTO_APPROVE_KINDS)
     assert len(world["approved"]) == 1 and out["approved"] == ["d1"]
+
+
+def test_a_draft_past_its_clock_is_not_auto_approved(world) -> None:
+    # 0.166.0: a pending row whose expires_at passed before the sweep reached it
+    # is as closed as an expired one — the unattended path skips it too.
+    world["draft"] = {
+        "id": "d1",
+        "kind": "candidate_batch",
+        "status": "pending",
+        "expires_at": "2026-01-02T21:00:00+00:00",
+        "payload": {"items": [_item("c_wt", "WT")]},
+    }
+    out = B.approve_all_for_run(_Conn(), "run_1", approved_by="system:loop_batch", kinds_whitelist=B.RESEARCH_AUTO_APPROVE_KINDS)
+    assert world["promoted"] == [] and world["approved"] == [] and world["patched"] == []
+    assert out["approved"] == [] and out["partial"] == []

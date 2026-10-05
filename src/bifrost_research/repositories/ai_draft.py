@@ -6,9 +6,10 @@ import json
 import secrets
 import time
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
+from bifrost_research.repositories import draft_expiry as expiry
 from bifrost_research.schema.schemas import TABLE_RESEARCH_AI_DRAFT
 
 _ALLOWED_STATUSES = frozenset({"pending", "approved", "dismissed", "expired"})
@@ -116,6 +117,12 @@ def _cols() -> str:
     return ", ".join(_COLUMNS)
 
 
+#: A pending row a reader may still see: not past its ``expires_at``. The sweep
+#: (``expire_due``) turns these into ``status = 'expired'``; between two sweeps
+#: this keeps a row that ran out from being counted, listed or approved.
+LIVE_SQL = "(expires_at IS NULL OR expires_at > now())"
+
+
 def insert_draft(
     conn: _Connection,
     *,
@@ -127,8 +134,17 @@ def insert_draft(
     status: str = "pending",
     expires_at: Any = None,
     draft_id: str | None = None,
-    expire_prior_pending: bool = False,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
+    """Write a draft — every writer comes through here (0.166.0, D1).
+
+    A pending draft gets its kind's ``expires_at`` when the caller did not give
+    one (``draft_expiry.default_expires_at``), and in the same transaction
+    expires the older pending drafts it covers (same kind, same key —
+    ``draft_expiry.supersede_key``; an Owner-authored draft only by a newer
+    Owner-authored one, D3). Those rows record ``payload.expired`` with
+    ``superseded_by`` and their ``proposed`` action rows become ``expired`` (D4).
+    """
     did = (draft_id or generate_draft_id()).strip()
     validated_kind = _validate_kind(kind)
     validated_status = _validate_status(status)
@@ -139,15 +155,18 @@ def insert_draft(
         raise ValueError("generated_by is required")
     if payload is None:
         raise ValueError("payload is required")
+    author = str(generated_by).strip()
+    at = expiry.as_utc(now) or datetime.now(timezone.utc)
+    body = expiry.as_payload(payload)
 
-    expire_sql = f"""
-        UPDATE {TABLE_RESEARCH_AI_DRAFT}
-        SET status = 'expired'
-        WHERE kind = %s
-          AND status = 'pending'
-          AND id <> %s
-          AND created_at < NOW()
-    """
+    key: str | None = None
+    if validated_status == "pending":
+        if expires_at is None:
+            # Read before the write transaction opens: the calendar helper rolls
+            # back on a failed read.
+            expires_at = expiry.expires_at_for(conn, validated_kind, body, created_at=at)
+        key = expiry.supersede_key(validated_kind, body, scope_s)
+
     insert_sql = f"""
         INSERT INTO {TABLE_RESEARCH_AI_DRAFT} (
             id, kind, payload, scope, status, generated_by,
@@ -162,17 +181,28 @@ def insert_draft(
         _serialize_json(payload),
         scope_s,
         validated_status,
-        str(generated_by).strip(),
+        author,
         linked_action_id,
         expires_at,
     )
     try:
         with conn.cursor() as cur:
-            if expire_prior_pending:
-                # Same write transaction: older pending rows of this kind leave
-                # the Inbox. Scope is not a match key — digest scope is one
-                # calendar day, so yesterday's pending would never expire.
-                cur.execute(expire_sql, (validated_kind, did))
+            if key is not None:
+                sql, params = _supersede_candidates_sql(validated_kind, key, did)
+                cur.execute(sql, params)
+                existing = list(cur.fetchall() or [])
+                new_row = expiry.DraftRow(
+                    id=did,
+                    kind=validated_kind,
+                    scope=scope_s,
+                    payload=body,
+                    generated_by=author,
+                    linked_action_id=linked_action_id,
+                    created_at=at,
+                    expires_at=expiry.as_utc(expires_at),
+                )
+                covered = expiry.superseded_by_new(existing, new_row)
+                expiry.apply_with_cursor(cur, covered, by=f"insert:{author}", at=at)
             cur.execute(insert_sql, insert_params)
             row = cur.fetchone()
         conn.commit()
@@ -182,6 +212,33 @@ def insert_draft(
     if row is None:
         raise RuntimeError("insert ai_draft returned no row")
     return _row_to_dict(row)
+
+
+def _supersede_candidates_sql(kind: str, key: str, exclude_id: str) -> tuple[str, tuple[Any, ...]]:
+    """Pending rows that may share ``key`` — narrowed in SQL, decided by ``draft_expiry``.
+
+    ``FOR UPDATE`` so two writers covering the same key take turns rather
+    than each expiring the other's row.
+    """
+    clauses = ["kind = %s", "status = 'pending'", "id <> %s"]
+    params: list[Any] = [kind, exclude_id]
+    tag, _, value = key.partition(":")
+    if tag == "hyp":
+        clauses.append("(BTRIM(payload ->> 'hypothesis_id') = %s OR scope IN (%s, %s))")
+        params.extend([value, value, f"hypothesis:{value}"])
+    elif tag == "obj":
+        clauses.append("(BTRIM(payload ->> 'objective_id') = %s OR scope = %s)")
+        params.extend([value, f"objective:{value}"])
+    elif tag == "scope":
+        clauses.append("scope = %s")
+        params.append(value)
+    sql = f"""
+        SELECT {", ".join(expiry._ROW_COLS)}
+        FROM {TABLE_RESEARCH_AI_DRAFT}
+        WHERE {" AND ".join(clauses)}
+        FOR UPDATE
+    """
+    return sql, tuple(params)
 
 
 def get_draft(conn: _Connection, draft_id: str) -> dict[str, Any] | None:
@@ -212,6 +269,8 @@ def list_drafts(
         _validate_status(status)
         clauses.append("status = %s")
         params.append(status)
+        if status == "pending":
+            clauses.append(LIVE_SQL)
     if kind:
         _validate_kind(kind)
         clauses.append("kind = %s")
@@ -235,7 +294,7 @@ def list_drafts(
 
 
 def count_pending(conn: _Connection, *, kind: str | None = None) -> int:
-    clauses = ["status = 'pending'"]
+    clauses = ["status = 'pending'", LIVE_SQL]
     params: list[Any] = []
     if kind:
         _validate_kind(kind)
@@ -262,6 +321,7 @@ def count_pending_by_kind(conn: _Connection) -> dict[str, int]:
         SELECT kind, COUNT(*)
         FROM {TABLE_RESEARCH_AI_DRAFT}
         WHERE status = 'pending'
+          AND {LIVE_SQL}
         GROUP BY kind
     """
     with conn.cursor() as cur:
@@ -325,6 +385,7 @@ def pending_inbox_cards(conn: _Connection, *, exclude_kinds: frozenset[str] | se
                     ) AS obj
             ) k
             WHERE a.status = 'pending'
+              AND (a.expires_at IS NULL OR a.expires_at > now())
               AND NOT (a.kind = ANY(%s))
         )
         SELECT DISTINCT ON (card_key)
@@ -407,3 +468,46 @@ def patch_draft_payload(
         raise
     return _row_to_dict(row) if row is not None else None
 
+
+
+def expired_state(draft: Mapping[str, Any] | None, *, now: datetime | None = None) -> dict[str, Any] | None:
+    """Why this draft can no longer be approved or dismissed, or None while it still can.
+
+    The 409 body of approve / dismiss (``detail``): ``code`` is always
+    ``draft_expired``; ``reason`` is the recorded one (``superseded``, ``due``,
+    ``hypothesis_inactive`` …) or ``due`` for a pending row past ``expires_at``
+    that the sweep has not reached yet.
+    """
+    if not draft:
+        return None
+    status = draft.get("status")
+    at = expiry.as_utc(now) or datetime.now(timezone.utc)
+    payload = draft.get("payload") if isinstance(draft.get("payload"), Mapping) else {}
+    record = payload.get("expired") if isinstance(payload.get("expired"), Mapping) else {}
+    if status == "expired":
+        reason = str(record.get("reason") or "expired")
+        expired_at = record.get("at")
+    elif status == "pending":
+        due = expiry.as_utc(draft.get("expires_at"))
+        if due is None or due > at:
+            return None
+        reason = expiry.REASON_DUE
+        expired_at = due.isoformat()
+    else:
+        return None
+    out: dict[str, Any] = {
+        "code": "draft_expired",
+        "draft_id": draft.get("id"),
+        "kind": draft.get("kind"),
+        "reason": reason,
+        "expired_at": expired_at,
+        "expires_at": _iso(draft.get("expires_at")),
+        "superseded_by": record.get("superseded_by"),
+        "message": f"draft expired ({reason}); it can no longer be approved or dismissed",
+    }
+    return out
+
+
+def expire_due(conn: _Connection, *, now: datetime | None = None, by: str = "expire_due", dry_run: bool = False) -> dict[str, Any]:
+    """Sweep pending drafts whose rule holds now — see ``draft_expiry.expire_due``."""
+    return expiry.expire_due(conn, now=now, by=by, dry_run=dry_run)

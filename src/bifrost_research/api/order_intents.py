@@ -20,6 +20,7 @@ from bifrost_research.copilot.harness.order_intent_schema import OrderIntent
 from bifrost_research.db.conn import connect
 from bifrost_research.repositories import ai_action_log as action_repo
 from bifrost_research.repositories import ai_draft as draft_repo
+from bifrost_research.repositories import draft_expiry
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +102,8 @@ def create_order_intent(body: OrderIntentCreate) -> dict[str, Any]:
     return _ok({"draft": draft, "action": action, "advisory": True, "d10": "BLOCKED"})
 
 
-@router.post("/{draft_id}/expire", dependencies=[Depends(require_owner)])
-def expire_order_intent(draft_id: str) -> dict[str, Any]:
+@router.post("/{draft_id}/expire")
+def expire_order_intent(draft_id: str, owner_id: str = Depends(require_owner)) -> dict[str, Any]:
     conn = _connect_or_503()
     try:
         draft = draft_repo.get_draft(conn, draft_id)
@@ -110,7 +111,12 @@ def expire_order_intent(draft_id: str) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail="order intent not found")
         if draft.get("kind") != KIND:
             raise HTTPException(status_code=400, detail="not an order_intent draft")
-        updated = draft_repo.update_draft_status(conn, draft_id, status="expired")
+        if draft.get("status") == "pending":
+            # Same record as every other expiry: payload.expired + action row (D2/D4).
+            draft_expiry.expire_ids(conn, [draft_id], reason=draft_expiry.REASON_MANUAL, by=f"owner:{owner_id}")
+            updated = draft_repo.get_draft(conn, draft_id)
+        else:
+            updated = draft_repo.update_draft_status(conn, draft_id, status="expired")
     finally:
         conn.close()
     return _ok(updated)
