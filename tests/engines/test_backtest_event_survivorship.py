@@ -113,3 +113,39 @@ def test_a_live_name_past_its_data_is_still_skipped() -> None:
     )
     assert result["summary"]["n_events"] == 0
     assert result["summary"]["delisted_exits"] == 0
+
+
+def test_an_unreadable_8k_table_is_reported_not_replaced_by_the_stub() -> None:
+    # A role without SELECT on raw_market.sec_8k_filing (2026-10-05) fell
+    # through to the stub calendar and said only "stub".
+    class _NoGrant(_FakeConn):
+        rollbacks = 0
+
+        def cursor(self):  # type: ignore[override]
+            cur = super().cursor()
+            execute = cur.execute
+
+            def guarded(query: str, params: object = None) -> None:
+                if "raw_market.sec_8k_filing" in query:
+                    raise RuntimeError("permission denied for table sec_8k_filing")
+                execute(query, params)
+
+            cur.execute = guarded  # type: ignore[method-assign]
+            return cur
+
+        def rollback(self) -> None:
+            type(self).rollbacks += 1
+
+    conn = _NoGrant(_FakeState())
+    result = run_event_query(
+        EventDef(kind="earnings", params={"symbols": ["NVDA"]}),
+        template_name="long_stock_event",
+        lookback_years=1,
+        conn=conn,
+        today=date(2026, 6, 1),
+    )
+    assert result["event_source"] == "unavailable"
+    assert result["summary"]["n_events"] == 0 and result["runs"] == []
+    (err,) = result["event_source_errors"]
+    assert err.startswith("raw_market.sec_8k_filing: RuntimeError: permission denied")
+    assert _NoGrant.rollbacks == 1

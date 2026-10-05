@@ -125,8 +125,20 @@ class EventRun:
 @dataclass
 class ResolvedEvents:
     events: list[tuple[str, date]]  # (symbol, event_date)
-    source: str  # "stub" | "corporate_action" | "event_radar" | "opex" | "sepa" | "iv" | "sql"
+    source: str  # "sec_8k_item_2_02" | "stub" | "corporate_action" | "event_radar" | "opex" | "sepa" | "iv" | "unavailable"
     notes: str = ""
+    # A source that could not be read (permission, missing table), named with
+    # its error. An empty result is not an error; a failed read never passes
+    # for one.
+    errors: list[str] = field(default_factory=list)
+
+
+def _read_failed(conn: Any, what: str, exc: Exception, errors: list[str]) -> None:
+    """Record a failed read and clear the aborted transaction behind it."""
+    msg = " ".join(str(exc).split())[:200]
+    errors.append(f"{what}: {type(exc).__name__}: {msg}")
+    logger.warning("event source %s unreadable: %s", what, msg)
+    _rollback(conn)
 
 
 def _lookback_window(lookback_years: int, today: date | None = None) -> tuple[date, date]:
@@ -243,6 +255,7 @@ def _resolve_earnings_events(
     universe = symbols or list(_STUB_EARNINGS_UNIVERSE)
 
     events: list[tuple[str, date]] = []
+    errors: list[str] = []
 
     # (0) 8-K Item 2.02 — the results release.
     try:
@@ -257,9 +270,17 @@ def _resolve_earnings_events(
             if missing:
                 notes += f"; no results 8-K on file in the window, left out: {', '.join(missing)}"
             return ResolvedEvents(events=prints, source="sec_8k_item_2_02", notes=notes)
-    except Exception as exc:  # pragma: no cover - depends on DB schema
-        logger.debug("earnings sec_8k_filing fallback: %s", exc)
-        _rollback(conn)
+    except Exception as exc:  # noqa: BLE001 — reported, not swallowed
+        # The real calendar could not be read (a role without SELECT on
+        # raw_market.sec_8k_filing, 2026-10-05). Falling on to the stub would
+        # hand back invented dates and call the run an earnings backtest.
+        _read_failed(conn, "raw_market.sec_8k_filing", exc, errors)
+        return ResolvedEvents(
+            events=[],
+            source="unavailable",
+            notes="earnings calendar unreadable — no events; see errors",
+            errors=errors,
+        )
 
     # (1) corporate_action
     try:
@@ -281,9 +302,9 @@ def _resolve_earnings_events(
                 ex_date = ex_date.date()
             events.append((str(sym), ex_date))
         if events:
-            return ResolvedEvents(events=events, source="corporate_action")
-    except Exception as exc:  # pragma: no cover - depends on DB schema
-        logger.debug("earnings corporate_action fallback: %s", exc)
+            return ResolvedEvents(events=events, source="corporate_action", errors=errors)
+    except Exception as exc:  # noqa: BLE001
+        _read_failed(conn, "raw_market.corporate_action", exc, errors)
 
     # (2) event_signal_radar_daily heuristic
     try:
@@ -309,9 +330,9 @@ def _resolve_earnings_events(
                 event_date = event_date.date()
             found.append((sym, event_date))
         if found:
-            return ResolvedEvents(events=found, source="event_radar")
-    except Exception as exc:  # pragma: no cover
-        logger.debug("earnings event_radar fallback: %s", exc)
+            return ResolvedEvents(events=found, source="event_radar", errors=errors)
+    except Exception as exc:  # noqa: BLE001
+        _read_failed(conn, "features.event_signal_radar_daily", exc, errors)
 
     # (3) Stub — quarterly cadence back from ``end`` for the universe.
     stub: list[tuple[str, date]] = []
@@ -329,6 +350,7 @@ def _resolve_earnings_events(
             "earnings source: stub — replace when a real earnings calendar is "
             "wired to Golden Source"
         ),
+        errors=errors,
     )
 
 
@@ -385,6 +407,7 @@ def _resolve_sepa_hit_events(
         ORDER BY trade_date, symbol
     """
     events: list[tuple[str, date]] = []
+    errors: list[str] = []
     try:
         with conn.cursor() as cur:
             cur.execute(sql, tuple(params_tuple))
@@ -393,11 +416,12 @@ def _resolve_sepa_hit_events(
             if isinstance(td, datetime):
                 td = td.date()
             events.append((str(sym), td))
-    except Exception as exc:  # pragma: no cover
-        logger.debug("sepa_hit resolver failed: %s", exc)
+    except Exception as exc:  # noqa: BLE001
+        _read_failed(conn, "features.stock_signal_sepa_daily", exc, errors)
     return ResolvedEvents(
         events=events,
-        source="sepa",
+        source="sepa" if not errors else "unavailable",
+        errors=errors,
         notes=(
             "sepa historical coverage is limited — features.stock_signal_sepa_daily "
             "is daily-UPSERT overwrite (see schema notes)."
@@ -430,6 +454,7 @@ def _resolve_iv_percentile_events(
         ORDER BY trade_date, symbol
     """
     events: list[tuple[str, date]] = []
+    errors: list[str] = []
     try:
         with conn.cursor() as cur:
             cur.execute(sql, tuple(params_tuple))
@@ -438,9 +463,9 @@ def _resolve_iv_percentile_events(
             if isinstance(td, datetime):
                 td = td.date()
             events.append((str(sym), td))
-    except Exception as exc:  # pragma: no cover
-        logger.debug("iv_percentile resolver failed: %s", exc)
-    return ResolvedEvents(events=events, source="iv")
+    except Exception as exc:  # noqa: BLE001
+        _read_failed(conn, "features.option_metric_iv_percentile_daily", exc, errors)
+    return ResolvedEvents(events=events, source="iv" if not errors else "unavailable", errors=errors)
 
 
 def _resolve_sql_events(
@@ -1255,12 +1280,14 @@ def run_event_query(
     summary["delisted_exits"] = delisted_exits
     summary["offset_unit"] = "trading_sessions"
     summary["event_source"] = resolved.source
+    summary["event_source_errors"] = list(resolved.errors)
     summary["evaluation"] = evaluation("event_backtest")
     return {
         "runs": [_run_to_dict(r) for r in runs],
         "summary": summary,
         "event_source": resolved.source,
         "event_source_notes": resolved.notes,
+        "event_source_errors": list(resolved.errors),
         "skipped_events": skipped,
         "template": template_name,
         "template_kwargs": dict(template_kwargs),

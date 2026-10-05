@@ -460,6 +460,7 @@ def _entry_rule(
         "source": resolved.source,
         "events": sum(len(v) for v in by_symbol.values()),
         "notes": resolved.notes or ("stub calendar refused: no real event dates" if resolved.source == "stub" else ""),
+        "errors": list(resolved.errors),
     }
 
 
