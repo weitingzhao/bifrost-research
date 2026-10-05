@@ -227,6 +227,62 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         ON {SCHEMA_RESEARCH}.backtest_run (created_at DESC)
         """
     )
+    # --- P2 (0.170.0): the option simulator's record of a run ---
+    # A run used to keep only its summary, so no result could be re-checked or
+    # drawn trade by trade. ``engine`` tells the event backtest ('event') from
+    # the simulator ('sim'); ``params`` is the simulator's full config.
+    # Owner-approved 2026-10-05; additive only.
+    cur.execute(
+        f"""
+        ALTER TABLE {SCHEMA_RESEARCH}.backtest_run
+          ADD COLUMN IF NOT EXISTS engine text NOT NULL DEFAULT 'event',
+          ADD COLUMN IF NOT EXISTS params jsonb
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.backtest_trade (
+            run_id        text    NOT NULL REFERENCES {SCHEMA_RESEARCH}.backtest_run(id)
+                                    ON DELETE CASCADE,
+            seq           integer NOT NULL,
+            symbol        text    NOT NULL,
+            structure     text    NOT NULL,
+            entry_date    date    NOT NULL,
+            exit_date     date    NOT NULL,
+            exit_reason   text    NOT NULL,
+            legs          jsonb   NOT NULL,
+            entry_credit  double precision,
+            exit_debit    double precision,
+            pnl           double precision NOT NULL,
+            max_loss      double precision,
+            margin        double precision,
+            days_held     integer,
+            mfe           double precision,
+            mae           double precision,
+            fill_basis    text    NOT NULL,
+            PRIMARY KEY (run_id, seq)
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS backtest_trade_symbol_entry
+        ON {SCHEMA_RESEARCH}.backtest_trade (symbol, entry_date)
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.backtest_equity (
+            run_id          text    NOT NULL REFERENCES {SCHEMA_RESEARCH}.backtest_run(id)
+                                      ON DELETE CASCADE,
+            as_of           date    NOT NULL,
+            equity          double precision NOT NULL,
+            margin_used     double precision,
+            open_positions  integer,
+            PRIMARY KEY (run_id, as_of)
+        )
+        """
+    )
     # --- Wave RS-E3: research.ai_action_log + research.ai_draft ---
     cur.execute(
         f"""
