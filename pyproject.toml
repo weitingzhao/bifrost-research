@@ -1,6 +1,6 @@
 [project]
 name = "bifrost-research"
-version = "0.172.0"
+version = "0.173.0"
 description = "Bifrost Research Engine — OLAP analytics, engines, and Research API"
 requires-python = ">=3.11"
 dependencies = [
@@ -64,6 +64,8 @@ where = ["src"]
 bifrost_research = [
     # Documents the API serves (docs/*.md); the blueprint is read from the product.
     "docs/*.md",
+    # W6: the built-in Pine library, seeded into research.pine_script by the daily build.
+    "engines/pine/library/*.pine",
     "dbt/dbt_project.yml",
     "dbt/profiles.yml",
     "dbt/packages.yml",

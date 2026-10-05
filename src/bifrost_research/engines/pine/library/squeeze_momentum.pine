@@ -1,0 +1,18 @@
+//@version=5
+// Bifrost starter library — Squeeze release. Bollinger inside Keltner = squeeze; fires when it releases, signed by momentum.
+indicator("Bifrost · Squeeze release")
+len   = input.int(20, "Length")
+bbMul = input.float(2.0, "BB mult")
+kcMul = input.float(1.5, "KC mult")
+basis = ta.sma(close, len)
+dev   = bbMul * ta.stdev(close, len)
+rng   = ta.sma(ta.tr(true), len)
+squeezeOn = (basis - dev > basis - rng * kcMul) and (basis + dev < basis + rng * kcMul)
+mid   = math.avg(math.avg(ta.highest(high, len), ta.lowest(low, len)), basis)
+mom   = ta.linreg(close - mid, len, 0)
+released = squeezeOn[1] and not squeezeOn
+buy  = released and mom > 0
+sell = released and mom < 0
+plot(mom, "momentum", plot.style_histogram)
+plotshape(buy,  "buy",  shape.triangleup,   location.bottom)
+plotshape(sell, "sell", shape.triangledown, location.top)

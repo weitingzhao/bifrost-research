@@ -1,0 +1,12 @@
+//@version=5
+// Bifrost starter library — DMI cross with a trending ADX.
+indicator("Bifrost · DMI cross (ADX filter)")
+len    = input.int(14, "DI length")
+smooth = input.int(14, "ADX smoothing")
+minAdx = input.float(20, "Min ADX")
+[plusDI, minusDI, adx] = ta.dmi(len, smooth)
+buy  = ta.crossover(plusDI, minusDI) and adx > minAdx
+sell = ta.crossunder(plusDI, minusDI) and adx > minAdx
+plot(adx, "ADX")
+plotshape(buy,  "buy",  shape.triangleup,   location.bottom)
+plotshape(sell, "sell", shape.triangledown, location.top)

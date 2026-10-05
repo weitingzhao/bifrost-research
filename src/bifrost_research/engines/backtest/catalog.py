@@ -78,6 +78,16 @@ EVALUATIONS: dict[str, dict[str, Any]] = {
         "store": "none (computed on request)",
         "route": "GET /research/indicators/signal-stats",
     },
+    "pine_signal": {
+        "class": "signal_evaluation",
+        "title": "Pine script signal win rate",
+        "answers": "Whether the stock moved the way a Pine library script's buy or sell said, N sessions on, next to every session of the same names.",
+        "price_basis": "adjusted stock close to close",
+        "entry": "each session the script's plot fired",
+        "code": "engines/pine, pine-runner/",
+        "store": "features.stock_signal_pine_daily",
+        "route": "GET /research/pine/signal-stats",
+    },
     "candidate_outcome": {
         "class": "signal_evaluation",
         "title": "Candidate and hypothesis settlement",

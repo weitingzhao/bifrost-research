@@ -1,0 +1,79 @@
+# pine-runner (W6): runs Pine Script for Research over HTTP. AGPL-3.0 (links
+# PineTS), so it is its own image and process — see pine-runner/LICENSE.md.
+# Image built by the bifrost-build-research-pine pipeline (bifrost-trade-infra);
+# bump the tag only after it is in the registry.
+# No database, no secrets, no egress beyond the cluster. D10: no order path.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: research-pine
+  namespace: research
+  labels:
+    app.kubernetes.io/name: research-pine
+    app.kubernetes.io/part-of: bifrost-research
+    bifrost.research/role: pine-runner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: research-pine
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: research-pine
+        app.kubernetes.io/part-of: bifrost-research
+        bifrost.research/role: pine-runner
+    spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      automountServiceAccountToken: false
+      containers:
+        - name: pine
+          image: 192.168.10.73:30500/bifrost-research-pine:0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PORT
+              value: "8797"
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=768"
+          ports:
+            - name: http
+              containerPort: 8797
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: research-pine
+  namespace: research
+  labels:
+    app.kubernetes.io/name: research-pine
+    app.kubernetes.io/part-of: bifrost-research
+spec:
+  selector:
+    app.kubernetes.io/name: research-pine
+  ports:
+    - name: http
+      port: 8797
+      targetPort: http

@@ -1,0 +1,19 @@
+{
+  "name": "bifrost-pine-runner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Runs Pine Script over daily bars for bifrost-research, over HTTP only. AGPL-3.0 because it links PineTS.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "pinets": "0.11.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

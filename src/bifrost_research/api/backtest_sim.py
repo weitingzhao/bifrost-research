@@ -34,7 +34,7 @@ MAX_SYMBOLS = 10
 
 class SimEntryEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["earnings", "opex", "sepa_hit", "iv_percentile_threshold", "indicator_signal"]
+    kind: Literal["earnings", "opex", "sepa_hit", "iv_percentile_threshold", "indicator_signal", "pine_signal"]
     params: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -75,8 +75,8 @@ class SimBody(BaseModel):
         if (end - start).days > 366 * 5:
             raise ValueError("window longer than five years")
         self.start, self.end = start, end
-        if self.entry_event and self.entry_event.kind == "indicator_signal" and self.entry_offset_sessions < 0:
-            raise ValueError("indicator_signal fires on a session's close: entry_offset_sessions must be 0 or later")
+        if self.entry_event and self.entry_event.kind in ("indicator_signal", "pine_signal") and self.entry_offset_sessions < 0:
+            raise ValueError("an indicator or Pine signal fires on a session's close: entry_offset_sessions must be 0 or later")
         return self
 
 

@@ -125,7 +125,7 @@ class EventRun:
 @dataclass
 class ResolvedEvents:
     events: list[tuple[str, date]]  # (symbol, event_date)
-    source: str  # "sec_8k_item_2_02" | "stub" | "corporate_action" | "event_radar" | "opex" | "sepa" | "iv" | "indicator" | "unavailable"
+    source: str  # "sec_8k_item_2_02" | "stub" | "corporate_action" | "event_radar" | "opex" | "sepa" | "iv" | "indicator" | "pine" | "unavailable"
     notes: str = ""
     # A source that could not be read (permission, missing table), named with
     # its error. An empty result is not an error; a failed read never passes
@@ -525,6 +525,50 @@ def _resolve_indicator_signal_events(
     )
 
 
+def _resolve_pine_signal_events(
+    conn: Any,
+    params: Mapping[str, Any],
+    start: date,
+    end: date,
+) -> ResolvedEvents:
+    """Sessions a Pine library script fired, from ``features.stock_signal_pine_daily``."""
+    script = str(params.get("script") or "").strip()
+    side = str(params.get("side") or "buy").strip()
+    if not script:
+        raise ValueError("pine_signal needs params.script")
+    if side not in ("buy", "sell"):
+        raise ValueError("pine_signal side must be buy or sell")
+    symbols = _params_symbols(params)
+    where_sym = "AND symbol = ANY(%s::text[])" if symbols else ""
+    args: list[Any] = [script, side, start, end]
+    if symbols:
+        args.append(symbols)
+    events: list[tuple[str, date]] = []
+    errors: list[str] = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT UPPER(symbol), trade_date
+                FROM features.stock_signal_pine_daily
+                WHERE script_id = %s AND side = %s AND trade_date BETWEEN %s AND %s
+                  {where_sym}
+                ORDER BY trade_date, symbol
+                """,
+                tuple(args),
+            )
+            for sym, td in cur.fetchall() or []:
+                events.append((str(sym), td.date() if isinstance(td, datetime) else td))
+    except Exception as exc:  # noqa: BLE001
+        _read_failed(conn, "features.stock_signal_pine_daily", exc, errors)
+    return ResolvedEvents(
+        events=events,
+        source="pine" if not errors else "unavailable",
+        errors=errors,
+        notes=f"Pine script {script} {side} plot; fires on the session's close",
+    )
+
+
 def resolve_events(
     conn: Any,
     event_def: EventDef,
@@ -550,6 +594,8 @@ def resolve_events_between(conn: Any, event_def: EventDef, start: date, end: dat
         return _resolve_iv_percentile_events(conn, params, start, end)
     if kind == "indicator_signal":
         return _resolve_indicator_signal_events(conn, params, start, end)
+    if kind == "pine_signal":
+        return _resolve_pine_signal_events(conn, params, start, end)
     if kind == "sql":
         return _resolve_sql_events(conn, params, start, end)
     raise ValueError(f"unknown event kind {kind!r}")

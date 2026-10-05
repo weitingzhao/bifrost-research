@@ -61,6 +61,8 @@ TABLE_OPTION_FLOW_MULTI_LEG_DAILY = f"{SCHEMA_FEATURES}.option_flow_multi_leg_da
 TABLE_OPTION_IV_RECONSTRUCTED_DAILY = f"{SCHEMA_FEATURES}.option_iv_reconstructed_daily"
 TABLE_STOCK_SIGNAL_MOMENTUM_DAILY = f"{SCHEMA_FEATURES}.stock_signal_momentum_daily"
 TABLE_STOCK_SIGNAL_SEPA_DAILY = f"{SCHEMA_FEATURES}.stock_signal_sepa_daily"
+TABLE_STOCK_SIGNAL_PINE_DAILY = f"{SCHEMA_FEATURES}.stock_signal_pine_daily"
+TABLE_RESEARCH_PINE_SCRIPT = f"{SCHEMA_RESEARCH}.pine_script"
 TABLE_STOCK_SIGNAL_VRP_DAILY = f"{SCHEMA_FEATURES}.stock_signal_vrp_daily"
 # Wave Canonical-PnL Foundation — dual layer (features projection + dw_stock mart)
 TABLE_STOCK_SIGNAL_CANONICAL_PNL_DAILY = f"{SCHEMA_FEATURES}.stock_signal_canonical_pnl_daily"
@@ -119,6 +121,7 @@ CANONICAL_FEATURE_TABLES = (
     TABLE_STOCK_SIGNAL_SCAN_DAILY,
     TABLE_STOCK_SIGNAL_LENS_HIT_DAILY,
     TABLE_STOCK_SIGNAL_ALERT_DAILY,
+    TABLE_STOCK_SIGNAL_PINE_DAILY,
 )
 
 # Deprecated aliases — same canonical tables (gradual code migration)

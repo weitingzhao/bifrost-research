@@ -12,6 +12,8 @@ resolved to a set of ``(symbol, event_date)`` pairs by the event resolver in
 - ``indicator_signal``       — days a standard indicator signal fired on the
                                symbol's daily closes (MACD / RSI / Bollinger /
                                EMA crossings; ``engines.indicators``)
+- ``pine_signal``            — days a Pine library script's buy or sell plot
+                               fired (``features.stock_signal_pine_daily``)
 - ``sql``                    — user-supplied ``SELECT`` returning
                                ``(symbol, event_date)``; not implemented in v1
 
@@ -29,11 +31,12 @@ EventKind = Literal[
     "sepa_hit",
     "iv_percentile_threshold",
     "indicator_signal",
+    "pine_signal",
     "sql",
 ]
 
 _ALLOWED_KINDS: frozenset[EventKind] = frozenset(
-    ("earnings", "opex", "sepa_hit", "iv_percentile_threshold", "indicator_signal", "sql")
+    ("earnings", "opex", "sepa_hit", "iv_percentile_threshold", "indicator_signal", "pine_signal", "sql")
 )
 
 
