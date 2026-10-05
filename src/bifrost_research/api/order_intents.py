@@ -47,7 +47,7 @@ class OrderIntentCreate(BaseModel):
     generated_by: str = Field(default="harness")
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_owner)])
 def list_order_intents(
     status: str | None = Query(default="pending"),
     limit: int = Query(default=50, ge=1, le=200),

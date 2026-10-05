@@ -3,7 +3,7 @@
 Trade's result face renders a saved screen read-only by id, so a PATCH changes
 what that face shows and a retire takes it away; a create adds one to My
 screens. The frontend's screensApi (createSavedScreen) sends the research
-bearer; nothing calls PATCH or retire over HTTP today. Reads stay open for now.
+bearer; nothing calls PATCH or retire over HTTP today. Reads are gated too (0.167.0).
 """
 
 from __future__ import annotations

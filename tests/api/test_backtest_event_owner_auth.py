@@ -3,7 +3,7 @@
 It replays years of events on request, writes a ``research.backtest_run`` row
 and, given a ``hypothesis_id``, appends that run to the hypothesis. The
 frontend's postEventQuery (backtestApi) sends the research bearer, and nothing
-else calls it over HTTP. The run reads stay open for now.
+else calls it over HTTP. The run reads are gated too (0.167.0).
 """
 
 from __future__ import annotations

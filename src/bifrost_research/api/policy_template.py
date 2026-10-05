@@ -70,7 +70,7 @@ class PolicyBody(BaseModel):
     policy_json: dict[str, Any]
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_owner)])
 def list_policy_templates(
     universe_mode: str | None = Query(default=None),
 ) -> dict[str, Any]:
@@ -124,7 +124,7 @@ def create_policy_template(
         conn.close()
 
 
-@router.get("/{template_id}")
+@router.get("/{template_id}", dependencies=[Depends(require_owner)])
 def get_policy_template(template_id: str) -> dict[str, Any]:
     conn = _connect_or_503()
     try:

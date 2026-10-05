@@ -104,7 +104,7 @@ class BatchRunBody(BaseModel):
         }
 
 
-@router.get("/objectives")
+@router.get("/objectives", dependencies=[Depends(require_owner)])
 def list_objectives(
     status: str | None = Query(default="active"),
     limit: int = Query(default=50, ge=1, le=200),
@@ -272,7 +272,7 @@ def batch_run_objective(
     return _ok(started)
 
 
-@router.get("/objectives/{objective_id}/run-estimate")
+@router.get("/objectives/{objective_id}/run-estimate", dependencies=[Depends(require_owner)])
 def objective_run_estimate(
     objective_id: str,
     candidates: int = Query(default=0, ge=0, le=50),
@@ -341,7 +341,7 @@ def rate_objective_run(run_id: str) -> dict[str, Any]:
     return _ok(out)
 
 
-@router.get("/loop/autopilot")
+@router.get("/loop/autopilot", dependencies=[Depends(require_owner)])
 def get_autopilot_standing() -> dict[str, Any]:
     """The autopilot as standing: trust on the cluster matrix, next unattended
     run, today's purse, memos waiting, and one brief per objective — what it
@@ -356,7 +356,7 @@ def get_autopilot_standing() -> dict[str, Any]:
         conn.close()
 
 
-@router.get("/loop/trust")
+@router.get("/loop/trust", dependencies=[Depends(require_owner)])
 def get_loop_trust() -> dict[str, Any]:
     """Trust gate observability for Harness Console (batch auto-approve)."""
     from bifrost_research.copilot.harness.batch_orchestrate import trust_status
@@ -364,7 +364,7 @@ def get_loop_trust() -> dict[str, Any]:
     return _ok(trust_status())
 
 
-@router.get("/objective-runs/{run_id}")
+@router.get("/objective-runs/{run_id}", dependencies=[Depends(require_owner)])
 def get_objective_run(run_id: str) -> dict[str, Any]:
     """Single run detail for white-box pipeline UI (LS-3)."""
     conn = _connect_or_503()
@@ -382,7 +382,7 @@ def get_objective_run(run_id: str) -> dict[str, Any]:
     return _ok(payload)
 
 
-@router.get("/objective-runs")
+@router.get("/objective-runs", dependencies=[Depends(require_owner)])
 def list_objective_runs(
     status: str | None = Query(default=None),
     objective_id: str | None = Query(default=None),

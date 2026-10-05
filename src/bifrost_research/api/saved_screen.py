@@ -59,7 +59,7 @@ def _connect_or_503() -> Any:
         raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_owner)])
 def list_screens(include_retired: bool = Query(False)) -> dict[str, Any]:
     conn = _connect_or_503()
     try:
@@ -88,7 +88,7 @@ def create_screen(body: ScreenCreate) -> dict[str, Any]:
     return _ok(row)
 
 
-@router.get("/{screen_id}")
+@router.get("/{screen_id}", dependencies=[Depends(require_owner)])
 def get_screen(screen_id: str) -> dict[str, Any]:
     conn = _connect_or_503()
     try:

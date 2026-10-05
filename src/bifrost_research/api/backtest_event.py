@@ -196,7 +196,7 @@ def event_query(body: EventQueryBody) -> dict[str, Any]:
             pass
 
 
-@router.get("/runs")
+@router.get("/runs", dependencies=[Depends(require_owner)])
 def list_runs(
     hypothesis_id: str | None = Query(None),
     limit: int = Query(20, ge=1, le=200),
@@ -224,7 +224,7 @@ def list_runs(
     )
 
 
-@router.get("/run/{run_id}")
+@router.get("/run/{run_id}", dependencies=[Depends(require_owner)])
 def get_run(run_id: str = Path(..., min_length=1, max_length=64)) -> dict[str, Any]:
     conn = _connect_or_503()
     try:

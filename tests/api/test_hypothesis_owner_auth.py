@@ -4,7 +4,7 @@ Retire takes a hypothesis off the board and nothing un-retires it over HTTP;
 create and patch write the board itself; refresh-trajectory simulates the
 trajectory and merges its summary into the hypothesis. The frontend sends all
 four with the research bearer (hypothesisApi, refreshHypothesisTrajectory), and
-nothing else calls them over HTTP. Reads stay open for now.
+nothing else calls them over HTTP. Reads are gated too (0.167.0).
 """
 
 from __future__ import annotations

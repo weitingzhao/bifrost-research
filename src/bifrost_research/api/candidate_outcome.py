@@ -17,8 +17,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.schema.schemas import (
     TABLE_RESEARCH_CANDIDATE_OUTCOME,
@@ -109,7 +110,7 @@ def build_summary(
     }
 
 
-@router.get("/summary")
+@router.get("/summary", dependencies=[Depends(require_owner)])
 def get_summary(
     source: str | None = Query(None),
     days: int = Query(90, ge=1, le=730),
@@ -127,7 +128,7 @@ def get_summary(
             pass
 
 
-@router.get("/rows")
+@router.get("/rows", dependencies=[Depends(require_owner)])
 def get_rows(
     symbol: str | None = Query(None),
     horizon_days: int | None = Query(None, ge=1),

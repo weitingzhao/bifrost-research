@@ -152,7 +152,7 @@ def _trajectory_summary(rows: list[dict[str, Any]], *, structure: str, symbol: s
 # ---------------------------------------------------------------------------
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_owner)])
 def list_hypotheses(
     status: str | None = Query(None, description="active | validated | rejected | archived"),
     symbol: str | None = Query(None),
@@ -208,7 +208,7 @@ def create_hypothesis(body: HypothesisCreate) -> dict[str, Any]:
     return _ok(created)
 
 
-@router.get("/summary/active")
+@router.get("/summary/active", dependencies=[Depends(require_owner)])
 def summary_active(top_n: int = Query(5, ge=1, le=50)) -> dict[str, Any]:
     conn = _connect_or_503()
     try:
@@ -221,7 +221,7 @@ def summary_active(top_n: int = Query(5, ge=1, le=50)) -> dict[str, Any]:
     return _ok(summary)
 
 
-@router.get("/{hypothesis_id}")
+@router.get("/{hypothesis_id}", dependencies=[Depends(require_owner)])
 def get_hypothesis(hypothesis_id: str) -> dict[str, Any]:
     conn = _connect_or_503()
     try:

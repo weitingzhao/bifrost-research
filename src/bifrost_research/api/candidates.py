@@ -65,7 +65,7 @@ class PromoteBody(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_owner)])
 def list_candidates(
     status: str | None = Query(default="open"),
     source: str | None = Query(default=None),
