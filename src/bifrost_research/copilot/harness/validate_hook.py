@@ -1,7 +1,8 @@
 """Post-approve validate hooks — Wave LO-3.
 
-Runs stock-leg event backtests for promoted hypotheses and attaches evidence
-drafts.  Option templates remain gated until LO-5 data program completes.
+Runs event backtests for promoted hypotheses and attaches evidence drafts. An
+option-premium thesis is tested on ``short_strangle_30d`` when the symbol has
+at least 90 days of option bars; otherwise the stock leg stands in.
 """
 
 from __future__ import annotations
@@ -58,23 +59,42 @@ class _Connection(Protocol):
     def commit(self) -> None: ...
 
 
-def _option_coverage_available(conn: _Connection) -> bool:
-    """True when ``raw_market.option_daily`` spans at least 90 days."""
+# An earnings study needs a few quarters of chains to say anything; 90 days is the
+# floor the LO-5 gate has always used.
+_MIN_OPTION_SPAN_DAYS = 90
+
+
+def _option_coverage_available(conn: _Connection, symbol: str | None = None) -> bool:
+    """True when ``raw_market.option_daily`` spans at least 90 days for ``symbol``.
+
+    Until 0.169.0 this read ``trade_date`` — the column is ``bar_date`` — and the
+    except swallowed the error, so it always answered False and no hypothesis was
+    ever validated on its option leg. It also counted the whole 46M-row table on
+    every call. Now it reads one symbol's first and last bar, which the
+    ``(underlying, bar_date)`` index answers without a scan. Without a symbol
+    there is nothing cheap to ask, so the answer is False.
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return False
     sql = """
-        SELECT MIN(trade_date), MAX(trade_date), COUNT(*)
+        SELECT MIN(bar_date), MAX(bar_date)
         FROM raw_market.option_daily
+        WHERE underlying = %s
     """
     try:
         with conn.cursor() as cur:
-            cur.execute(sql)
+            cur.execute(sql, (sym,))
             row = cur.fetchone()
-        if not row or row[2] is None or int(row[2]) < 100:
+        if not row or row[0] is None or row[1] is None:
             return False
-        if row[0] is None or row[1] is None:
-            return False
-        span = (row[1] - row[0]).days
-        return span >= 90
-    except Exception:
+        return (row[1] - row[0]).days >= _MIN_OPTION_SPAN_DAYS
+    except Exception as exc:  # noqa: BLE001
+        logger.info("option coverage check failed for %s: %s", sym, str(exc)[:120])
+        try:
+            conn.rollback()  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
         return False
 
 
@@ -103,7 +123,7 @@ def validate_hypothesis_stock_leg(
         return {"ok": False, "error": "no symbol for hypothesis"}
 
     instrument = instrument_for(hyp, objective_policy=objective_policy)
-    coverage = _option_coverage_available(conn) if option_coverage is None else option_coverage
+    coverage = _option_coverage_available(conn, sym) if option_coverage is None else option_coverage
     template = template_for(instrument, option_coverage=coverage)
 
     # The symbol was resolved above and then never used: the query ran with
@@ -243,18 +263,20 @@ def run_validate_hooks_for_run(
         return {"validated": [], "skipped": len(hypothesis_ids)}
 
     policy = _objective_policy_for_run(conn, run_id)
-    coverage = _option_coverage_available(conn)
+    coverage: dict[str, bool] = {}
     results: list[dict[str, Any]] = []
     for hid in hypothesis_ids:
         hyp = hyp_repo.get_hypothesis(conn, hid)
-        sym = (hyp.get("symbols") or [None])[0] if hyp else None
+        sym = str((hyp.get("symbols") or [None])[0] or "").strip().upper() if hyp else ""
+        if sym and sym not in coverage:
+            coverage[sym] = _option_coverage_available(conn, sym)
         results.append(
             validate_hypothesis_stock_leg(
                 conn,
                 hypothesis_id=hid,
-                symbol=sym,
+                symbol=sym or None,
                 objective_policy=policy,
-                option_coverage=coverage,
+                option_coverage=coverage.get(sym, False) if sym else None,
             )
         )
 

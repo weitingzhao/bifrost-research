@@ -128,3 +128,50 @@ def test_an_option_thesis_without_history_says_the_stock_leg_stands_in(
     assert (out["instrument"], out["template"]) == ("option", vh.STOCK_TEMPLATE)
     assert "stock leg stands in" in drafts[-1]["payload"]["rationale"]
     assert drafts[-1]["payload"]["instrument"] == "option"
+
+
+class _CoverageConn:
+    def __init__(self, row: Any) -> None:
+        self.row = row
+        self.calls: list[tuple[str, Any]] = []
+
+    def cursor(self) -> "_CoverageConn":
+        return self
+
+    def __enter__(self) -> "_CoverageConn":
+        return self
+
+    def __exit__(self, *a: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: Any = None) -> None:
+        self.calls.append((" ".join(sql.split()), params))
+
+    def fetchone(self) -> Any:
+        return self.row
+
+
+def test_option_coverage_reads_bar_date_for_the_one_symbol() -> None:
+    # B1: it read trade_date (the column is bar_date) and swallowed the error,
+    # so every option thesis fell back to the stock leg; it also counted the
+    # whole table. Now: one symbol's span, off the (underlying, bar_date) index.
+    from datetime import date
+
+    conn = _CoverageConn((date(2024, 10, 1), date(2026, 10, 2)))
+    assert vh._option_coverage_available(conn, " nvda ") is True
+    sql, params = conn.calls[0]
+    assert "MIN(bar_date), MAX(bar_date)" in sql and "trade_date" not in sql
+    assert "WHERE underlying = %s" in sql and "COUNT" not in sql
+    assert params == ("NVDA",)
+
+    assert vh._option_coverage_available(_CoverageConn((date(2026, 9, 1), date(2026, 10, 2))), "NVDA") is False
+    assert vh._option_coverage_available(_CoverageConn((None, None)), "NVDA") is False
+    assert vh._option_coverage_available(_CoverageConn(None), "") is False
+
+
+def test_the_option_template_is_registered() -> None:
+    # B2: short_strangle_30d was named here but missing from TEMPLATES.
+    from bifrost_research.engines.backtest.strategy_templates import TEMPLATES
+
+    assert vh.OPTION_TEMPLATE in TEMPLATES
+    assert vh.OPTION_TEMPLATES <= set(TEMPLATES)

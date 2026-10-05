@@ -26,12 +26,14 @@ Notes on data source gaps (Wave RS-C1):
   ``features.event_signal_radar_daily`` heuristics; and (c) a small hard-coded
   stub for a canonical universe. The response ``summary`` and each event record
   advertise which source produced the dates.
-- Option-leg templates cannot answer a multi-year study today:
-  ``raw_market.option_daily`` holds under a month of history, so those events
-  are skipped rather than priced. ``summary.skipped_no_option`` /
-  ``skipped_no_stock`` carry the reason so a caller never reads a missing
-  dataset as a losing strategy. Coverage numbers, backfill cost, and the
-  Polygon-tier decision behind it: ``docs/BACKTEST_DATA_COVERAGE.md``.
+- ``raw_market.option_daily`` has covered 2024-10 onward since the backfill
+  (each contract's last ~90 days before expiry, strikes within ±30% of spot);
+  events outside that are skipped rather than priced. ``summary.skipped_no_option``
+  / ``skipped_no_stock`` / ``skipped_incomplete_window`` carry the reason so a
+  caller never reads a missing dataset as a losing strategy.
+- Offsets count trading sessions (0.169.0); an option leg is opened on one
+  contract and closed on that same contract, or settled at intrinsic if the
+  exit reaches its expiry.
 """
 
 from __future__ import annotations
@@ -50,7 +52,7 @@ from bifrost_research.engines.backtest.strategy_templates import (
     build_legs,
     iter_legs,
     leg_signs,
-    resolve_leg_window,
+    resolve_trading_window,
 )
 from bifrost_research.engines.opex_cycle.calendar import third_friday
 
@@ -465,6 +467,97 @@ def _fetch_stock_price(conn: Any, symbol: str, on_or_before: date) -> dict[str, 
     }
 
 
+def _trading_sessions(conn: Any, symbol: str, start: date, end: date) -> list[date]:
+    """The underlying's trading days in ``[start, end]``, ascending."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT bar_date FROM raw_market.stock_daily
+                WHERE symbol = %s
+                  AND bar_date BETWEEN %s AND %s
+                ORDER BY bar_date
+                """,
+                (symbol.strip().upper(), start, end),
+            )
+            rows = cur.fetchall() or []
+    except Exception as exc:  # pragma: no cover
+        logger.debug("session lookup failed for %s: %s", symbol, exc)
+        return []
+    out: list[date] = []
+    for r in rows:
+        d = r.get("bar_date") if isinstance(r, Mapping) else r[0]
+        if isinstance(d, datetime):
+            d = d.date()
+        if isinstance(d, date):
+            out.append(d)
+    return out
+
+
+def _risk_free_rate(conn: Any, on_or_before: date, cache: dict[date, float] | None = None) -> float:
+    """1-month Treasury yield on or before the date, as a decimal; 0.0 if unknown.
+
+    Every Black–Scholes call in research ran at r = 0. At the ~4% short rates of
+    2025–26 that moves a 45-DTE strike's implied delta by about 0.01–0.02 —
+    enough to pick the neighbouring strike.
+    """
+    if cache is not None and on_or_before in cache:
+        return cache[on_or_before]
+    rate = 0.0
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COALESCE(yield_1_month, yield_3_month)
+                FROM raw_market.treasury_yield
+                WHERE yield_date <= %s
+                  AND yield_date > %s
+                ORDER BY yield_date DESC
+                LIMIT 1
+                """,
+                (on_or_before, on_or_before - timedelta(days=14)),
+            )
+            row = cur.fetchone()
+        val = (row.get("coalesce") if isinstance(row, Mapping) else row[0]) if row else None
+        if val is not None:
+            v = float(val)
+            # The vendor reports percent (4.31); guard against a decimal feed.
+            rate = v / 100.0 if v > 1.0 else v
+    except Exception as exc:  # pragma: no cover
+        logger.debug("treasury lookup failed for %s: %s", on_or_before, exc)
+        rate = 0.0
+    if not (0.0 <= rate < 0.25):
+        rate = 0.0
+    if cache is not None:
+        cache[on_or_before] = rate
+    return rate
+
+
+# How far back a leg may reach for a contract's last bar when it did not trade on
+# the session itself. Beyond this the price is too stale to stand for the day.
+_STALE_LOOKBACK_DAYS = 7
+
+
+def _bar_to_dict(r: Any) -> dict[str, Any]:
+    if isinstance(r, Mapping):
+        d = dict(r)
+    else:
+        d = {
+            "option_ticker": r[0],
+            "expiry": r[1],
+            "strike": r[2],
+            "bar_date": r[3],
+            "open": r[4],
+            "high": r[5],
+            "low": r[6],
+            "close": r[7],
+        }
+    for key in ("strike", "close", "open", "high", "low"):
+        if d.get(key) is not None:
+            d[key] = float(d[key])
+    return d
+
+
 def _pick_option(
     conn: Any,
     symbol: str,
@@ -473,69 +566,150 @@ def _pick_option(
     target_dte: int,
     strike_target: float,
     tolerance_pct: float = 0.30,
+    *,
+    target_delta: float | None = None,
+    spot: float | None = None,
+    rate: float = 0.0,
+    expiry: date | None = None,
 ) -> dict[str, Any] | None:
-    """Pick the option_daily bar closest to (target expiry, target strike).
+    """Pick the contract to open on ``on_or_before`` and return its bar there.
 
-    Uses ``option_daily.close`` for pricing. Strike selection prefers the
-    nearest strike within ``tolerance_pct`` of ``strike_target`` on the
-    expiry closest to ``on_or_before + target_dte``. Adjusted contracts are left
-    out: 5,346 of their bars share expiry, strike and right with a standard bar
-    (2026-10-01), and nothing here would break the tie.
+    Reads the chain as listed over the last ``_STALE_LOOKBACK_DAYS`` up to the
+    session, one bar per contract (its latest). Expiry: ``expiry`` when given
+    (a wing follows its short leg), else the one closest to
+    ``on_or_before + target_dte``. Strike: with ``target_delta`` (and ``spot``),
+    the contract whose delta from its own implied vol is closest; otherwise the
+    nearest strike to ``strike_target`` within ``tolerance_pct``. Contracts that
+    traded on the session itself are preferred; a fallback bar is marked with
+    ``stale_days``.
+
+    Until 0.169.0 this took the latest 400 bars across every expiry and strike —
+    a single session of a large name — so the target expiry was often not among
+    them, and an untraded day silently returned a weeks-old bar. Adjusted
+    contracts stay out: 5,346 of their bars share expiry, strike and right with
+    a standard bar (2026-10-01), and nothing here would break the tie.
     """
+    on = on_or_before
+    if expiry is not None:
+        exp_lo, exp_hi = expiry, expiry
+    else:
+        exp_lo = on + timedelta(days=1)
+        exp_hi = on + timedelta(days=max(1, int(target_dte)) * 2 + 14)
     try:
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                SELECT expiry, strike, close, open, high, low, bar_date, option_ticker
+                SELECT option_ticker, expiry, strike, bar_date, open, high, low, close
                 FROM raw_market.option_daily
                 WHERE underlying = %s
                   AND option_right = %s
-                  AND bar_date <= %s
-                  AND expiry > %s
+                  AND bar_date BETWEEN %s AND %s
+                  AND expiry BETWEEN %s AND %s
+                  AND close > 0
                   AND {not_adjusted_contract_sql("option_ticker")}
-                ORDER BY bar_date DESC
-                LIMIT 400
                 """,
-                (symbol.strip().upper(), right, on_or_before, on_or_before),
+                (
+                    symbol.strip().upper(),
+                    right,
+                    on - timedelta(days=_STALE_LOOKBACK_DAYS),
+                    on,
+                    exp_lo,
+                    exp_hi,
+                ),
             )
             rows = cur.fetchall() or []
     except Exception as exc:  # pragma: no cover
-        logger.debug("option lookup failed for %s@%s: %s", symbol, on_or_before, exc)
+        logger.debug("option lookup failed for %s@%s: %s", symbol, on, exc)
         return None
     if not rows:
         return None
-    target_expiry = on_or_before + timedelta(days=max(1, int(target_dte)))
 
-    def _to_dict(r: Any) -> dict[str, Any]:
-        if isinstance(r, Mapping):
-            return dict(r)
-        return {
-            "expiry": r[0],
-            "strike": float(r[1] or 0),
-            "close": float(r[2] or 0),
-            "open": float(r[3] or 0) if r[3] is not None else None,
-            "high": float(r[4] or 0) if r[4] is not None else None,
-            "low": float(r[5] or 0) if r[5] is not None else None,
-            "bar_date": r[6],
-            "option_ticker": r[7],
-        }
-
-    candidates = [_to_dict(r) for r in rows]
-
-    # narrow to nearest expiry
-    expiries = sorted({c["expiry"] for c in candidates if c.get("expiry")})
-    if not expiries:
+    latest: dict[str, dict[str, Any]] = {}
+    for raw in rows:
+        bar = _bar_to_dict(raw)
+        key = str(bar.get("option_ticker") or (bar.get("expiry"), bar.get("strike")))
+        if bar.get("expiry") is None or bar.get("close") is None:
+            continue
+        prev = latest.get(key)
+        if prev is None or bar["bar_date"] > prev["bar_date"]:
+            latest[key] = bar
+    candidates = list(latest.values())
+    if not candidates:
         return None
-    best_expiry = min(expiries, key=lambda e: abs((e - target_expiry).days))
+
+    target_expiry = on + timedelta(days=max(1, int(target_dte)))
+    expiries = sorted({c["expiry"] for c in candidates})
+    best_expiry = expiry if expiry is not None else min(
+        expiries, key=lambda e: (abs((e - target_expiry).days), e)
+    )
     same_expiry = [c for c in candidates if c["expiry"] == best_expiry]
-
-    # narrow to nearest strike within tolerance
-    band = abs(strike_target) * tolerance_pct
-    within = [c for c in same_expiry if abs(c["strike"] - strike_target) <= max(band, 0.01)]
-    pool = within or same_expiry
-    if not pool:
+    if not same_expiry:
         return None
-    return min(pool, key=lambda c: abs(c["strike"] - strike_target))
+    fresh = [c for c in same_expiry if c["bar_date"] == on]
+    pool_all = fresh or same_expiry
+
+    chosen: dict[str, Any] | None = None
+    if target_delta is not None and spot and spot > 0:
+        # Late import keeps the module importable without the vol engine's deps.
+        from bifrost_research.engines.backtest.canonical_pnl import bs_delta
+        from bifrost_research.engines.volatility.iv_solver import solve_iv
+
+        t_years = max((best_expiry - on).days, 1) / 365.0
+        want = abs(float(target_delta))
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for c in pool_all:
+            r = "C" if right == "C" else "P"
+            iv, status = solve_iv(spot, c["strike"], t_years, c["close"], r, rate=rate)
+            if iv is None or status != "ok":
+                continue
+            delta = bs_delta(spot, c["strike"], t_years, iv, right=r, rate=rate)
+            c = {**c, "iv": round(iv, 6), "delta": round(delta, 6)}
+            scored.append((abs(abs(delta) - want), c))
+        if scored:
+            chosen = min(scored, key=lambda sc: (sc[0], sc[1]["strike"]))[1]
+        else:
+            return None
+    else:
+        band = abs(strike_target) * tolerance_pct
+        within = [c for c in pool_all if abs(c["strike"] - strike_target) <= max(band, 0.01)]
+        pool = within or pool_all
+        chosen = min(pool, key=lambda c: (abs(c["strike"] - strike_target), c["strike"]))
+    if chosen is None:
+        return None
+    chosen = dict(chosen)
+    chosen["stale_days"] = (on - chosen["bar_date"]).days
+    return chosen
+
+
+def _fetch_contract_bar(conn: Any, option_ticker: str, on_or_before: date) -> dict[str, Any] | None:
+    """The contract's own bar on (or within ``_STALE_LOOKBACK_DAYS`` before) a session.
+
+    Exits read the contract the leg opened — never a re-pick — so a held leg
+    cannot drift to another strike or expiry between entry and exit.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT option_ticker, expiry, strike, bar_date, open, high, low, close
+                FROM raw_market.option_daily
+                WHERE option_ticker = %s
+                  AND bar_date BETWEEN %s AND %s
+                  AND close > 0
+                ORDER BY bar_date DESC
+                LIMIT 1
+                """,
+                (option_ticker, on_or_before - timedelta(days=_STALE_LOOKBACK_DAYS), on_or_before),
+            )
+            row = cur.fetchone()
+    except Exception as exc:  # pragma: no cover
+        logger.debug("contract bar lookup failed for %s@%s: %s", option_ticker, on_or_before, exc)
+        return None
+    if row is None:
+        return None
+    bar = _bar_to_dict(row)
+    bar["stale_days"] = (on_or_before - bar["bar_date"]).days
+    return bar
 
 
 def _price_stock_leg(
@@ -568,6 +742,10 @@ def _price_stock_leg(
     )
 
 
+def _iso(d: Any) -> str:
+    return d.isoformat() if isinstance(d, date) else str(d)
+
+
 def _price_option_leg(
     conn: Any,
     symbol: str,
@@ -576,79 +754,115 @@ def _price_option_leg(
     leg: LegSpec,
     *,
     fill_config: Any | None = None,
+    anchor: LegPricing | None = None,
+    rate_cache: dict[date, float] | None = None,
 ) -> LegPricing | None:
     stock_entry = _fetch_stock_price(conn, symbol, entry_date)
     if not stock_entry or stock_entry.get("close") is None:
         return None
     spot = float(stock_entry.get("close_as_traded") or stock_entry["close"])
+    right = leg.option_right or "C"
 
-    # Strike selection — RS-C1 v1 uses moneyness_offset; target_delta reserved
-    # for future work when delta / IV columns are available in option_daily.
-    strike_target = spot * (1.0 + float(leg.target_moneyness_offset))
+    anchor_expiry: date | None = None
+    if anchor is not None and anchor.strike is not None and anchor.expiry:
+        # A wing: a fixed distance beyond its short strike, on the same expiry.
+        strike_target = float(anchor.strike) + float(leg.anchor_offset_pct) * spot
+        anchor_expiry = date.fromisoformat(str(anchor.expiry))
+        target_delta = None
+    else:
+        strike_target = spot * (1.0 + float(leg.target_moneyness_offset))
+        target_delta = leg.target_delta
+    rate = _risk_free_rate(conn, entry_date, rate_cache) if target_delta is not None else 0.0
 
-    entry_option = _pick_option(
-        conn,
+    pick_kwargs: dict[str, Any] = dict(
         symbol=symbol,
         on_or_before=entry_date,
-        right=leg.option_right or "C",
+        right=right,
         target_dte=leg.target_dte,
         strike_target=strike_target,
     )
+    if target_delta is not None:
+        pick_kwargs.update(target_delta=target_delta, spot=spot, rate=rate)
+    if anchor_expiry is not None:
+        pick_kwargs.update(expiry=anchor_expiry)
+    entry_option = _pick_option(conn, **pick_kwargs)
     if not entry_option:
         return None
-    # Reuse same contract at exit — pick by expiry+strike on exit_date
-    exit_option = _pick_option(
-        conn,
-        symbol=symbol,
-        on_or_before=exit_date,
-        right=leg.option_right or "C",
-        target_dte=max(1, (entry_option["expiry"] - exit_date).days),
-        strike_target=float(entry_option["strike"]),
-        tolerance_pct=0.01,
-    )
-    if not exit_option:
-        return None
+    if anchor is not None and anchor.strike is not None:
+        # A wing that landed on (or inside) its short strike is no wing.
+        beyond = (entry_option["strike"] - float(anchor.strike)) * (1 if leg.anchor_offset_pct > 0 else -1)
+        if beyond <= 0:
+            return None
 
-    # Prices — RS-C1 defaults to close. RS-C2 fills.compute_fill_price will
-    # layer mid ± slippage when bid/ask columns are populated.
-    entry_price = _apply_fill(leg, entry_option, side=leg.side, fill_config=fill_config)
+    expiry = entry_option["expiry"]
+    if isinstance(expiry, datetime):
+        expiry = expiry.date()
     exit_side = "sell" if leg.side == "buy" else "buy"
-    exit_price = _apply_fill(leg, exit_option, side=exit_side, fill_config=fill_config)
+    settled_at_expiry = exit_date >= expiry
+    if settled_at_expiry:
+        # Held to expiry: the contract is worth its intrinsic value against the
+        # underlying's close that day. Until 0.169.0 the exit re-picked with
+        # ``expiry > exit_date``, which excluded this very contract and priced
+        # the exit on the next expiry's — a month of time value still in it.
+        stock_exp = _fetch_stock_price(conn, symbol, expiry)
+        if not stock_exp or stock_exp.get("close") is None:
+            return None
+        spot_exp = float(stock_exp.get("close_as_traded") or stock_exp["close"])
+        strike = float(entry_option["strike"])
+        exit_price = max(0.0, spot_exp - strike) if right == "C" else max(0.0, strike - spot_exp)
+        exit_bar_date: Any = stock_exp.get("bar_date")
+        exit_stale = 0
+        exit_leg_date = expiry
+    else:
+        exit_option = _fetch_contract_bar(conn, str(entry_option.get("option_ticker")), exit_date)
+        if not exit_option:
+            return None
+        exit_price = _apply_fill(leg, exit_option, side=exit_side, fill_config=fill_config)
+        exit_bar_date = exit_option.get("bar_date")
+        exit_stale = int(exit_option.get("stale_days") or 0)
+        exit_leg_date = exit_date
+
+    entry_price = _apply_fill(leg, entry_option, side=leg.side, fill_config=fill_config)
 
     sign = leg_signs(leg)
     contract_mult = int(getattr(fill_config, "multiplier", 100) if fill_config is not None else 100)
     gross = sign * (exit_price - entry_price) * leg.quantity * contract_mult
     commission = 0.0
     if fill_config is not None:
-        commission = float(getattr(fill_config, "commission_per_contract", 0.0)) * leg.quantity * 2
+        sides = 1 if settled_at_expiry else 2
+        commission = float(getattr(fill_config, "commission_per_contract", 0.0)) * leg.quantity * sides
     pnl = gross - commission
-    fill_details = {
+    fill_details: dict[str, Any] = {
         "pricing_source": "option_close",
+        "exit_pricing_source": "expiry_intrinsic" if settled_at_expiry else "option_close",
+        "option_ticker": entry_option.get("option_ticker"),
+        "spot": round(spot, 6),
         "strike_target": round(strike_target, 6),
-        "entry_bar": entry_option.get("bar_date").isoformat()
-        if isinstance(entry_option.get("bar_date"), date)
-        else str(entry_option.get("bar_date")),
-        "exit_bar": exit_option.get("bar_date").isoformat()
-        if isinstance(exit_option.get("bar_date"), date)
-        else str(exit_option.get("bar_date")),
+        "entry_bar": _iso(entry_option.get("bar_date")),
+        "exit_bar": _iso(exit_bar_date),
+        "entry_stale_days": int(entry_option.get("stale_days") or 0),
+        "exit_stale_days": exit_stale,
         "commission": round(commission, 6),
     }
+    if target_delta is not None:
+        fill_details.update(
+            target_delta=float(target_delta),
+            entry_iv=entry_option.get("iv"),
+            entry_delta=entry_option.get("delta"),
+            rate=round(rate, 6),
+        )
     return LegPricing(
         label=leg.label or "option",
         kind="option",
         side=leg.side,
         quantity=leg.quantity,
         entry_date=entry_date.isoformat(),
-        exit_date=exit_date.isoformat(),
+        exit_date=exit_leg_date.isoformat(),
         entry_price=round(entry_price, 6),
         exit_price=round(exit_price, 6),
         strike=float(entry_option["strike"]),
-        expiry=(
-            entry_option["expiry"].isoformat()
-            if isinstance(entry_option.get("expiry"), date)
-            else str(entry_option.get("expiry"))
-        ),
-        option_right=leg.option_right,
+        expiry=_iso(expiry),
+        option_right=right,
         pnl=round(pnl, 6),
         contract_multiplier=contract_mult,
         fill_details=fill_details,
@@ -832,20 +1046,53 @@ def run_event_query(
         skipped = 0
         skipped_no_option = 0
         skipped_no_stock = 0
+        skipped_incomplete_window = 0
+        rate_cache: dict[date, float] = {}
+        # Calendar span that surely covers the session offsets (~1.5 calendar
+        # days per session, plus a holiday week either side).
+        lo_off = min(min(int(lg.entry_offset_days), int(lg.exit_offset_days)) for lg in legs)
+        hi_off = max(max(int(lg.entry_offset_days), int(lg.exit_offset_days)) for lg in legs)
+        pad_before = int(abs(min(lo_off, 0)) * 1.5) + 10
+        pad_after = int(max(hi_off, 0) * 1.5) + 10
         for symbol, event_date in resolved.events[: max(1, int(max_events))]:
+            sessions = _trading_sessions(
+                conn,
+                symbol,
+                event_date - timedelta(days=pad_before),
+                event_date + timedelta(days=pad_after),
+            )
+            if not sessions:
+                skipped += 1
+                skipped_no_stock += 1
+                continue
             leg_pricings: list[LegPricing] = []
             entry_dates: list[date] = []
             exit_dates: list[date] = []
             skip_run = False
             for leg in legs:
-                entry_date, exit_date = resolve_leg_window(leg, event_date)
+                window = resolve_trading_window(leg, event_date, sessions)
+                if window is None:
+                    # The exit has not happened yet (or the history starts after
+                    # the entry): there is nothing honest to price it at.
+                    skipped_incomplete_window += 1
+                    skip_run = True
+                    break
+                entry_date, exit_date = window
                 entry_dates.append(entry_date)
                 exit_dates.append(exit_date)
                 if leg.kind == "stock":
                     pricing = _price_stock_leg(conn, symbol, entry_date, exit_date, leg)
                 else:
+                    anchor = leg_pricings[leg.anchor_leg] if leg.anchor_leg is not None else None
                     pricing = _price_option_leg(
-                        conn, symbol, entry_date, exit_date, leg, fill_config=fill_config
+                        conn,
+                        symbol,
+                        entry_date,
+                        exit_date,
+                        leg,
+                        fill_config=fill_config,
+                        anchor=anchor,
+                        rate_cache=rate_cache,
                     )
                 if pricing is None:
                     # Which data was missing decides whether an empty result means
@@ -889,6 +1136,8 @@ def run_event_query(
     summary["skipped_events"] = skipped
     summary["skipped_no_option"] = skipped_no_option
     summary["skipped_no_stock"] = skipped_no_stock
+    summary["skipped_incomplete_window"] = skipped_incomplete_window
+    summary["offset_unit"] = "trading_sessions"
     summary["event_source"] = resolved.source
     return {
         "runs": [_run_to_dict(r) for r in runs],

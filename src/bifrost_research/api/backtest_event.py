@@ -32,6 +32,10 @@ from bifrost_research.repositories import backtest_run as repo
 
 logger = logging.getLogger(__name__)
 
+# Walk-forward and the benchmark run over 100 + each event's P&L, not over a
+# price series. Said in the payload so no reader takes either for the real thing.
+_PROXY_BASIS = "per_event_pnl_proxy — not SPY, not the underlying; a real walk-forward is future work"
+
 router = APIRouter(prefix="/research/backtest", tags=["research-backtest"])
 
 
@@ -140,7 +144,11 @@ def event_query(body: EventQueryBody) -> dict[str, Any]:
                     window_years=1,
                     oos_months=3,
                 )
-                walk_forward_payload = {"windows": wf, "aggregate": aggregate_oos(wf)}
+                walk_forward_payload = {
+                    "windows": wf,
+                    "aggregate": aggregate_oos(wf),
+                    "basis": _PROXY_BASIS,
+                }
             if body.include_benchmark and proxy_series:
                 spy = spy_buy_hold_metrics(proxy_series)
                 control = zero_signal_control(
@@ -149,7 +157,14 @@ def event_query(body: EventQueryBody) -> dict[str, Any]:
                     window_years=1,
                     oos_months=3,
                 )
-                benchmark_payload = {"spy_buy_hold": spy, "zero_signal_control": control}
+                # ``spy_buy_hold`` is the buy-hold of the proxy series, not SPY:
+                # the key stays for the persisted runs and the UI's parser,
+                # ``basis`` says what it measures.
+                benchmark_payload = {
+                    "spy_buy_hold": spy,
+                    "zero_signal_control": control,
+                    "basis": _PROXY_BASIS,
+                }
 
         fill_dump = (
             body.fill_config.model_dump() if body.fill_config is not None else FillConfigModel().model_dump()
