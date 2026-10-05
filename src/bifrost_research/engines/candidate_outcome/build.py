@@ -8,6 +8,10 @@ from __future__ import annotations
 
 DEFAULT_HORIZONS: tuple[int, ...] = (1, 5, 20)
 
+# Candidates proposed further back than this are no longer settled; a horizon
+# that has not settled by then never will (hypothesis settlement reads it too).
+DEFAULT_LOOKBACK_DAYS = 90
+
 # Candidates carry no direction, so "did it go up" mostly measures the market.
 # SPY is the reference leg; excess return is what the funnel is judged on.
 DEFAULT_BENCHMARK = "SPY"

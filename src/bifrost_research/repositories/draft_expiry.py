@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -32,6 +31,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from bifrost_research.db.calendar import cached_closed_days, is_session, nth_session_after
 from bifrost_research.schema.schemas import (
     TABLE_RESEARCH_AI_ACTION_LOG,
     TABLE_RESEARCH_AI_DRAFT,
@@ -187,45 +187,17 @@ def supersede_key(kind: str, payload: Mapping[str, Any], scope: str) -> str | No
 # ─── trading calendar ────────────────────────────────────────────────────────
 
 
-_CLOSED_CACHE: dict[tuple[date, date], tuple[float, frozenset[date]]] = {}
-_CLOSED_TTL_S = 3600.0
-
-
 def closed_days(conn: Any, start: date, end: date) -> frozenset[date]:
-    """NYSE weekday closures in ``[start, end]`` from ``db/calendar.py``.
+    """NYSE weekday closures in ``[start, end]`` — ``db/calendar.py::cached_closed_days``.
 
     Read before any write of the caller's transaction (the calendar helper rolls
     back on a failed read). An unreadable calendar counts weekends only; a
     holiday then costs one trading day of lifetime, never a write.
     """
-    hit = _CLOSED_CACHE.get((start, end))
-    if hit is not None and time.monotonic() - hit[0] < _CLOSED_TTL_S:
-        return hit[1]
-    from bifrost_research.db.calendar import fetch_closed_holiday_dates
-
-    try:
-        days = frozenset(d for d in fetch_closed_holiday_dates(conn, start=start, end=end) if isinstance(d, date))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("draft expiry: trading calendar unreadable, weekends only: %s", str(exc)[:160])
-        return frozenset()
-    if days:
-        _CLOSED_CACHE[(start, end)] = (time.monotonic(), days)
-    return days
+    return cached_closed_days(conn, start, end)
 
 
-def _is_session(d: date, closed: frozenset[date] | set[date]) -> bool:
-    return d.weekday() < 5 and d not in closed
-
-
-def nth_session_after(d: date, n: int, closed: frozenset[date] | set[date]) -> date:
-    """The ``n``-th trading day strictly after ``d``."""
-    cur = d
-    seen = 0
-    while seen < n:
-        cur += timedelta(days=1)
-        if _is_session(cur, closed):
-            seen += 1
-    return cur
+_is_session = is_session  # shared with hypothesis settlement (db/calendar.py, 0.168.0)
 
 
 def session_close(d: date) -> datetime:

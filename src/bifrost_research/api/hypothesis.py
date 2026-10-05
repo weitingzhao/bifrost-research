@@ -12,6 +12,14 @@ Routes:
     POST   /research/hypothesis/{id}/refresh-trajectory  (Wave 13)
     GET    /research/hypothesis/summary/active
 
+Read-only derived fields on list and get rows (0.168.0, plan decision #16):
+    settles_on     ISO date the outcome rule settles this hypothesis on, or null
+    settles_basis  how it was derived — ``from`` (candidate_outcome |
+                   candidate_trade_date), ``trade_date``, ``horizon_sessions``,
+                   ``source`` (policy | default), ``objective_id`` — or, when
+                   null, ``reason`` (resolved | retired | no_candidate_lineage |
+                   candidate_not_found | …); see copilot/agents/hypothesis_settlement.py
+
 ``origin_ref`` documented keys (soft validation on create/patch — extra keys allowed):
     watchlist_contract_key  Trade watchlist key, e.g. ``STK:NVDA`` (stock) or OPT:…
     trajectory_summary      Written by refresh-trajectory (structure, row counts, final_pnl)
@@ -29,6 +37,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from bifrost_research.auth.deps import require_owner
+from bifrost_research.copilot.agents.hypothesis_settlement import attach_settlement
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.canonical_pnl import STRUCTURES
 from bifrost_research.engines.canonical_pnl import simulate_entry
@@ -172,6 +181,7 @@ def list_hypotheses(
             limit=limit,
             offset=offset,
         )
+        attach_settlement(conn, rows)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -226,6 +236,8 @@ def get_hypothesis(hypothesis_id: str) -> dict[str, Any]:
     conn = _connect_or_503()
     try:
         row = repo.get_hypothesis(conn, hypothesis_id)
+        if row is not None:
+            attach_settlement(conn, [row])
     except Exception as exc:
         logger.exception("get_hypothesis failed")
         raise HTTPException(status_code=503, detail=str(exc)) from exc

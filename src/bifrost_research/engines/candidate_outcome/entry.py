@@ -26,6 +26,7 @@ from bifrost_research.db.upsert import batch_upsert
 from bifrost_research.engines.candidate_outcome.build import (
     DEFAULT_BENCHMARK,
     DEFAULT_HORIZONS,
+    DEFAULT_LOOKBACK_DAYS,
     excess_hit,
 )
 from bifrost_research.schema.schemas import (
@@ -167,7 +168,7 @@ def _pending(conn: Any, *, lookback_days: int, horizons: Sequence[int]) -> list[
 def build_rows(
     conn: Any,
     *,
-    lookback_days: int = 90,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
     horizons: Sequence[int] = DEFAULT_HORIZONS,
     benchmark: str = DEFAULT_BENCHMARK,
 ) -> tuple[list[tuple], dict[str, int]]:
@@ -227,7 +228,7 @@ def build_rows(
 
 def run(
     *,
-    lookback_days: int = 90,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
     horizons: Sequence[int] = DEFAULT_HORIZONS,
     benchmark: str = DEFAULT_BENCHMARK,
 ) -> dict[str, Any]:
@@ -264,7 +265,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
     parser = argparse.ArgumentParser(description="Settle research.candidate_outcome")
-    parser.add_argument("--lookback-days", type=int, default=90)
+    parser.add_argument("--lookback-days", type=int, default=DEFAULT_LOOKBACK_DAYS)
     parser.add_argument("--horizons", type=str, default=",".join(str(h) for h in DEFAULT_HORIZONS))
     parser.add_argument("--benchmark", type=str, default=DEFAULT_BENCHMARK)
     args = parser.parse_args(list(argv) if argv is not None else None)

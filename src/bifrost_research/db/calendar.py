@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+import time
+from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Mapping, Sequence
+from typing import Any
 from zoneinfo import ZoneInfo
 
 _NY = ZoneInfo("America/New_York")
+
+logger = logging.getLogger(__name__)
 
 
 def _as_date(value: Any) -> date | None:
@@ -103,6 +109,66 @@ def fetch_closed_holiday_dates(
                     closed.add(day)
                 day += timedelta(days=1)
     return closed
+
+
+_CLOSED_CACHE: dict[tuple[date, date], tuple[float, frozenset[date]]] = {}
+_CLOSED_TTL_S = 3600.0
+
+
+def cached_closed_days(conn: Any, start: date, end: date) -> frozenset[date]:
+    """``fetch_closed_holiday_dates`` behind a one-hour cache keyed on the window.
+
+    An unreadable calendar counts weekends only (an empty set, not cached), so
+    a holiday then costs one session of lead and never fails the caller. Shared
+    by draft expiry (0.166.0) and hypothesis settlement (0.168.0).
+    """
+    hit = _CLOSED_CACHE.get((start, end))
+    if hit is not None and time.monotonic() - hit[0] < _CLOSED_TTL_S:
+        return hit[1]
+    try:
+        days = frozenset(d for d in fetch_closed_holiday_dates(conn, start=start, end=end) if isinstance(d, date))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("trading calendar unreadable, weekends only: %s", str(exc)[:160])
+        return frozenset()
+    if days:
+        _CLOSED_CACHE[(start, end)] = (time.monotonic(), days)
+    return days
+
+
+def is_session(d: date, closed: AbstractSet[date]) -> bool:
+    """A weekday NYSE did not close (``closed`` from ``fetch_closed_holiday_dates``)."""
+    return d.weekday() < 5 and d not in closed
+
+
+def nth_session_after(d: date, n: int, closed: AbstractSet[date]) -> date:
+    """The ``n``-th trading day strictly after ``d`` (``n = 0`` returns ``d``)."""
+    cur = d
+    seen = 0
+    while seen < n:
+        cur += timedelta(days=1)
+        if is_session(cur, closed):
+            seen += 1
+    return cur
+
+
+def first_session_on_or_after(d: date, closed: AbstractSet[date]) -> date:
+    """``d`` itself when it traded, else the next trading day."""
+    cur = d
+    while not is_session(cur, closed):
+        cur += timedelta(days=1)
+    return cur
+
+
+def settlement_session(trade_date: date, horizon: int, closed: AbstractSet[date]) -> date:
+    """The session whose close settles a ``horizon``-session forward window from ``trade_date``.
+
+    The calendar form of ``engines/candidate_outcome/entry.py::_forward_leg``:
+    entry is the first bar on or after ``trade_date`` (a Sunday candidate enters
+    on Monday), exit is ``horizon`` bars after entry. The engine counts the
+    symbol's own bars, so a halted name can settle later than this date; a
+    settled ``candidate_outcome.exit_date`` always wins over the projection.
+    """
+    return nth_session_after(first_session_on_or_after(trade_date, closed), horizon, closed)
 
 
 def fetch_recent_trading_days(

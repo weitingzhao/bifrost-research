@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from collections.abc import Mapping
 from datetime import date, datetime
 from typing import Any, Protocol
 
@@ -131,6 +132,21 @@ def load_outcome(conn: _Connection, candidate_id: str, horizon_days: int) -> dic
     }
 
 
+def lineage_refs(hyp: Mapping[str, Any]) -> tuple[str, str, str]:
+    """``(candidate_id, objective_id, run_id)`` from ``origin_ref``; blanks are ``""``."""
+    ref = hyp.get("origin_ref") if isinstance(hyp.get("origin_ref"), dict) else {}
+    return (
+        str(ref.get("candidate_id") or "").strip(),
+        str(ref.get("objective_id") or "").strip(),
+        str(ref.get("run_id") or "").strip(),
+    )
+
+
+def rule_from_objective(objective: Mapping[str, Any] | None) -> ResolutionPolicy:
+    """The objective's outcome rule; no objective or no ``resolution`` key → the defaults."""
+    return parse_policy((objective or {}).get("policy_json") or {}).resolution
+
+
 def rule_for(
     conn: _Connection,
     hyp: dict[str, Any],
@@ -141,12 +157,12 @@ def rule_for(
     Lineage names the objective directly (new hypotheses) or through the run
     (older ones). A lookup that fails must not cost the hypothesis its review,
     so any miss falls back to the defaults, which is the rule the plan set.
+    ``hypothesis_settlement.settlements_for`` reads the same lineage in bulk.
     """
-    ref = hyp.get("origin_ref") if isinstance(hyp.get("origin_ref"), dict) else {}
-    objective_id = str(ref.get("objective_id") or "").strip()
-    if not objective_id and ref.get("run_id"):
+    _cid, objective_id, run_id = lineage_refs(hyp)
+    if not objective_id and run_id:
         try:
-            run = obj_repo.get_run(conn, str(ref["run_id"]))
+            run = obj_repo.get_run(conn, run_id)
             objective_id = str((run or {}).get("objective_id") or "").strip()
         except Exception as exc:  # noqa: BLE001
             logger.info("resolution: run lookup failed for %s: %s", hyp.get("id"), str(exc)[:120])
@@ -156,8 +172,7 @@ def rule_for(
     if objective_id in cache:
         return cache[objective_id]
     try:
-        objective = obj_repo.get_objective(conn, objective_id) or {}
-        rule = parse_policy(objective.get("policy_json") or {}).resolution
+        rule = rule_from_objective(obj_repo.get_objective(conn, objective_id))
     except Exception as exc:  # noqa: BLE001
         logger.info("resolution: objective lookup failed for %s: %s", objective_id, str(exc)[:120])
         rollback_quietly(conn)
@@ -219,8 +234,7 @@ def resolve_active(
 
     for hyp in active:
         hid = str(hyp.get("id"))
-        ref = hyp.get("origin_ref") if isinstance(hyp.get("origin_ref"), dict) else {}
-        candidate_id = str(ref.get("candidate_id") or "").strip()
+        candidate_id = lineage_refs(hyp)[0]
         if not candidate_id:
             counts[NO_LINEAGE] += 1
             entries.append({"id": hid, "decision": NO_LINEAGE, "reason": "no candidate lineage"})
