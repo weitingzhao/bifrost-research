@@ -132,6 +132,10 @@ def test_a_leg_that_stops_printing_is_closed_as_stale() -> None:
     t = _run(store, profit_take_pct=None, stop_loss_mult=None, dte_exit=None, max_stale_sessions=3).trades[0]
     assert t["exit_reason"] == "stale"
     assert t["legs"][0]["stale_sessions"] == 3
+    # None turns the rule off, like the other rules: the leg rides to expiry.
+    t2 = _run(store, profit_take_pct=None, stop_loss_mult=None, dte_exit=None, max_stale_sessions=None).trades[0]
+    assert t2["exit_reason"] in ("expiry", "expiry_itm")
+    assert t2["legs"][0]["stale_sessions"] > 3
 
 
 def test_schedule_caps_open_positions_and_equity_tracks_every_session() -> None:

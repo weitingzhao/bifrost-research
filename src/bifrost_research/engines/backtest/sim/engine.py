@@ -297,7 +297,7 @@ def _manage(pos: _Position, store: ChainStore, d: date, cfg: SimConfig) -> dict[
     pnl = pos.open_pnl()
     pos.path.append(pnl)
     credit = pos.credit()
-    if any(lg.stale >= cfg.max_stale_sessions for lg in pos.legs):
+    if cfg.max_stale_sessions is not None and any(lg.stale >= cfg.max_stale_sessions for lg in pos.legs):
         return _close(pos, d, "stale", cfg)
     if cfg.profit_take_pct is not None and pnl >= cfg.profit_take_pct * credit:
         return _close(pos, d, "profit_take", cfg)

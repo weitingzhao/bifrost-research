@@ -20,7 +20,8 @@ class SimConfig:
       - ``dte_exit``: close when calendar days to expiry fall to this. None
         holds to expiry.
       - ``max_stale_sessions``: close when any leg has gone this many sessions
-        without a print — the mark is no longer a price.
+        without a print — the mark is no longer a price. None disables (the
+        leg carries its last mark until another rule or expiry closes it).
 
     Entry: every ``entry_every_sessions`` by default. With ``entry_event`` (an
     ``EventDef`` dict such as ``{"kind": "earnings"}``) a position opens
@@ -41,7 +42,7 @@ class SimConfig:
     profit_take_pct: float | None = 0.5
     stop_loss_mult: float | None = 2.0
     dte_exit: int | None = 21
-    max_stale_sessions: int = 3
+    max_stale_sessions: int | None = 3
     price_field: PriceField = "vwap"
     slippage_scale: float = 1.0
     commission_per_contract: float = 0.65

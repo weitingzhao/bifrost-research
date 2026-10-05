@@ -57,7 +57,7 @@ class SimBody(BaseModel):
     profit_take_pct: float | None = Field(0.5, gt=0.0, le=1.0)
     stop_loss_mult: float | None = Field(2.0, gt=0.0, le=20.0)
     dte_exit: int | None = Field(21, ge=0, le=80)
-    max_stale_sessions: int = Field(3, ge=1, le=20)
+    max_stale_sessions: int | None = Field(3, ge=1, le=20)
     price_field: Literal["vwap", "close"] = "vwap"
     slippage_scale: float = Field(1.0, ge=0.0, le=10.0)
     commission_per_contract: float = Field(0.65, ge=0.0, le=10.0)
