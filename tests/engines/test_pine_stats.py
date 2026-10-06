@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from bifrost_research.engines import signal_stats
 from bifrost_research.engines.pine import stats
 from bifrost_research.repositories import listing_lineage
 
@@ -172,7 +173,7 @@ def test_the_aggregate_query_is_given_the_spliced_tickers_and_the_delisted_names
     monkeypatch.setattr(listing_lineage, "_PREDECESSOR", {"ECHO": "SATS"})
     monkeypatch.setattr(listing_lineage, "_SUCCESSOR", {"SATS": "ECHO"})
     monkeypatch.setattr(listing_lineage, "_HANDOVERS", {("SATS", "ECHO"): date(2026, 3, 16)})
-    monkeypatch.setattr(stats, "listing_ends", lambda conn, syms, as_of: {"WBS": date(2026, 3, 20)})
+    monkeypatch.setattr(signal_stats, "listing_ends", lambda conn, syms, as_of: {"WBS": date(2026, 3, 20)})
     cal = _cal(40)
     # A SATS row before the handover is ECHO's; an ECHO row before it is another company's.
     sigs = [("SATS", cal[1]), ("ECHO", cal[2]), ("ECHO", cal[15]), ("WBS", cal[3])]
@@ -203,3 +204,26 @@ def test_spliced_bars_sql_and_in_lineage(monkeypatch: pytest.MonkeyPatch) -> Non
     assert listing_lineage.in_lineage(None, "ECHO", cut)
     assert listing_lineage.in_lineage(None, "NVDA", cut)
     assert listing_lineage.in_lineage(None, "IA", cut) and not listing_lineage.in_lineage(None, "ISSC", cut)
+
+
+def test_detail_lists_per_symbol_and_recent_signals_with_what_the_cooldown_counted() -> None:
+    cal = _cal(40)
+    sigs = {"AAA": [cal[0], cal[2]], "BBB": [cal[5]]}
+    rows = [
+        _row("s", "AAA", cal[0], 1, 0.05, 1, 1, 1),
+        _row("s", "AAA", cal[2], 1, -0.01, 0, 0, 0),
+        _row("s", "BBB", cal[5], 1, 0.02, 1, 1, 1),
+        _row("b", "AAA", None, 20, 0.10, 11, 12, 3),
+        _row("b", "BBB", None, 20, 0.00, 9, 10, 0),
+    ]
+    out = signal_stats.evaluate(
+        _Conn([], rows, cal), sigs, sign=1, start=MON, end=MON + timedelta(days=60), horizons=[5],
+        move_threshold=0.02, today=MON + timedelta(days=200), detail=True,
+    )
+    assert out["per_symbol"]["AAA"]["signals"] == 2 and out["per_symbol"]["AAA"]["by_horizon"]["5"]["n"] == 1
+    assert [(r["symbol"], r["date"], r["counted_5"]) for r in out["recent"]] == [
+        ("BBB", cal[5].isoformat(), True),
+        ("AAA", cal[2].isoformat(), False),
+        ("AAA", cal[0].isoformat(), True),
+    ]
+    assert out["recent"][1]["ret_5"] == -0.01

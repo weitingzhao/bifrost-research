@@ -10,7 +10,7 @@ import pytest
 from bifrost_research.engines.backtest.event_defs import EventDef
 from bifrost_research.engines.backtest import event_query
 from bifrost_research.engines.indicators import bollinger, ema, get_signal, macd, rsi, signal_dates, signal_mask
-from bifrost_research.engines.indicators.stats import forward_stats
+from bifrost_research.engines.indicators.stats import sign_of, signal_sessions
 
 
 def _days(n: int, start: date = date(2024, 1, 1)) -> list[date]:
@@ -76,15 +76,16 @@ def test_unknown_signal_and_bad_params_are_refused() -> None:
     assert get_signal("rsi_cross_up").params({"level": "25", "symbols": ["X"]})["level"] == 25.0
 
 
-def test_forward_stats_compares_signal_to_every_session() -> None:
+def test_signal_sessions_keep_crossings_in_the_window_past_the_warm_up() -> None:
     closes = [100 - i for i in range(30)] + [70 + 2 * i for i in range(30)]
     dates = _days(len(closes))
-    out = forward_stats({"AAA": (dates, closes)}, "close_ema_cross_up", {"length": 5}, dates[0], dates[-1], horizons=(5,))
-    h = out["by_horizon"]["5"]
-    assert out["signals"] == 1 and h["signal"]["win_rate"] == 1.0
-    assert h["baseline"]["n"] == len(closes) - 5
-    assert h["win_rate_edge"] == pytest.approx(1.0 - h["baseline"]["win_rate"])
-    assert out["recent"][0]["symbol"] == "AAA"
+    out = signal_sessions({"AAA": (dates, closes)}, "close_ema_cross_up", {"length": 5}, dates[0], dates[-1])
+    assert len(out["AAA"]) == 1
+    cross = out["AAA"][0]
+    # Inside the warm-up the same crossing is not counted; outside [start, end] neither.
+    assert signal_sessions({"AAA": (dates, closes)}, "close_ema_cross_up", {"length": 5}, dates[0], dates[-1], warmup_bars=dates.index(cross) + 1) == {"AAA": []}
+    assert signal_sessions({"AAA": (dates, closes)}, "close_ema_cross_up", {"length": 5}, cross + timedelta(days=1), dates[-1]) == {"AAA": []}
+    assert sign_of("close_ema_cross_up") == 1 and sign_of("macd_cross_down") == -1
 
 
 def test_indicator_signal_event_kind_resolves_per_symbol(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -81,9 +81,9 @@ EVALUATIONS: dict[str, dict[str, Any]] = {
     "indicator_signal": {
         "class": "signal_evaluation",
         "title": "Indicator signal win rate",
-        "answers": "Whether the stock moved the way a MACD / RSI / Bollinger / EMA crossing said, N sessions on, next to every session.",
-        "price_basis": "adjusted stock close to close",
-        "entry": "each crossing session's close",
+        "answers": "Whether the stock moved the way a MACD / RSI / Bollinger / EMA crossing said, N sessions on, net of cost, next to the same names' other sessions, with a 90% cluster-bootstrap interval.",
+        "price_basis": "adjusted stock, next session's open to the close N sessions after the crossing; one-way cost charged each way",
+        "entry": "the session after each crossing (overlapping crossings within N sessions counted once)",
         "code": "engines/indicators",
         "store": "none (computed on request)",
         "route": "GET /research/indicators/signal-stats",

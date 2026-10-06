@@ -245,7 +245,7 @@ def signal_stats(
     cost_bps: float = Query(stats.DEFAULT_COST_BPS, ge=0.0, le=200.0, description="one-way cost, charged on entry and exit"),
 ) -> dict[str, Any]:
     """Return after a script's signal, entered the next session, net of cost, next to the
-    same names' other sessions — method in ``engines/pine/stats.py`` (``data.method``)."""
+    same names' other sessions — method in ``engines/signal_stats.py`` (``data.method``)."""
     e = end or date.today()
     s = start or e - timedelta(days=365 * 5)
     try:
