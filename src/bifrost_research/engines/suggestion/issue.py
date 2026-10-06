@@ -89,8 +89,8 @@ def build_suggestion(
         # The nearest strike the data has is not the delta the rule names — a
         # 35-delta put issued under a 30-delta rule is a different suggestion.
         return "delta_out_of_band"
-    min_volume = int(LIQUIDITY["min_leg_volume"])
-    if min(_leg_volume(chain, lg.ticker, d) for lg in pos.legs) < min_volume:
+    min_volume = 0 if source in LIQUIDITY["exempt_sources"] else int(LIQUIDITY["min_leg_volume"])
+    if min_volume and min(_leg_volume(chain, lg.ticker, d) for lg in pos.legs) < min_volume:
         # A contract that barely traded on the as-of session often does not
         # trade on the next one, where the suggestion would enter.
         return "illiquid_leg"

@@ -40,11 +40,21 @@ def _chain(volume: int) -> ChainStore:
 
 
 def test_issue_refuses_a_leg_that_barely_traded() -> None:
-    spec = {**BASELINE, "symbol": "X"}
-    assert build_suggestion(_chain(LIQUIDITY["min_leg_volume"] - 1), START, source="baseline", spec=spec, regime={}) == "illiquid_leg"
-    got = build_suggestion(_chain(LIQUIDITY["min_leg_volume"]), START, source="baseline", spec=spec, regime={})
+    spec = {**BASELINE, "symbol": "X", "source_ref": "x"}
+    assert build_suggestion(_chain(LIQUIDITY["min_leg_volume"] - 1), START, source="pine", spec=spec, regime={}) == "illiquid_leg"
+    got = build_suggestion(_chain(LIQUIDITY["min_leg_volume"]), START, source="pine", spec=spec, regime={})
     assert isinstance(got, Suggestion)
     assert got.snapshot["liquidity"] == {"min_leg_volume": LIQUIDITY["min_leg_volume"]}
+
+
+def test_the_etf_sources_are_not_gated() -> None:
+    """Replay 2024-11..2026-10: the gate cost baseline 20 of 101 weeks and voided nothing without it."""
+    assert set(LIQUIDITY["exempt_sources"]) == {"baseline", "simulator"}
+    spec = {**BASELINE, "symbol": "X"}
+    for source in ("baseline", "simulator"):
+        got = build_suggestion(_chain(1), START, source=source, spec=spec, regime={})
+        assert isinstance(got, Suggestion)
+        assert got.snapshot["liquidity"] == {"min_leg_volume": 0}
 
 
 LEG = LegSpec("O:X250221P00090000", "P", "sell", 90.0, date(2025, 2, 21), 1, "short put")

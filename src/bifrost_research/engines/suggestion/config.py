@@ -168,7 +168,17 @@ SYMBOL_PAIRED: dict[str, Any] = {"sources": (), "window_days": 7}
 #   bucket, as if the last session's volume carries over.)
 # - settle: entry is the first session after the as-of session on which every
 #   leg trades, at most ``max_entry_delay`` sessions late; past that, void.
-LIQUIDITY: dict[str, int] = {"min_leg_volume": 25, "max_entry_delay": 3}
+#
+# The issue gate does not apply to ``exempt_sources`` (0.185.0): the replay of
+# baseline and simulator over 2024-11..2026-10 had it refuse 20 of 101 baseline
+# weeks and 73 of 303 simulator picks (SPY/QQQ/IWM contracts option_daily shows
+# at 2-23 contracts on the day), while without it those sources voided none --
+# walk-2's entry delay covers the ETFs -- and returns were unchanged.
+LIQUIDITY: dict[str, Any] = {
+    "min_leg_volume": 25,
+    "max_entry_delay": 3,
+    "exempt_sources": ("baseline", "simulator"),
+}
 
 # A mechanical source refuses to issue when the nearest strike's delta is
 # further than this from its rule's target (the suggestion would not be the rule).
