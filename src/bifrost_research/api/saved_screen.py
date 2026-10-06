@@ -4,8 +4,14 @@ One screen, one id: the authoring face (frontend ``/research/lab/screener``)
 writes here; Trade's result face renders the same object read-only by id.
 Envelope matches the hypothesis routes: ``{"ok": bool, "data": ..., "error"?}``.
 
+A definition speaks one vocabulary (``vocabulary``; ``sepa_screener_wide.v1``
+when omitted, ``stock_screen.v2`` for Stock screen's stages — 0.181.0).
+``/vocabulary`` returns what each stamp accepts, so a client can check its own
+conditions against it instead of finding out from a 422.
+
 Routes:
     GET    /research/screens
+    GET    /research/screens/vocabulary
     POST   /research/screens
     GET    /research/screens/{id}
     PATCH  /research/screens/{id}
@@ -36,6 +42,7 @@ class ScreenCreate(BaseModel):
     definition: dict[str, Any]
     description: str | None = None
     origin_page: str | None = None
+    vocabulary: str = repo.VOCABULARY_V1
 
 
 class ScreenPatch(BaseModel):
@@ -46,6 +53,7 @@ class ScreenPatch(BaseModel):
     definition: dict[str, Any] | None = None
     is_active: bool | None = None
     origin_page: str | None = None
+    vocabulary: str | None = None
 
 
 def _ok(data: Any) -> dict[str, Any]:
@@ -80,12 +88,23 @@ def create_screen(body: ScreenCreate) -> dict[str, Any]:
                 definition=body.definition,
                 description=body.description,
                 origin_page=body.origin_page,
+                vocabulary=body.vocabulary,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
         conn.close()
     return _ok(row)
+
+
+@router.get("/vocabulary", dependencies=[Depends(require_owner)])
+def vocabulary() -> dict[str, Any]:
+    conn = _connect_or_503()
+    try:
+        scripts = sorted(repo.known_pine_scripts(conn))
+    finally:
+        conn.close()
+    return _ok(repo.vocabulary_catalog(scripts))
 
 
 @router.get("/{screen_id}", dependencies=[Depends(require_owner)])

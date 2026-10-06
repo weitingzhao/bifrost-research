@@ -20,6 +20,8 @@ from bifrost_research.repositories import saved_screen as repo
 class _FakeStore:
     def __init__(self) -> None:
         self.rows: dict[str, dict[str, Any]] = {}
+        # The Pine library: one built-in, one of mine switched off.
+        self.pine_ids = ["supertrend", "my_old_cross"]
 
 
 class _FakeCursor:
@@ -78,6 +80,8 @@ class _FakeCursor:
                 row[col] = val
             row["updated_at"] = now
             self._result = [self._tuple(row)]
+        elif q.startswith("SELECT ID FROM RESEARCH.PINE_SCRIPT"):
+            self._result = [(i,) for i in self.store.pine_ids]
         elif q.startswith("SELECT") and "WHERE ID = " in q:
             (screen_id,) = params
             row = self.store.rows.get(screen_id)
@@ -187,3 +191,129 @@ def test_definition_catalog_matches_the_mart() -> None:
     # The catalogs must stay 11 + 8 — the wide table's own condition columns.
     assert len(repo.TECH_CONDITIONS_V1) == 11
     assert len(repo.FUND_CONDITIONS_V1) == 8
+
+
+# ── stock_screen.v2 (0.181.0) ────────────────────────────────────────────
+
+V2 = {
+    "stages": {
+        "agree": {"on": ["m_sepa", "m_radar"], "min": 2},
+        "trend": {"on": ["price_gt_sma200"], "min": 0},
+        "momtier": {"on": [], "min": 6},
+        "radar": {"on": ["grade_a", "grade_b"]},
+        "options": {"on": ["ivr_ge_40"]},
+    },
+    "pine": {"on": ["pine:supertrend:buy"], "window": 10, "match": "all"},
+    "universe": "options",
+}
+
+
+def _v2(client: TestClient, definition: Any, name: str = "Pine leaders") -> Any:
+    return client.post(
+        "/research/screens", json={"name": name, "definition": definition, "vocabulary": repo.VOCABULARY_V2}
+    )
+
+
+def test_v2_roundtrip_keeps_stages_pine_block_and_universe(client: TestClient) -> None:
+    r = _v2(client, V2)
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    assert d["vocabulary"] == "stock_screen.v2"
+    assert d["definition"]["stages"]["agree"] == {"on": ["m_sepa", "m_radar"], "min": 2}
+    assert d["definition"]["stages"]["momtier"] == {"on": [], "min": 6}
+    assert d["definition"]["pine"] == {"on": ["pine:supertrend:buy"], "window": 10, "match": "all"}
+    assert d["definition"]["universe"] == "options"
+    # read back as stored
+    got = client.get(f"/research/screens/{d['id']}").json()["data"]
+    assert got["definition"] == d["definition"]
+
+
+def test_v2_defaults_and_drops_empty_stages(client: TestClient) -> None:
+    d = _v2(client, {"stages": {"trend": {"on": []}}}).json()["data"]["definition"]
+    assert d == {"stages": {}, "pine": {"on": [], "window": 5, "match": "any"}, "universe": None}
+
+
+@pytest.mark.parametrize(
+    ("bad", "says"),
+    [
+        ({"stages": {"trend": {"on": ["made_up"]}}}, "made_up"),
+        ({"stages": {"trend": {"on": ["grade_a"]}}}, "grade_a"),  # a condition in the wrong stage
+        ({"stages": {"quality": {"on": ["fcf_positive"]}}}, "quality"),  # nothing evaluates it
+        ({"stages": {"catalyst": {"on": ["earn_lt_10d"]}}}, "earn_lt_10d"),
+        ({"stages": {"trend": {"on": [], "min": 12}}}, "stages.trend.min"),
+        ({"stages": {"agree": {"on": ["m_sepa"], "min": 2}}}, "stages.agree.min"),
+        ({"stages": {"radar": {"on": ["grade_a"], "min": 1}}}, "no 'at least N'"),
+        ({"pine": {"on": ["supertrend:buy"]}}, "malformed"),
+        ({"pine": {"on": ["pine:never_existed:buy"]}}, "never_existed"),
+        ({"pine": {"window": 3}}, "pine.window"),
+        ({"pine": {"match": "most"}}, "pine.match"),
+        ({"universe": "sp500"}, "sp500"),
+        ({"extra": 1}, "extra"),
+    ],
+)
+def test_v2_rejects_drift_by_name(client: TestClient, bad: dict[str, Any], says: str) -> None:
+    r = _v2(client, bad)
+    assert r.status_code == 422
+    assert says in r.json()["detail"]
+
+
+def test_v2_keeps_a_switched_off_script(client: TestClient) -> None:
+    r = _v2(client, {"pine": {"on": ["pine:my_old_cross:sell"]}})
+    assert r.status_code == 200
+    assert r.json()["data"]["definition"]["pine"]["on"] == ["pine:my_old_cross:sell"]
+
+
+def test_unknown_vocabulary_is_422(client: TestClient) -> None:
+    r = client.post("/research/screens", json={"name": "X", "definition": V2, "vocabulary": "stock_screen.v9"})
+    assert r.status_code == 422
+    assert "stock_screen.v9" in r.json()["detail"]
+
+
+def test_patch_validates_against_the_rows_own_stamp_and_moves_stamps_with_a_definition(client: TestClient) -> None:
+    v2 = _v2(client, V2).json()["data"]
+    # a v2 row's definition is checked as v2 without restating the stamp
+    r = client.patch(f"/research/screens/{v2['id']}", json={"definition": dict(V2, universe="watch")})
+    assert r.status_code == 200
+    assert r.json()["data"]["definition"]["universe"] == "watch"
+    # a v1 definition sent to a v2 row is drift
+    assert client.patch(f"/research/screens/{v2['id']}", json={"definition": DEFN}).status_code == 422
+
+    v1 = client.post("/research/screens", json={"name": "Old", "definition": DEFN}).json()["data"]
+    # a stamp alone is refused: the old definition does not speak it
+    r = client.patch(f"/research/screens/{v1['id']}", json={"vocabulary": repo.VOCABULARY_V2})
+    assert r.status_code == 422
+    r = client.patch(
+        f"/research/screens/{v1['id']}", json={"vocabulary": repo.VOCABULARY_V2, "definition": V2}
+    )
+    assert r.status_code == 200
+    assert r.json()["data"]["vocabulary"] == repo.VOCABULARY_V2
+
+
+def test_vocabulary_route_is_not_an_id_and_lists_both_stamps(client: TestClient) -> None:
+    r = client.get("/research/screens/vocabulary")
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert d["versions"] == ["sepa_screener_wide.v1", "stock_screen.v2"]
+    v2 = d["stock_screen.v2"]
+    assert v2["pine"] == {"windows": [1, 5, 10], "match": ["any", "all"], "scripts": ["my_old_cross", "supertrend"]}
+    assert v2["universes"] == ["all", "options", "watch", "book"]
+    assert v2["stages"]["momtier"]["max"] == 10
+
+
+def test_v2_catalog_is_pinned() -> None:
+    # Stock screen's live conditions (frontend stockScreenStages.ts); the
+    # frontend asserts its chips are a subset of /research/screens/vocabulary.
+    counts = {sid: len(c["conditions"]) for sid, c in repo.STAGES_V2.items()}
+    assert counts == {
+        "agree": 3,
+        "trend": 11,
+        "growth": 8,
+        "momtier": 10,
+        "radar": 5,
+        "structure": 8,
+        "sentiment": 6,
+        "catalyst": 4,
+        "options": 3,
+    }
+    assert {c["kind"] for c in repo.STAGES_V2.values()} == {"agree", "min", "any", "all"}
+
