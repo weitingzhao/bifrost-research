@@ -122,7 +122,20 @@ STAGES_V2: dict[str, dict[str, Any]] = {
             "sv_ratio_declining",
         ),
     },
-    "catalyst": {"kind": "any", "conditions": ("n8k_202_7d", "n8k_101_7d", "n8k_502_7d", "n8k_any_7d")},
+    # The three earnings windows read Research's estimated next print for every
+    # name (/research/narrative/earnings/batch, 0.193.0, TD-158).
+    "catalyst": {
+        "kind": "any",
+        "conditions": (
+            "n8k_202_7d",
+            "n8k_101_7d",
+            "n8k_502_7d",
+            "n8k_any_7d",
+            "earn_lt_10d",
+            "earn_10_30d",
+            "earn_gt_10d",
+        ),
+    },
     "options": {"kind": "all", "conditions": ("ivr_ge_40", "ivr_ge_60", "vrp_pct_ge_70")},
 }
 PINE_WINDOWS_V2 = (1, 5, 10)

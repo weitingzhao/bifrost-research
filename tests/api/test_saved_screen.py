@@ -233,13 +233,20 @@ def test_v2_defaults_and_drops_empty_stages(client: TestClient) -> None:
     assert d == {"stages": {}, "pine": {"on": [], "window": 5, "match": "any"}, "universe": None}
 
 
+def test_v2_saves_the_earnings_windows(client: TestClient) -> None:
+    # TD-158: Stock screen's three earnings chips read the batch estimate and save.
+    on = ["earn_gt_10d", "earn_lt_10d", "n8k_202_7d"]
+    d = _v2(client, {"stages": {"catalyst": {"on": on}}}).json()["data"]["definition"]
+    assert sorted(d["stages"]["catalyst"]["on"]) == sorted(on)
+
+
 @pytest.mark.parametrize(
     ("bad", "says"),
     [
         ({"stages": {"trend": {"on": ["made_up"]}}}, "made_up"),
         ({"stages": {"trend": {"on": ["grade_a"]}}}, "grade_a"),  # a condition in the wrong stage
         ({"stages": {"quality": {"on": ["fcf_positive"]}}}, "quality"),  # nothing evaluates it
-        ({"stages": {"catalyst": {"on": ["earn_lt_10d"]}}}, "earn_lt_10d"),
+        ({"stages": {"catalyst": {"on": ["news_theme"]}}}, "news_theme"),  # no per-name theme store
         ({"stages": {"trend": {"on": [], "min": 12}}}, "stages.trend.min"),
         ({"stages": {"agree": {"on": ["m_sepa"], "min": 2}}}, "stages.agree.min"),
         ({"stages": {"radar": {"on": ["grade_a"], "min": 1}}}, "no 'at least N'"),
@@ -312,7 +319,7 @@ def test_v2_catalog_is_pinned() -> None:
         "radar": 5,
         "structure": 8,
         "sentiment": 6,
-        "catalyst": 4,
+        "catalyst": 7,
         "options": 3,
     }
     assert {c["kind"] for c in repo.STAGES_V2.values()} == {"agree", "min", "any", "all"}
