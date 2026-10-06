@@ -15,6 +15,13 @@ from typing import Any
 from dagster import AssetExecutionContext, AssetKey, AssetSpec, MaterializeResult, asset
 
 from bifrost_research.orchestration import runners
+from bifrost_research.orchestration.asset_checks import (
+    ERROR,
+    OutputSpec,
+    field,
+    judged_materialization,
+    output_check_specs,
+)
 
 # External dependency: Market Data Plugin writes market.* (not owned by Research).
 plugin_market_ingest = AssetSpec(
@@ -47,8 +54,97 @@ def _metadata(result: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# --- Output checks (TD-92): how each runner's result is judged -----------------
+
+_VOL_ROW_FIELDS = ("rows_written", "atm_rows_written", "pcr_rows_written")
+
+
+def volatility_rows(result: dict[str, Any]) -> int | None:
+    """Rows over the volatility slots (max-pain, atm-iv-pcr, iv-percentile)."""
+    slots = result.get("slots")
+    if not isinstance(slots, list):
+        return None
+    return sum(int(s.get(f) or 0) for s in slots if isinstance(s, dict) for f in _VOL_ROW_FIELDS)
+
+
+def volatility_skips(result: dict[str, Any]) -> list[tuple[Any, str]]:
+    return [
+        (ERROR, f"slot {s.get('slot')} skipped: {s.get('reason') or 'no reason given'}")
+        for s in result.get("slots") or []
+        if isinstance(s, dict) and s.get("skipped") is True
+    ]
+
+
+VOLATILITY_SPEC = OutputSpec(rows=volatility_rows, expect_rows=True, extra=volatility_skips)
+
+# Engines that rewrite a window of sessions every run (vrp, momentum, canonical_pnl,
+# scan, signal_hit_fwd_fill): zero rows cannot be a quiet day.
+WINDOW_ROWS_SPEC = OutputSpec(rows=field("rows_written"), expect_rows=True)
+# Zero is a legitimate answer (no horizon elapsed, no option leg held): recorded,
+# judged only for errors and skips.
+QUIET_ROWS_SPEC = OutputSpec(rows=field("rows_written"), trailing=False)
+VRP_FWD_SPEC = OutputSpec(rows=field("updated"), trailing=False)
+# The universe is never empty; ``written`` counts the rows the rule kept.
+UNIVERSE_SPEC = OutputSpec(rows=field("written"), expect_rows=True)
+# A name without a spot is skipped; no normal share is measured yet, so WARN.
+TERRAIN_SPEC = OutputSpec(
+    rows=field("rows_written"),
+    expect_rows=True,
+    soft_failed=(("skipped_no_spot", "rows_written"),),
+)
+
+# gex / iv-surface / flow: one row set per (symbol, session); ~3% of symbol-days
+# fail on a normal night (names still onboarding), 90%+ when the engine is broken.
+PER_SYMBOL_SPEC = OutputSpec(
+    rows=field("rows_written"),
+    expect_rows=True,
+    failed=(("symbols_failed", "symbols_ok"),),
+)
+
+# A broken trigger table fails every emission (TD-113); a normal night fails none.
+FORECAST_SPEC = OutputSpec(
+    rows=field("rows_written"),
+    expect_rows=True,
+    failed=(("trigger_failures", "trigger_ok"),),
+)
+
+
+def pine_rows(result: dict[str, Any]) -> int | None:
+    scripts = result.get("scripts")
+    if not isinstance(scripts, dict):
+        return None
+    return sum(int(v.get("rows") or 0) for v in scripts.values() if isinstance(v, dict))
+
+
+def pine_runner_down(result: dict[str, Any]) -> list[tuple[Any, str]]:
+    """``error_sample['*']`` is the pine-runner itself failing: that script wrote nothing."""
+    return [
+        (ERROR, f"pine script {sid}: {v['error_sample']['*']}")
+        for sid, v in (result.get("scripts") or {}).items()
+        if isinstance(v, dict) and isinstance(v.get("error_sample"), dict) and "*" in v["error_sample"]
+    ]
+
+
+# Pine writes buy / sell sessions only, so a quiet window may hold none, and a
+# version rebuild writes years at once: rows are recorded, not judged.
+PINE_SPEC = OutputSpec(rows=pine_rows, trailing=False, extra=pine_runner_down)
+
+
+def suggestion_errors(result: dict[str, Any]) -> list[tuple[Any, str]]:
+    """The Pine issue is caught so settlement still runs; its error must still show."""
+    return [
+        (ERROR, f"{part}: {result[part]['error']}"[:300])
+        for part in ("issued", "pine", "settled")
+        if isinstance(result.get(part), dict) and result[part].get("error")
+    ]
+
+
+SUGGESTION_SPEC = OutputSpec(extra=suggestion_errors)
+
+
 @asset(
     key=AssetKey(["engines", "volatility"]),
+    check_specs=output_check_specs(AssetKey(["engines", "volatility"])),
     deps=_MARKET,
     group_name="python_analytics",
     description="Volatility engines (max pain / ATM IV / PCR / IV percentile) → features.option_metric_*_daily",
@@ -56,11 +152,12 @@ def _metadata(result: dict[str, Any]) -> dict[str, Any]:
 def volatility(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_volatility()
     context.log.info("volatility result=%s", result)
-    return MaterializeResult(metadata=_metadata(result))
+    return judged_materialization(context, result, _metadata(result), VOLATILITY_SPEC)
 
 
 @asset(
     key=AssetKey(["engines", "vrp"]),
+    check_specs=output_check_specs(AssetKey(["engines", "vrp"])),
     deps=[AssetKey(["engines", "volatility"])],
     group_name="python_analytics",
     description=(
@@ -71,11 +168,12 @@ def volatility(context: AssetExecutionContext) -> MaterializeResult:
 def vrp(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_vrp()
     context.log.info("vrp result=%s", result)
-    return MaterializeResult(metadata=_metadata(result))
+    return judged_materialization(context, result, _metadata(result), WINDOW_ROWS_SPEC)
 
 
 @asset(
     key=AssetKey(["engines", "vrp_fwd_ret_20d"]),
+    check_specs=output_check_specs(AssetKey(["engines", "vrp_fwd_ret_20d"])),
     deps=[AssetKey(["engines", "vrp"])],
     group_name="python_analytics",
     description="fwd_ret_20d backfill on VRP rows whose 20 sessions have elapsed",
@@ -83,11 +181,12 @@ def vrp(context: AssetExecutionContext) -> MaterializeResult:
 def vrp_fwd_ret_20d(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_vrp_fwd_ret_20d()
     context.log.info("vrp_fwd_ret_20d result=%s", result)
-    return MaterializeResult(metadata=_metadata(result))
+    return judged_materialization(context, result, _metadata(result), VRP_FWD_SPEC)
 
 
 @asset(
     key=AssetKey(["engines", "momentum"]),
+    check_specs=output_check_specs(AssetKey(["engines", "momentum"])),
     deps=_MARKET,
     group_name="python_analytics",
     description="Momentum Radar → features.stock_signal_momentum_daily",
@@ -95,11 +194,12 @@ def vrp_fwd_ret_20d(context: AssetExecutionContext) -> MaterializeResult:
 def momentum(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_momentum()
     context.log.info("momentum result=%s", result)
-    return MaterializeResult(metadata=_metadata(result))
+    return judged_materialization(context, result, _metadata(result), WINDOW_ROWS_SPEC)
 
 
 @asset(
     key=AssetKey(["engines", "gex"]),
+    check_specs=output_check_specs(AssetKey(["engines", "gex"])),
     deps=_MARKET,
     group_name="python_analytics",
     description="GEX Engine → features.option_metric_gex_daily / option_metric_gex_levels_daily",
@@ -107,11 +207,12 @@ def momentum(context: AssetExecutionContext) -> MaterializeResult:
 def gex(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_gex()
     context.log.info("gex result=%s", result)
-    return MaterializeResult(metadata=_metadata(result))
+    return judged_materialization(context, result, _metadata(result), PER_SYMBOL_SPEC)
 
 
 @asset(
     key=AssetKey(["engines", "surface"]),
+    check_specs=output_check_specs(AssetKey(["engines", "surface"])),
     deps=_MARKET,
     group_name="python_analytics",
     description="IV Surface / vol cone → features.option_surface_iv_daily",
@@ -119,11 +220,12 @@ def gex(context: AssetExecutionContext) -> MaterializeResult:
 def surface(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_surface()
     context.log.info("surface result=%s", result)
-    return MaterializeResult(metadata=_metadata(result))
+    return judged_materialization(context, result, _metadata(result), PER_SYMBOL_SPEC)
 
 
 @asset(
     key=AssetKey(["engines", "flow"]),
+    check_specs=output_check_specs(AssetKey(["engines", "flow"])),
     deps=_MARKET,
     group_name="python_analytics",
     description="Order Flow / sentiment → features.option_flow_sentiment_daily",
@@ -131,11 +233,12 @@ def surface(context: AssetExecutionContext) -> MaterializeResult:
 def flow(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_flow()
     context.log.info("flow result=%s", result)
-    return MaterializeResult(metadata=_metadata(result))
+    return judged_materialization(context, result, _metadata(result), PER_SYMBOL_SPEC)
 
 
 @asset(
     key=AssetKey(["engines", "terrain"]),
+    check_specs=output_check_specs(AssetKey(["engines", "terrain"])),
     deps=[
         AssetKey(["engines", "volatility"]),
         AssetKey(["engines", "momentum"]),
@@ -148,11 +251,12 @@ def flow(context: AssetExecutionContext) -> MaterializeResult:
 def terrain(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_terrain()
     context.log.info("terrain result=%s", result)
-    return MaterializeResult(metadata=_metadata(result))
+    return judged_materialization(context, result, _metadata(result), TERRAIN_SPEC)
 
 
 @asset(
     key=AssetKey(["engines", "forecast"]),
+    check_specs=output_check_specs(AssetKey(["engines", "forecast"])),
     deps=[AssetKey(["engines", "terrain"])],
     group_name="ai_forecast",
     description="AI intraday playbook / path calls → features.stock_forecast_session / stock_forecast_hourly",
@@ -160,7 +264,7 @@ def terrain(context: AssetExecutionContext) -> MaterializeResult:
 def forecast(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_forecast()
     context.log.info("forecast result=%s", result)
-    return MaterializeResult(metadata=_metadata(result))
+    return judged_materialization(context, result, _metadata(result), FORECAST_SPEC)
 
 
 @asset(
@@ -189,6 +293,7 @@ def backtest(context: AssetExecutionContext) -> MaterializeResult:
 
 @asset(
     key=AssetKey(["engines", "canonical_pnl"]),
+    check_specs=output_check_specs(AssetKey(["engines", "canonical_pnl"])),
     deps=_MARKET,
     group_name="python_analytics",
     description=(
@@ -199,11 +304,12 @@ def backtest(context: AssetExecutionContext) -> MaterializeResult:
 def canonical_pnl(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_canonical_pnl(lookback_months=6, dry_run=False)
     context.log.info("canonical_pnl result=%s", result)
-    return MaterializeResult(metadata=_metadata(result))
+    return judged_materialization(context, result, _metadata(result), WINDOW_ROWS_SPEC)
 
 
 @asset(
     key=AssetKey(["engines", "scan"]),
+    check_specs=output_check_specs(AssetKey(["engines", "scan"])),
     deps=[
         AssetKey(["engines", "volatility"]),
         AssetKey(["engines", "gex"]),
@@ -220,11 +326,12 @@ def canonical_pnl(context: AssetExecutionContext) -> MaterializeResult:
 def scan(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_scan()
     context.log.info("scan result=%s", result)
-    return MaterializeResult(metadata=_metadata(result))
+    return judged_materialization(context, result, _metadata(result), WINDOW_ROWS_SPEC)
 
 
 @asset(
     key=AssetKey(["engines", "pine"]),
+    check_specs=output_check_specs(AssetKey(["engines", "pine"])),
     deps=[AssetKey(["engines", "scan"])],
     group_name="python_analytics",
     description=(
@@ -235,11 +342,12 @@ def scan(context: AssetExecutionContext) -> MaterializeResult:
 def pine_signals(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_pine_signals()
     context.log.info("pine result=%s", {k: v for k, v in result.items() if k != "scripts"})
-    return MaterializeResult(metadata=_metadata(result))
+    return judged_materialization(context, result, _metadata(result), PINE_SPEC)
 
 
 @asset(
     key=AssetKey(["engines", "candidate_outcome"]),
+    check_specs=output_check_specs(AssetKey(["engines", "candidate_outcome"])),
     deps=[AssetKey(["engines", "scan"])],
     group_name="python_analytics",
     description=(
@@ -250,11 +358,12 @@ def pine_signals(context: AssetExecutionContext) -> MaterializeResult:
 def candidate_outcome(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_candidate_outcome()
     context.log.info("candidate_outcome result=%s", result)
-    return MaterializeResult(metadata=_metadata(result))
+    return judged_materialization(context, result, _metadata(result), QUIET_ROWS_SPEC)
 
 
 @asset(
     key=AssetKey(["engines", "suggestion_ledger"]),
+    check_specs=output_check_specs(AssetKey(["engines", "suggestion_ledger"])),
     # engines/pine: the session's Pine signals are issued before settlement (S4).
     deps=[AssetKey(["engines", "volatility"]), AssetKey(["engines", "pine"]), *_MARKET],
     group_name="python_analytics",
@@ -268,11 +377,12 @@ def candidate_outcome(context: AssetExecutionContext) -> MaterializeResult:
 def suggestion_ledger(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_suggestion_ledger()
     context.log.info("suggestion_ledger result=%s", result)
-    return MaterializeResult(metadata=_metadata(result))
+    return judged_materialization(context, result, _metadata(result), SUGGESTION_SPEC)
 
 
 @asset(
     key=AssetKey(["engines", "option_universe"]),
+    check_specs=output_check_specs(AssetKey(["engines", "option_universe"])),
     deps=[_SEPA, *_MARKET],
     group_name="python_analytics",
     description=(
@@ -284,11 +394,12 @@ def suggestion_ledger(context: AssetExecutionContext) -> MaterializeResult:
 def option_universe(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_option_universe()
     context.log.info("option_universe result=%s", result)
-    return MaterializeResult(metadata=_metadata(result))
+    return judged_materialization(context, result, _metadata(result), UNIVERSE_SPEC)
 
 
 @asset(
     key=AssetKey(["engines", "option_pinned_contract"]),
+    check_specs=output_check_specs(AssetKey(["engines", "option_pinned_contract"])),
     deps=[AssetKey(["engines", "option_universe"])],
     group_name="python_analytics",
     description=(
@@ -301,11 +412,12 @@ def option_universe(context: AssetExecutionContext) -> MaterializeResult:
 def option_pinned_contract(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_option_pinned_contract()
     context.log.info("option_pinned_contract result=%s", result)
-    return MaterializeResult(metadata=_metadata(result))
+    return judged_materialization(context, result, _metadata(result), QUIET_ROWS_SPEC)
 
 
 @asset(
     key=AssetKey(["engines", "signal_hit_fwd_fill"]),
+    check_specs=output_check_specs(AssetKey(["engines", "signal_hit_fwd_fill"])),
     # signal_hit runs on its own schedule and is not in research_trading_day, so
     # without _MARKET this started at t=0: before the gate had judged the session
     # whose bars it reads, and beside the gate's doctor call (2026-09-29 02:30:21).
@@ -320,7 +432,7 @@ def option_pinned_contract(context: AssetExecutionContext) -> MaterializeResult:
 def signal_hit_fwd_fill(context: AssetExecutionContext) -> MaterializeResult:
     result = runners.run_signal_hit_fwd_fill()
     context.log.info("signal_hit_fwd_fill result=%s", result)
-    return MaterializeResult(metadata=_metadata(result))
+    return judged_materialization(context, result, _metadata(result), WINDOW_ROWS_SPEC)
 
 
 ENGINE_ASSETS = [

@@ -121,6 +121,7 @@ def _stub_gate(monkeypatch: pytest.MonkeyPatch, *, eod_verdict: str) -> None:
         return {"dimensions": [{"kind": "flex-trades", "last_ok": True, "last_success_at": recent}]}
 
     monkeypatch.setattr(pba, "get_json", fake_get)
+    monkeypatch.setattr(pba, "expected_session", lambda: date(2026, 9, 28))
 
 
 def _stub_projection(monkeypatch: pytest.MonkeyPatch) -> list[str]:

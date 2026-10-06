@@ -1,7 +1,8 @@
 """Analyze Wave M — daily alert scan engine.
 
 Writes features.stock_signal_alert_daily for:
-- composite_high: composite_score >= 90 and rank top-5 on as-of date
+- composite_high: composite_score >= 90 and rank top-5 on as-of date, re-judged on
+  the last REJUDGE_SCAN_DATES scan dates (TD-97)
 - weight_shift: adaptive lens weight vs 30d mean > 1σ (informational)
 - hit_rate_drop: weekly hot-side hit_rate_5d drops >= 8pp vs prior week
 """
@@ -208,44 +209,125 @@ def _adaptive_weight_shift_alerts(conn: Any, as_of: date) -> list[tuple[Any, ...
     return out
 
 
-def run(*, as_of: date | None = None) -> dict[str, Any]:
+#: Scan dates re-judged every run. The scan engine re-walks its last 3 sessions
+#: (runners.run_scan), and every composite_score >= 90 row so far appeared on such
+#: a recompute (META 08-31 written 09-03; six names of 09-24 written 09-29), after
+#: a judge that read each date once had already passed it: composite_high never
+#: fired (TD-97). Five covers the re-walk plus a missed night.
+REJUDGE_SCAN_DATES = 5
+
+
+def _scan_dates(conn: Any, newest: date, n: int) -> list[date]:
+    """The newest ``n`` scan dates at or before ``newest``, oldest first."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT DISTINCT trade_date FROM {TABLE_STOCK_SIGNAL_SCAN_DAILY}
+            WHERE trade_date <= %s
+            ORDER BY trade_date DESC
+            LIMIT %s
+            """,
+            (newest, n),
+        )
+        rows = cur.fetchall() or []
+    days = [r[0] if not isinstance(r, dict) else next(iter(r.values())) for r in rows]
+    return sorted(d for d in days if isinstance(d, date)) or [newest]
+
+
+def _replace(conn: Any, day: date, kind: str, alerts: list[tuple[Any, ...]]) -> int:
+    """Replace ``kind``'s alerts on ``day`` in one transaction; returns rows removed.
+
+    A recompute can raise an alert or take one back: an upsert could only add.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            f"DELETE FROM {TABLE_STOCK_SIGNAL_ALERT_DAILY} WHERE trade_date = %s AND kind = %s",
+            (day, kind),
+        )
+        removed = max(int(cur.rowcount or 0), 0)
+    if alerts:
+        batch_upsert(
+            conn,
+            TABLE_STOCK_SIGNAL_ALERT_DAILY,
+            UPSERT_COLS,
+            alerts,
+            conflict_keys=("trade_date", "kind", "symbol", "lens"),
+            update_cols=("severity", "reason_json", "computed_at"),
+            set_fetched_at=False,
+            auto_commit=False,
+        )
+    conn.commit()
+    return removed
+
+
+def run(
+    *,
+    as_of: date | None = None,
+    rejudge: int = REJUDGE_SCAN_DATES,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Judge the newest scan date and re-judge composite_high on the ones before it.
+
+    composite_high is a fact about one scan row, so it is re-judged on every date
+    the scan may have recomputed. hit_rate_drop and weight_shift read trailing
+    windows of forward hits that fill in later; re-judging an old date would
+    rewrite it with hits nobody could see that day, so they are judged on the
+    newest date only (replace semantics there too). ``dry_run`` computes and
+    reports without writing.
+    """
     conn = connect()
     try:
         day = _asof(conn, as_of)
-        alerts = (
-            _composite_high_alerts(conn, day)
-            + _hit_rate_drop_alerts(conn, day)
-            + _adaptive_weight_shift_alerts(conn, day)
-        )
-        if alerts:
-            batch_upsert(
-                conn,
-                TABLE_STOCK_SIGNAL_ALERT_DAILY,
-                UPSERT_COLS,
-                alerts,
-                conflict_keys=("trade_date", "kind", "symbol", "lens"),
-                update_cols=("severity", "reason_json", "computed_at"),
-                set_fetched_at=False,
-            )
-        return {
+        dates = _scan_dates(conn, day, max(1, rejudge))
+        planned: list[tuple[date, str, list[tuple[Any, ...]]]] = [
+            (d, "composite_high", _composite_high_alerts(conn, d)) for d in dates
+        ]
+        planned.append((day, "hit_rate_drop", _hit_rate_drop_alerts(conn, day)))
+        planned.append((day, "weight_shift", _adaptive_weight_shift_alerts(conn, day)))
+        removed = 0
+        if not dry_run:
+            for d, kind, alerts in planned:
+                removed += _replace(conn, d, kind, alerts)
+        by_kind: dict[str, int] = {}
+        for _d, kind, alerts in planned:
+            by_kind[kind] = by_kind.get(kind, 0) + len(alerts)
+        out: dict[str, Any] = {
             "as_of": day.isoformat(),
-            "alerts_written": len(alerts),
-            "kinds": sorted({a[1] for a in alerts}),
+            "judged_dates": [d.isoformat() for d in dates],
+            "alerts_written": 0 if dry_run else sum(by_kind.values()),
+            "alerts_removed": removed,
+            "by_kind": by_kind,
+            "composite_high": {
+                d.isoformat(): [a[2] for a in alerts]
+                for d, kind, alerts in planned
+                if kind == "composite_high" and alerts
+            },
+            "kinds": sorted(k for k, n in by_kind.items() if n),
+            "dry_run": dry_run,
         }
+        if as_of is None:
+            # The session the batch closed, for the output check: the judge must
+            # read tonight's scan, not the previous night's (TD-97).
+            from bifrost_research.db.calendar import latest_closed_session
+
+            out["session"] = latest_closed_session(conn).isoformat()
+        return out
     finally:
         try:
             conn.close()
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("alert_scan: closing the connection failed: %s", exc)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     parser = argparse.ArgumentParser(description="Build features.stock_signal_alert_daily")
     parser.add_argument("--as-of", type=str, default=None)
+    parser.add_argument("--rejudge", type=int, default=REJUDGE_SCAN_DATES)
+    parser.add_argument("--dry-run", action="store_true", help="compute and report, write nothing")
     args = parser.parse_args(list(argv) if argv is not None else None)
     as_of = date.fromisoformat(args.as_of) if args.as_of else None
-    result = run(as_of=as_of)
+    result = run(as_of=as_of, rejudge=args.rejudge, dry_run=args.dry_run)
     logger.info("alert_scan result=%s", result)
     print(result)
     return 0

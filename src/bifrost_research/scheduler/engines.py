@@ -22,8 +22,11 @@ from bifrost_research.db.calendar import (
 )
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.flow import compute_order_flow_for_symbol
+from bifrost_research.engines.forecast import playbook
 from bifrost_research.engines.forecast.playbook import (
+    TriggerTally,
     build_forecast_session,
+    emit_triggers_guarded,
     upsert_forecast_session,
 )
 from bifrost_research.engines.forecast.terrain import (
@@ -68,6 +71,81 @@ def _today_ny() -> date:
     return datetime.now(timezone.utc).astimezone(_NY).date()
 
 
+#: A name that entered the option universe fewer days ago than this is still
+#: onboarding: the plugin has not landed its chain or open interest yet, so its
+#: failures are expected. Most of 10-06's ~20 nightly gex failures were such names;
+#: NVR (in since 09-08) and GRML (since 09-24) were not (TD-92).
+ONBOARDING_DAYS = 10
+#: Names listed per reason in a slot result; the counts are never capped.
+FAILURE_SAMPLE = 20
+
+
+def _universe_entered_on(conn: Any, symbols: Sequence[str]) -> dict[str, date] | None:
+    """``research.option_universe.entered_on`` for ``symbols``; None if unreadable."""
+    if not symbols:
+        return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT symbol, entered_on FROM research.option_universe WHERE symbol = ANY(%s)",
+                (list(symbols),),
+            )
+            rows = cur.fetchall() or []
+    except Exception as exc:  # noqa: BLE001 — the summary says onboarding is unknown
+        logger.warning("option_universe entered_on unreadable: %s", exc)
+        try:
+            conn.rollback()
+        except Exception as rb_exc:  # noqa: BLE001
+            logger.warning("rollback after entered_on read failed: %s", rb_exc)
+        return None
+    out: dict[str, date] = {}
+    for row in rows:
+        sym, entered = (row.get("symbol"), row.get("entered_on")) if isinstance(row, Mapping) else (row[0], row[1])
+        if sym and isinstance(entered, date):
+            out[str(sym).strip().upper()] = entered
+    return out
+
+
+def failure_summary(
+    conn: Any,
+    failures: Mapping[str, Mapping[date, str]],
+    trading_days: Sequence[date],
+) -> dict[str, Any]:
+    """Why names failed, not just how many (TD-92).
+
+    ``failures`` is symbol -> {session: error}. Returns per-reason counts over
+    symbol-days, a sample of names per reason, and the names that failed every
+    session of the window although they are past onboarding — the gaps that
+    otherwise stay invisible for weeks.
+    """
+    names: dict[str, list[str]] = {}
+    for sym, per_day in sorted(failures.items()):
+        for reason in per_day.values():
+            listed = names.setdefault(reason, [])
+            if sym not in listed and len(listed) < FAILURE_SAMPLE:
+                listed.append(sym)
+    persistent = sorted(
+        s for s, per_day in failures.items() if len(trading_days) >= 2 and len(per_day) >= len(trading_days)
+    )
+    out: dict[str, Any] = {
+        "failures_by_reason": _count_reasons(r for per_day in failures.values() for r in per_day.values()),
+        "failed_names_by_reason": {r: ", ".join(v) for r, v in names.items()},
+        "failed_every_session": len(persistent),
+    }
+    if persistent and trading_days:
+        entered = _universe_entered_on(conn, persistent)
+        if entered is None:
+            out["failed_every_session_past_onboarding"] = None
+            out["onboarding"] = "unknown (option_universe unreadable)"
+        else:
+            cutoff = trading_days[-1] - timedelta(days=ONBOARDING_DAYS)
+            # Not in the universe at all (a watchlist name) counts as onboarded.
+            out["failed_every_session_past_onboarding"] = [
+                s for s in persistent if entered.get(s.strip().upper(), cutoff) <= cutoff
+            ][:FAILURE_SAMPLE]
+    return out
+
+
 def run_momentum(
     conn: Any,
     *,
@@ -97,7 +175,7 @@ def run_gex(
 ) -> dict[str, Any]:
     written = 0
     ok = 0
-    failed = 0
+    failures: dict[str, dict[date, str]] = {}
     for td in trading_days:
         for sym in symbols:
             result = compute_gex_for_symbol(conn, symbol=sym, trade_date=td)
@@ -105,12 +183,13 @@ def run_gex(
                 ok += 1
                 written += int(result.get("distribution_rows") or 0)
             else:
-                failed += 1
+                failures.setdefault(sym, {})[td] = str(result.get("error") or "failed")
     return {
         "slot": "gex",
         "rows_written": written,
         "symbols_ok": ok,
-        "symbols_failed": failed,
+        "symbols_failed": sum(len(v) for v in failures.values()),
+        **failure_summary(conn, failures, trading_days),
         "symbols": len(symbols),
         "trading_days": [d.isoformat() for d in trading_days],
     }
@@ -124,7 +203,7 @@ def run_iv_surface(
 ) -> dict[str, Any]:
     written = 0
     ok = 0
-    failed = 0
+    failures: dict[str, dict[date, str]] = {}
     for td in trading_days:
         for sym in symbols:
             result = compute_iv_surface_for_symbol(conn, symbol=sym, trade_date=td)
@@ -132,12 +211,13 @@ def run_iv_surface(
                 ok += 1
                 written += int(result.get("rows_written") or 0)
             else:
-                failed += 1
+                failures.setdefault(sym, {})[td] = str(result.get("error") or "failed")
     return {
         "slot": "iv-surface",
         "rows_written": written,
         "symbols_ok": ok,
-        "symbols_failed": failed,
+        "symbols_failed": sum(len(v) for v in failures.values()),
+        **failure_summary(conn, failures, trading_days),
         "symbols": len(symbols),
         "trading_days": [d.isoformat() for d in trading_days],
     }
@@ -152,7 +232,7 @@ def run_flow(
     """Order-flow: prefer market.option_trades tape; else snapshot/OI proxy."""
     written = 0
     ok = 0
-    failed = 0
+    failures: dict[str, dict[date, str]] = {}
     tape_ok = 0
     proxy_ok = 0
     for td in trading_days:
@@ -166,12 +246,13 @@ def run_flow(
                 else:
                     proxy_ok += 1
             else:
-                failed += 1
+                failures.setdefault(sym, {})[td] = str(result.get("error") or "failed")
     return {
         "slot": "flow",
         "rows_written": written,
         "symbols_ok": ok,
-        "symbols_failed": failed,
+        "symbols_failed": sum(len(v) for v in failures.values()),
+        **failure_summary(conn, failures, trading_days),
         "symbols_tape": tape_ok,
         "symbols_proxy": proxy_ok,
         "symbols": len(symbols),
@@ -220,6 +301,7 @@ def run_forecast(
 ) -> dict[str, Any]:
     written = 0
     skipped = 0
+    triggers = TriggerTally()
     for td in trading_days:
         for sym in symbols:
             spot, gex, momentum, iv = load_upstream_signals(conn, sym, td)
@@ -235,12 +317,13 @@ def run_forecast(
                 iv=iv or None,
             )
             session = build_forecast_session(terrain, enrich=True)
-            written += upsert_forecast_session(conn, session)
+            written += upsert_forecast_session(conn, session, triggers=triggers)
             upsert_market_terrain(conn, [terrain])
     return {
         "slot": "forecast",
         "rows_written": written,
         "skipped_no_spot": skipped,
+        **triggers.summary(),
         "symbols": len(symbols),
         "trading_days": [d.isoformat() for d in trading_days],
     }
@@ -291,6 +374,7 @@ def run_terrain_intraday(
     written = 0
     skipped = 0
     live = 0
+    triggers = TriggerTally()
     today = _today_ny()
     observed = set(_intraday_chain_symbols(conn, today))
     for sym in symbols:
@@ -322,30 +406,26 @@ def run_terrain_intraday(
         terrain.inputs_json["spot_source"] = spot_source
         terrain.inputs_json["gex_source"] = gex_source
         written += upsert_terrain_intraday(conn, [terrain])
-        try:
-            from bifrost_research.engines.forecast.playbook import (
-                emit_triggers_for_terrain_intraday,
-            )
-
-            emit_triggers_for_terrain_intraday(
+        emit_triggers_guarded(
+            conn,
+            lambda t=terrain: playbook.emit_triggers_for_terrain_intraday(
                 conn,
-                symbol=terrain.symbol,
-                trade_date=terrain.trade_date,
-                asof_ts=terrain.asof_ts,
-                regime=str(terrain.regime),
-                prob_rangy=terrain.prob_rangy,
-                prob_bull=terrain.prob_bull,
-                prob_bear=terrain.prob_bear,
-                prob_squeeze=terrain.prob_squeeze,
-            )
-        except Exception:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
+                symbol=t.symbol,
+                trade_date=t.trade_date,
+                asof_ts=t.asof_ts,
+                regime=str(t.regime),
+                prob_rangy=t.prob_rangy,
+                prob_bull=t.prob_bull,
+                prob_bear=t.prob_bear,
+                prob_squeeze=t.prob_squeeze,
+            ),
+            symbol=terrain.symbol,
+            tally=triggers,
+        )
     return {
         "slot": "terrain-intraday",
         "rows_written": written,
+        **triggers.summary(),
         "rows_on_session_inputs": live,
         "skipped_no_spot": skipped,
         "symbols": len(symbols),
@@ -421,6 +501,7 @@ def run_gex_intraday(
         "spot_prior_close": prior_close,
         "spot_parity": parity,
         "failures": dict(sorted(failures.items())[:20]),
+        "failures_by_reason": _count_reasons(failures.values()),
         "asof_ts": now_utc.isoformat(),
     }
     session = fetch_recent_trading_days(conn, 1, as_of=today)
@@ -434,6 +515,13 @@ def run_gex_intraday(
             )
         )
     return summary
+
+
+def _count_reasons(reasons: Any) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for reason in reasons:
+        counts[reason] = counts.get(reason, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
 
 
 def _terrain_input_faults(conn: Any, session_day: date) -> dict[str, str]:

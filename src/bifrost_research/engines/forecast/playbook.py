@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Mapping, Sequence
@@ -18,6 +19,8 @@ from bifrost_research.engines.forecast.llm import (
     get_default_provider,
 )
 from bifrost_research.engines.forecast.terrain import MarketTerrain, Regime
+
+logger = logging.getLogger(__name__)
 
 _SESSION_COLS = (
     "session_id",
@@ -455,13 +458,67 @@ def _session_exists(conn: Any, session_id: str) -> bool:
                 (session_id,),
             )
             return cur.fetchone() is not None
-    except Exception:  # noqa: BLE001 — any failure is a doubt, and a doubt skips the trigger
+    except Exception as exc:  # noqa: BLE001 — any failure is a doubt, and a doubt skips the trigger
         with contextlib.suppress(Exception):
             conn.rollback()
+        logger.warning("forecast session lookup failed for %s, trigger skipped: %s", session_id, exc)
         return True
 
 
-def upsert_forecast_session(conn: Any, session: ForecastSession) -> int:
+class TriggerStateUnavailable(RuntimeError):
+    """The trigger log's previous state could not be read, so nothing was compared.
+
+    Emitting anyway would log a first-observation ``snapshot`` as if the symbol had
+    no history that day (TD-113); the caller counts it as a trigger failure.
+    """
+
+
+@dataclass
+class TriggerTally:
+    """Trigger emissions of one slot run: how many went through and which failed.
+
+    The trigger log stays best-effort for the forecast and terrain write paths, but
+    a failure is logged and counted, so the slot result (and its output check)
+    shows a broken trigger table instead of 'no transitions' (TD-113).
+    """
+
+    ok: int = 0
+    failures: dict[str, str] = field(default_factory=dict)
+
+    def failed(self, symbol: str, exc: BaseException) -> None:
+        self.failures[symbol] = f"{type(exc).__name__}: {str(exc)[:160]}"
+
+    def summary(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"trigger_ok": self.ok, "trigger_failures": len(self.failures)}
+        if self.failures:
+            out["trigger_failure_sample"] = dict(sorted(self.failures.items())[:10])
+        return out
+
+
+def emit_triggers_guarded(
+    conn: Any,
+    emit: Any,
+    *,
+    symbol: str,
+    tally: TriggerTally | None,
+) -> None:
+    """Run one trigger emission; a failure is rolled back, logged and counted, not raised."""
+    try:
+        emit()
+    except Exception as exc:  # noqa: BLE001 — the trigger log must not fail the forecast write
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        logger.warning("playbook trigger emission failed for %s: %s", symbol, exc)
+        if tally is not None:
+            tally.failed(symbol, exc)
+        return
+    if tally is not None:
+        tally.ok += 1
+
+
+def upsert_forecast_session(
+    conn: Any, session: ForecastSession, *, triggers: TriggerTally | None = None
+) -> int:
     n = session.scenarios.normalized()
     now = datetime.now(timezone.utc)
     # A session id is its symbol and date (0.126.0), and the forecast slot
@@ -524,14 +581,12 @@ def upsert_forecast_session(conn: Any, session: ForecastSession) -> int:
     upsert_hourly_sessions(conn, session)
     if rerun:
         return 1 + len(hourly_rows)
-    try:
-        emit_triggers_for_session(conn, session)
-    except Exception:
-        # Trigger log is best-effort — do not fail the forecast write path
-        try:
-            conn.rollback()
-        except Exception:
-            pass
+    emit_triggers_guarded(
+        conn,
+        lambda: emit_triggers_for_session(conn, session),
+        symbol=session.symbol,
+        tally=triggers,
+    )
     return 1 + len(hourly_rows)
 
 
@@ -753,13 +808,12 @@ def emit_triggers_for_session(
             if isinstance(raw, Mapping):
                 prev_probs = {k: float(raw.get(k) or 0) for k in _SCENARIO_KEYS}
                 prev_dominant = max(prev_probs, key=lambda k: prev_probs[k])
-    except Exception:
-        try:
+    except Exception as exc:
+        with contextlib.suppress(Exception):
             conn.rollback()
-        except Exception:
-            pass
-        prev_dominant = None
-        prev_probs = None
+        raise TriggerStateUnavailable(
+            f"previous trigger state of {session.symbol} {session.trade_date}: {exc}"
+        ) from exc
 
     events = evaluate_playbook_triggers(
         symbol=session.symbol,
@@ -824,13 +878,12 @@ def emit_triggers_for_terrain_intraday(
                         "squeeze": float(row[4] or 0),
                     }
                 prev_dominant = max(prev_probs, key=lambda k: prev_probs[k])
-    except Exception:
-        try:
+    except Exception as exc:
+        with contextlib.suppress(Exception):
             conn.rollback()
-        except Exception:
-            pass
-        prev_dominant = None
-        prev_probs = None
+        raise TriggerStateUnavailable(
+            f"previous intraday terrain of {symbol} {trade_date}: {exc}"
+        ) from exc
 
     events = evaluate_playbook_triggers(
         symbol=symbol,

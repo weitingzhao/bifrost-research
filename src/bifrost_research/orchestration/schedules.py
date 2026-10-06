@@ -65,9 +65,14 @@ _EXCLUDED = (
 # grew heavy with this week's backfills; three at a time costs minutes, not hours.
 TRADING_DAY_MAX_CONCURRENT = 3
 
+# Signals that judge what this batch wrote run in it, after their writer, rather
+# than on a clock that fires before the batch (TD-97: alert_scan at 22:30 UTC read
+# the previous night's scan). Their group stays excluded as a whole.
+TRADING_DAY_JUDGES = AssetSelection.assets(AssetKey(["engines", "alert_scan"]))
+
 research_trading_day_job = define_asset_job(
     name="research_trading_day",
-    selection=AssetSelection.all() - _EXCLUDED,
+    selection=(AssetSelection.all() - _EXCLUDED) | TRADING_DAY_JUDGES,
     config={
         "execution": {
             "config": {"multiprocess": {"max_concurrent": TRADING_DAY_MAX_CONCURRENT}}
@@ -75,7 +80,7 @@ research_trading_day_job = define_asset_job(
     },
     description=(
         "Trading-day batch: Plugin EOD enqueue → husbandry gate → "
-        "dbt (if present) → SEPA projection → core engines + scan. D10 BLOCKED."
+        "dbt (if present) → SEPA projection → core engines + scan → alert scan. D10 BLOCKED."
     ),
 )
 

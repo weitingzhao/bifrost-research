@@ -41,7 +41,6 @@ HUSBANDRY_SCHEDULE_JOBS: tuple[tuple[str, str, str], ...] = (
     ("research_opex_schedule", "research_opex_job", "UTC"),
     ("research_vol_surface_svi_schedule", "research_vol_surface_svi_job", "UTC"),
     ("research_iv_solver_schedule", "research_iv_solver_job", "UTC"),
-    ("research_alert_scan_schedule", "research_alert_scan_job", "UTC"),
     ("research_signal_hit_schedule", "research_signal_hit_job", "UTC"),
     ("research_settlement_schedule", "research_settlement_job", "UTC"),
     ("research_forecast_schedule", "research_forecast_job", "America/New_York"),

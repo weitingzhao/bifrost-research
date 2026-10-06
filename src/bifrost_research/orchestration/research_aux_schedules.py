@@ -20,9 +20,19 @@ from dagster import (
     define_asset_job,
 )
 
-from bifrost_research.orchestration.plugin_http import meta
 from bifrost_research.orchestration import runners
+from bifrost_research.orchestration.asset_checks import (
+    ERROR,
+    GENERIC,
+    WARN,
+    OutputSpec,
+    field,
+    judged_materialization,
+    output_check_specs,
+)
+from bifrost_research.orchestration.plugin_http import meta
 from bifrost_research.orchestration.engine_assets import (
+    VOLATILITY_SPEC,
     candidate_outcome as engines_candidate_outcome,
     forecast as engines_forecast,
 )
@@ -41,22 +51,52 @@ def _run_asset(
     description: str,
     fn: Callable[[], dict[str, Any]],
     deps: list[AssetKey] | None = None,
+    spec: OutputSpec | None = GENERIC,
 ):
+    """``spec`` judges the result in the asset's ``output_ok`` check (TD-92); ``None``
+    only for assets listed in ``asset_checks.OUTPUT_CHECK_OPT_OUT`` with a reason."""
     asset_name = key_path[-1]
+    key = AssetKey(key_path)
 
     def _impl(context: AssetExecutionContext) -> MaterializeResult:
         context.log.info("run %s", asset_name)
         result = fn()
         context.log.info("%s result=%s", asset_name, result)
-        return MaterializeResult(metadata=meta(result if isinstance(result, dict) else {}))
+        payload = result if isinstance(result, dict) else {}
+        if spec is None:
+            return MaterializeResult(metadata=meta(payload))
+        return judged_materialization(context, payload, meta(payload), spec)
 
     _impl.__name__ = asset_name
     return asset(
-        key=AssetKey(key_path),
+        key=key,
         group_name=group,
         description=description,
         deps=deps or None,
+        check_specs=output_check_specs(key) if spec is not None else None,
     )(_impl)
+
+
+# Engines that count names they could not compute (opex, SVI): no normal share has
+# been measured, so a high one is a WARN until it has.
+_SYMBOLS_SPEC = OutputSpec(
+    rows=field("symbols_ok"),
+    expect_rows=True,
+    soft_failed=(("symbols_skipped", "symbols_ok"),),
+)
+# The agents' own ``ok: false`` / ``error`` are LLM or post failures: shown, not alerted.
+_AGENT_SPEC = OutputSpec(error_severity=WARN)
+
+
+def _alert_scan_judged_session(result: dict[str, Any]) -> list[tuple[Any, str]]:
+    """TD-97: the newest date judged is the New York session the batch closed."""
+    session = result.get("session")
+    if session and result.get("as_of") != session:
+        return [(ERROR, f"judged {result.get('as_of')}, the New York session is {session}")]
+    return []
+
+
+ALERT_SCAN_SPEC = OutputSpec(extra=_alert_scan_judged_session)
 
 
 # Wave 4 daily-signal assets — VRP moved into the trading-day chain (engine_assets.vrp,
@@ -69,6 +109,7 @@ engines_opex = _run_asset(
     fn=lambda: __import__(
         "bifrost_research.engines.opex_cycle.entry", fromlist=["run"]
     ).run(),
+    spec=_SYMBOLS_SPEC,
 )
 engines_vol_surface_svi = _run_asset(
     key_path=["engines", "vol_surface_svi"],
@@ -77,6 +118,7 @@ engines_vol_surface_svi = _run_asset(
     fn=lambda: __import__(
         "bifrost_research.engines.vol_surface.entry", fromlist=["run"]
     ).run(),
+    spec=_SYMBOLS_SPEC,
 )
 
 
@@ -124,8 +166,8 @@ def _run_iv_solver() -> dict[str, Any]:
                 "engine": "iv_solver",
                 "as_of": as_of.isoformat(),
                 "symbols": len(universe),
-                "rows_written": result.get("rows_written")
-                or result.get("total_rows_written"),
+                # Not ``a or b``: 0 rows must reach the output check as 0 (TD-92).
+                "rows_written": result.get("rows_written", result.get("total_rows_written")),
                 "advisory": "D10 BLOCKED",
                 "detail": json.dumps(result, default=str)[:400],
             }
@@ -139,14 +181,24 @@ engines_iv_solver = _run_asset(
     group=GROUP_SIGNALS,
     description="Vendor snapshot IV projection → features.option_iv_reconstructed_daily (IDS)",
     fn=_run_iv_solver,
+    spec=OutputSpec(rows=field("rows_written"), expect_rows=True),
 )
+# In research_trading_day, after engines/scan (TD-97). Its own 22:30 UTC schedule
+# ran four hours before the scan it reads, so every session was judged the next
+# evening from the previous night's scan; the ERROR check now asserts the judged
+# date is the New York session the batch closed.
 engines_alert_scan = _run_asset(
     key_path=["engines", "alert_scan"],
     group=GROUP_SIGNALS,
-    description="Alert scan (former research-alert-scan)",
+    description=(
+        "Alert scan: composite_high re-judged on the last 5 scan dates, hit-rate "
+        "drop and weight shift on the newest — in research_trading_day after scan"
+    ),
+    deps=[AssetKey(["engines", "scan"])],
     fn=lambda: __import__(
         "bifrost_research.engines.alert_scan.entry", fromlist=["run"]
     ).run(),
+    spec=ALERT_SCAN_SPEC,
 )
 engines_signal_hit = _run_asset(
     key_path=["engines", "signal_hit"],
@@ -155,12 +207,14 @@ engines_signal_hit = _run_asset(
     fn=lambda: __import__(
         "bifrost_research.engines.signal_hit.entry", fromlist=["run"]
     ).run(),
+    spec=OutputSpec(rows=field("rows_written"), expect_rows=True),
 )
 engines_settlement = _run_asset(
     key_path=["engines", "settlement"],
     group=GROUP_SIGNALS,
     description="Forecast settlement rows (true source; not backtest scaffold)",
     fn=lambda: engine_sched.run_slot("settlement"),
+    spec=OutputSpec(rows=field("sessions_settled"), expect_rows=True),
 )
 
 # Re-use existing canonical_pnl asset from engine_assets — schedule it separately.
@@ -170,6 +224,7 @@ engines_gex_intraday = _run_asset(
     group=GROUP_INTRADAY,
     description="GEX intraday",
     fn=lambda: engine_sched.run_slot("gex-intraday"),
+    spec=OutputSpec(soft_failed=(("symbols_failed", "symbols_ok"),)),
 )
 # After gex: a name the intraday chain observed stands on the GEX row this tick
 # just wrote (0.137.0); run side by side it read the previous hour's.
@@ -179,12 +234,19 @@ engines_terrain_intraday = _run_asset(
     description="Terrain intraday",
     fn=lambda: engine_sched.run_slot("terrain-intraday"),
     deps=[AssetKey(["engines", "gex_intraday"])],
+    spec=OutputSpec(
+        rows=field("rows_written"),
+        expect_rows=True,
+        failed=(("trigger_failures", "trigger_ok"),),
+        soft_failed=(("skipped_no_spot", "rows_written"),),
+    ),
 )
 engines_event_radar_sched = _run_asset(
     key_path=["engines", "event_radar_cron"],
     group=GROUP_INTRADAY,
     description="Event radar file ingest (*/30); distinct key from excluded ai_forecast asset",
     fn=lambda: runners.run_event_radar(),
+    spec=None,
 )
 
 
@@ -233,6 +295,7 @@ agents_morning_prep = _run_asset(
     group=GROUP_AGENTS,
     description="Morning prep agent",
     fn=_run_morning_prep_agent,
+    spec=_AGENT_SPEC,
 )
 # D2: one digest per trading day — holdings ∪ new candidates through the lenses,
 # loop state, resolutions and dissents since yesterday. Morning Prep's per-
@@ -243,6 +306,7 @@ agents_daily_digest = _run_asset(
     group=GROUP_AGENTS,
     description="Daily digest — one briefing per trading day (morning prep folded in)",
     fn=_run_daily_digest_agent,
+    spec=_AGENT_SPEC,
 )
 # D3: once a week the rules get a proposal from settled outcomes — a
 # policy_suggestion draft per objective whose record calls for a change.
@@ -251,6 +315,7 @@ agents_weekly_policy_review = _run_asset(
     group=GROUP_AGENTS,
     description="Weekly policy review — policy_suggestion from settled candidate outcomes",
     fn=_run_weekly_policy_review_agent,
+    spec=_AGENT_SPEC,
 )
 # B3: settle the candidates' forward windows before the review reads them, so
 # a hypothesis whose window closed today is resolved today, not tomorrow.
@@ -260,6 +325,7 @@ agents_eod_review = _run_asset(
     description="EOD review agent — outcome rule first, drafts for the rest",
     fn=_run_eod_review_agent,
     deps=[AssetKey(["engines", "candidate_outcome"])],
+    spec=_AGENT_SPEC,
 )
 
 def _run_journal_distill() -> dict:
@@ -304,6 +370,7 @@ maint_vol_weekly_backfill = _run_asset(
     group=GROUP_MAINT,
     description="Sunday volatility 90d backfill, IV coverage heal over two years, then signal-hit re-walk over the same span",
     fn=_run_vol_weekly_backfill,
+    spec=VOLATILITY_SPEC,
 )
 
 # Materialised by hand, not on a schedule: it fills terrain for the sessions the
@@ -319,6 +386,7 @@ maint_terrain_backfill = _run_asset(
         "already wrote — that needs runners.run_terrain_backfill(force=True)."
     ),
     fn=runners.run_terrain_backfill,
+    spec=None,
 )
 
 
@@ -397,6 +465,16 @@ def maint_event_radar_purge(
     return MaterializeResult(metadata=meta(result))
 
 
+#: Assets outside the trading-day graph's own engines that read a table
+#: research_trading_day writes, and the trading-day asset that writes it. Each
+#: runs inside research_trading_day downstream of that writer, or on schedules
+#: that fire outside 20:00-02:30 UTC, when the batch has not yet written the
+#: session (TD-97: alert_scan at 22:30 UTC judged the previous night's scan).
+#: tests/orchestration/test_judge_after_writer.py holds every entry to that.
+READS_TRADING_DAY_OUTPUT: dict[str, tuple[str, str]] = {
+    "engines/alert_scan": ("features.stock_signal_scan_daily", "engines/scan"),
+}
+
 RESEARCH_AUX_ASSETS = [
     engines_opex,
     engines_vol_surface_svi,
@@ -465,14 +543,6 @@ _specs: list[tuple[str, str, list[Any], str, str, str]] = [
         "25 23 * * 1-5",
         "UTC",
         "IV reconstructed",
-    ),
-    (
-        "research_alert_scan_schedule",
-        "research_alert_scan_job",
-        [engines_alert_scan],
-        "30 22 * * 1-5",
-        "UTC",
-        "alert-scan",
     ),
     (
         "research_signal_hit_schedule",

@@ -136,7 +136,6 @@ for name in \
   research_vrp_schedule \
   research_opex_schedule \
   research_vol_surface_svi_schedule \
-  research_alert_scan_schedule \
   research_signal_hit_schedule \
   research_settlement_schedule \
   research_intraday_schedule \
