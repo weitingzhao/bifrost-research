@@ -41,7 +41,7 @@ from bifrost_research.lenses.registry import decay_lens_ids
 from bifrost_research.lenses.slope_tenor import SLOPE_30D_WHERE_BINDS, slope_30d_sql
 from bifrost_research.repositories.listing_lineage import forward_leg
 from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_LENS_HIT_DAILY
-from bifrost_research.db.calendar import ny_today
+from bifrost_research.db.calendar import latest_closed_session, ny_today
 
 logger = logging.getLogger(__name__)
 
@@ -572,10 +572,13 @@ def run(
     ``dry_run`` reports what would be written and removed and writes nothing.
     """
     lens_list = list(lenses) if lenses else list(ALL_LENSES)
-    end = as_of or ny_today()
-    start = end - timedelta(days=max(lookback_days * 2, lookback_days + 5))
     conn = connect()
     try:
+        # The New York session the nightly batch closed (TD-156), not the UTC
+        # date: research_trading_day runs at 22:30 New York = 02:30 UTC.
+        session = None if as_of else latest_closed_session(conn)
+        end = as_of or session
+        start = end - timedelta(days=max(lookback_days * 2, lookback_days + 5))
         days = _trading_days(conn, start, end)
         # Keep last N trading days within lookback calendar window
         days = [d for d in days if d >= end - timedelta(days=lookback_days + 10)][-lookback_days:]
@@ -622,6 +625,10 @@ def run(
         return {
             "repair": repair_stats,
             "mode": "dry_run" if dry_run else "batch",
+            # The newest day walked, and the session it must be when no as_of was
+            # given: the asset's output check compares the two.
+            "as_of": days[-1].isoformat() if days else None,
+            "session": session.isoformat() if session else None,
             "lookback_days": lookback_days,
             "lenses": lens_list,
             "days": per_day,

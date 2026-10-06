@@ -67,8 +67,12 @@ TRADING_DAY_MAX_CONCURRENT = 3
 
 # Signals that judge what this batch wrote run in it, after their writer, rather
 # than on a clock that fires before the batch (TD-97: alert_scan at 22:30 UTC read
-# the previous night's scan). Their group stays excluded as a whole.
-TRADING_DAY_JUDGES = AssetSelection.assets(AssetKey(["engines", "alert_scan"]))
+# the previous night's scan; TD-156: signal_hit at 00:10 UTC read the previous
+# night's features). Their group stays excluded as a whole.
+TRADING_DAY_JUDGES = AssetSelection.assets(
+    AssetKey(["engines", "alert_scan"]),
+    AssetKey(["engines", "signal_hit"]),
+)
 
 research_trading_day_job = define_asset_job(
     name="research_trading_day",
@@ -80,7 +84,8 @@ research_trading_day_job = define_asset_job(
     },
     description=(
         "Trading-day batch: Plugin EOD enqueue → husbandry gate → "
-        "dbt (if present) → SEPA projection → core engines + scan → alert scan. D10 BLOCKED."
+        "dbt (if present) → SEPA projection → core engines + scan → signal hit → alert scan. "
+        "D10 BLOCKED."
     ),
 )
 

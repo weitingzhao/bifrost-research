@@ -50,10 +50,12 @@ RUN pip install --no-cache-dir ".[orchestration]"
 # project from `bifrost_research.__file__`, which is site-packages here and the
 # source tree only under an editable install — which is why this worked on a
 # laptop and never once in a container.
+# Generic test parameters outside `arguments:` fail the build, not warn (TD-164).
 RUN DBT_DIR="$(python -c 'import bifrost_research, os; print(os.path.join(os.path.dirname(bifrost_research.__file__), "dbt"))')" \
     && cd "$DBT_DIR" \
     && dbt deps \
     && dbt parse --profiles-dir . --no-partial-parse \
+        --warn-error-options '{"error": ["MissingArgumentsPropertyInGenericTestDeprecation"]}' \
     && test -s target/manifest.json \
     && python -c "from bifrost_research.orchestration.dbt_assets import load_dbt_assets; assert load_dbt_assets(), 'dbt assets still empty'"
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from bifrost_research.engines.event_radar.ingest import DirectoryIngestSummary
 from bifrost_research.orchestration import runners
 
@@ -84,6 +86,7 @@ def test_a_missing_input_directory_raises(tmp_path: Path) -> None:
 
 
 def test_the_scheduled_event_radar_asset_runs_the_sec_ingest(monkeypatch) -> None:
+    pytest.importorskip("dagster")
     from dagster import materialize
 
     from bifrost_research.orchestration.research_aux_schedules import engines_event_radar_sched

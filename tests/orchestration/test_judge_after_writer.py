@@ -1,9 +1,11 @@
-"""Ratchet (TD-97): a job that reads what research_trading_day writes runs after it.
+"""Ratchet (TD-97, TD-156): a job that reads what research_trading_day writes runs after it.
 
 alert_scan ran at 22:30 UTC, four hours before the batch wrote the session's scan
 (22:30 New York = 02:30 UTC), so it judged every session a day late from the
-previous night's rows. An entry in ``READS_TRADING_DAY_OUTPUT`` must either sit in
-research_trading_day downstream of its writer, or be scheduled outside the window.
+previous night's rows; signal_hit did the same at 00:10 UTC with every lens
+source. An entry in ``READS_TRADING_DAY_OUTPUT`` must either sit in
+research_trading_day downstream of every writer it names, or be scheduled
+outside the window.
 """
 
 from __future__ import annotations
@@ -63,21 +65,41 @@ def _defs():
 def test_the_map_names_real_assets() -> None:
     graph = _defs().resolve_asset_graph()
     keys = {k.to_user_string() for k in graph.get_all_asset_keys()}
-    for reader, (_table, writer) in READS_TRADING_DAY_OUTPUT.items():
-        assert reader in keys and writer in keys, (reader, writer)
+    for reader, sources in READS_TRADING_DAY_OUTPUT.items():
+        assert reader in keys and sources, reader
+        for _table, writer in sources:
+            assert writer in keys, (reader, writer)
 
 
 def test_readers_in_the_batch_wait_for_their_writer() -> None:
     defs = _defs()
     graph = defs.resolve_asset_graph()
     batch = defs.resolve_job_def("research_trading_day").asset_layer.executable_asset_keys
-    for reader, (_table, writer) in READS_TRADING_DAY_OUTPUT.items():
+    for reader, sources in READS_TRADING_DAY_OUTPUT.items():
         rkey = AssetKey(reader.split("/"))
         if rkey not in batch:
             continue
-        wkey = AssetKey(writer.split("/"))
-        assert wkey in batch, f"{reader} is in research_trading_day but its writer {writer} is not"
-        assert wkey in _ancestors(graph, rkey), f"{reader} does not wait for {writer}"
+        ancestors = _ancestors(graph, rkey)
+        for table, writer in sources:
+            wkey = AssetKey(writer.split("/"))
+            assert wkey in batch, f"{reader} is in research_trading_day but its writer {writer} is not"
+            assert wkey in ancestors, f"{reader} reads {table} but does not wait for {writer}"
+
+
+def test_signal_hit_is_registered_for_every_lens_source() -> None:
+    """TD-156: each decay lens's source table names its writer (or is SVI's)."""
+    from bifrost_research.engines.signal_hit.entry import LENS_SOURCE
+
+    named = {table for table, _writer in READS_TRADING_DAY_OUTPUT["engines/signal_hit"]}
+    # Skew reads SVI's fit, written at 23:20 UTC by research_vol_surface_svi_schedule
+    # before the batch starts; it is not a trading-day table.
+    outside_the_batch = {"features.option_surface_fit_daily"}
+    assert {t for t, _ in LENS_SOURCE.values()} - outside_the_batch <= named
+
+
+def test_signal_hit_runs_in_the_batch() -> None:
+    batch = _defs().resolve_job_def("research_trading_day").asset_layer.executable_asset_keys
+    assert AssetKey(["engines", "signal_hit"]) in batch
 
 
 def test_no_schedule_fires_a_reader_before_the_batch_has_written() -> None:
@@ -103,5 +125,7 @@ def test_no_schedule_fires_a_reader_before_the_batch_has_written() -> None:
 
 def test_the_old_alert_scan_schedule_would_have_been_caught() -> None:
     assert all(_in_window(t.time()) for t in _fires_utc("30 22 * * 1-5", "UTC"))
+    # signal_hit's own schedule until TD-156.
+    assert all(_in_window(t.time()) for t in _fires_utc("10 0 * * 1-6", "UTC"))
     # The batch itself: 22:30 New York is 02:30 UTC (EDT) / 03:30 UTC (EST).
     assert not any(_in_window(t.time()) for t in _fires_utc("30 22 * * 1-5", "America/New_York"))

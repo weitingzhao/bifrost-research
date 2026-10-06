@@ -120,6 +120,7 @@ def test_a_dry_run_writes_nothing(conn: tuple[_Conn, list[Any]]) -> None:
 
 
 def test_the_output_check_fails_when_the_judged_date_is_not_the_session() -> None:
+    pytest.importorskip("dagster")
     from bifrost_research.orchestration.asset_checks import judge_output
     from bifrost_research.orchestration.research_aux_schedules import ALERT_SCAN_SPEC
 

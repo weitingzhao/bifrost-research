@@ -83,7 +83,7 @@ def run_option_pinned_contract() -> dict[str, Any]:
 def run_signal_hit_fwd_fill(*, lookback_days: int = 30) -> dict[str, Any]:
     """Fill hit_5d / hit_20d on lens rows whose forward window has elapsed.
 
-    The scheduled `signal_hit` run walks the last 3 trading days, and
+    The nightly `signal_hit` run walks the last 3 trading days, and
     `_fwd_return` needs `horizon + 1` bars at or after the trade date — so a
     row three sessions old can never have its 20-session window, `hit_20d` is
     written NULL, and nothing revisits it. `evaluated_20d` therefore counted

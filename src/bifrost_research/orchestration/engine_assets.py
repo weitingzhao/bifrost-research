@@ -418,9 +418,10 @@ def option_pinned_contract(context: AssetExecutionContext) -> MaterializeResult:
 @asset(
     key=AssetKey(["engines", "signal_hit_fwd_fill"]),
     check_specs=output_check_specs(AssetKey(["engines", "signal_hit_fwd_fill"])),
-    # signal_hit runs on its own schedule and is not in research_trading_day, so
-    # without _MARKET this started at t=0: before the gate had judged the session
-    # whose bars it reads, and beside the gate's doctor call (2026-09-29 02:30:21).
+    # signal_hit runs in research_trading_day after the lens sources (TD-156), so
+    # this waits for them through it. _MARKET stays: before signal_hit joined the
+    # batch this started at t=0, before the gate had judged the session whose bars
+    # it reads, and beside the gate's doctor call (2026-09-29 02:30:21).
     deps=[AssetKey(["engines", "signal_hit"]), *_MARKET],
     group_name="python_analytics",
     description=(

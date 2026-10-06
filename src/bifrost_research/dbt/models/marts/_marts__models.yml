@@ -5,12 +5,14 @@ models:
     description: "8 core fundamental conditions as boolean columns with pass_count summary"
     tests:
       - elementary.volume_anomalies:
-          timestamp_column: eval_date
+          arguments:
+            timestamp_column: eval_date
           config:
             # First runs need history; warn until Elementary has enough samples
             severity: warn
       - elementary.freshness_anomalies:
-          timestamp_column: eval_date
+          arguments:
+            timestamp_column: eval_date
           config:
             severity: warn
     columns:
@@ -26,13 +28,15 @@ models:
         description: "Number of conditions passed (0-8)"
         tests:
           - assert_pass_count_range:
-              min_value: 0
-              max_value: 8
+              arguments:
+                min_value: 0
+                max_value: 8
           - elementary.column_anomalies:
-              timestamp_column: eval_date
-              column_anomalies:
-                - null_count
-                - zero_count
+              arguments:
+                timestamp_column: eval_date
+                column_anomalies:
+                  - null_count
+                  - zero_count
               config:
                 severity: warn
       - name: insufficient_data
@@ -54,7 +58,8 @@ models:
     description: "11 core technical conditions as boolean columns with pass_count summary"
     tests:
       - elementary.volume_anomalies:
-          timestamp_column: eval_date
+          arguments:
+            timestamp_column: eval_date
           config:
             severity: warn
     columns:
@@ -70,8 +75,9 @@ models:
         description: "Number of conditions passed (0-11)"
         tests:
           - assert_pass_count_range:
-              min_value: 0
-              max_value: 11
+              arguments:
+                min_value: 0
+                max_value: 11
 
   - name: mart_sepa_tier_momentum
     description: "Tier 2 momentum indicators: RSI, MACD, ROC, RS vs SPY (10 indicators)"
@@ -214,6 +220,7 @@ models:
           - not_null
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - symbol
-            - trade_date
+          arguments:
+            combination_of_columns:
+              - symbol
+              - trade_date

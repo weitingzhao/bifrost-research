@@ -192,7 +192,6 @@ SCHEDULE_ROSTER: tuple[ScheduleSpec, ...] = (
         "20 23 * * 1-5",
     ),
     ScheduleSpec("research_iv_solver_schedule", "research_iv_solver_job", "UTC", "25 23 * * 1-5"),
-    ScheduleSpec("research_signal_hit_schedule", "research_signal_hit_job", "UTC", "10 0 * * 1-6"),
     ScheduleSpec("research_settlement_schedule", "research_settlement_job", "UTC", "45 23 * * 1-5"),
     ScheduleSpec(
         "research_forecast_schedule",

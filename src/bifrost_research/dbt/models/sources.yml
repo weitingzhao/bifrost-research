@@ -86,13 +86,14 @@ sources:
             tests:
               - not_null
               - accepted_values:
-                  values:
-                    - income_statement
-                    - balance_sheet
-                    - cash_flow_statement
-                    - ratios
-                    - short_interest
-                    - short_volume
+                  arguments:
+                    values:
+                      - income_statement
+                      - balance_sheet
+                      - cash_flow_statement
+                      - ratios
+                      - short_interest
+                      - short_volume
           - name: period_date
             tests:
               - not_null

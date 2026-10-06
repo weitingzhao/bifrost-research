@@ -5,10 +5,11 @@ models:
     description: "Quarterly and annual income statement data extracted from stock_financials jsonb"
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - symbol
-            - period_date
-            - period_type
+          arguments:
+            combination_of_columns:
+              - symbol
+              - period_date
+              - period_type
     columns:
       - name: symbol
         tests:
@@ -20,9 +21,10 @@ models:
         tests:
           - not_null
           - accepted_values:
-              # ttm (trailing twelve months) is 4,138 legitimate rows in
-              # stg_income_stmt. The data was right and the whitelist was stale.
-              values: ["quarterly", "annual", "ttm"]
+              arguments:
+                # ttm (trailing twelve months) is 4,138 legitimate rows in
+                # stg_income_stmt. The data was right and the whitelist was stale.
+                values: ["quarterly", "annual", "ttm"]
       - name: revenue
         description: "Total revenues"
       - name: eps
@@ -34,10 +36,11 @@ models:
     description: "Balance sheet data extracted from stock_financials jsonb"
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - symbol
-            - period_date
-            - period_type
+          arguments:
+            combination_of_columns:
+              - symbol
+              - period_date
+              - period_type
     columns:
       - name: symbol
         tests:
@@ -54,10 +57,11 @@ models:
     description: "Cash flow statement data extracted from stock_financials jsonb"
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - symbol
-            - period_date
-            - period_type
+          arguments:
+            combination_of_columns:
+              - symbol
+              - period_date
+              - period_type
     columns:
       - name: symbol
         tests:
@@ -85,9 +89,10 @@ models:
     description: "Financial ratios, full market by date, from raw_market.ratios (Financials & Ratios plan)"
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - symbol
-            - period_date
+          arguments:
+            combination_of_columns:
+              - symbol
+              - period_date
     columns:
       - name: symbol
         tests:
@@ -108,9 +113,10 @@ models:
     description: "Short interest data (shares short, days to cover, % float)"
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - symbol
-            - period_date
+          arguments:
+            combination_of_columns:
+              - symbol
+              - period_date
     columns:
       - name: symbol
         tests:
@@ -131,9 +137,10 @@ models:
     description: "Daily short volume data"
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - symbol
-            - period_date
+          arguments:
+            combination_of_columns:
+              - symbol
+              - period_date
     columns:
       - name: symbol
         tests:

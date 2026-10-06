@@ -24,9 +24,10 @@ models:
         description: "ok | insufficient_chain | iv_interpolated"
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - as_of_date
-            - entry_date
-            - symbol
-            - structure
-            - params_hash
+          arguments:
+            combination_of_columns:
+              - as_of_date
+              - entry_date
+              - symbol
+              - structure
+              - params_hash

@@ -26,9 +26,10 @@ models:
     tests:
       # Incremental on (symbol, trade_date): a broken merge duplicates the grain.
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - symbol
-            - trade_date
+          arguments:
+            combination_of_columns:
+              - symbol
+              - trade_date
     columns:
       - name: symbol
         tests:
@@ -49,9 +50,10 @@ models:
     description: "Composite Relative Strength — 252d return percentile rank within universe"
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - symbol
-            - trade_date
+          arguments:
+            combination_of_columns:
+              - symbol
+              - trade_date
     columns:
       - name: symbol
         tests:

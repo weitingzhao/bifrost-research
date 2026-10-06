@@ -34,7 +34,8 @@ dbt-clean:
 	cd $(DBT_DIR) && dbt clean
 
 dbt-parse:
-	cd $(DBT_DIR) && dbt parse --profiles-dir .
+	cd $(DBT_DIR) && dbt parse --profiles-dir . \
+	  --warn-error-options '{"error": ["MissingArgumentsPropertyInGenericTestDeprecation"]}'
 
 dagster-dev:
 	dagster dev -w workspace.yaml

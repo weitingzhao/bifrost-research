@@ -194,20 +194,60 @@ engines_alert_scan = _run_asset(
         "Alert scan: composite_high re-judged on the last 5 scan dates, hit-rate "
         "drop and weight shift on the newest — in research_trading_day after scan"
     ),
-    deps=[AssetKey(["engines", "scan"])],
+    # hit_rate_drop / weight_shift read hit_5d, which signal_hit_fwd_fill fills
+    # on rows whose five sessions have just elapsed (TD-156).
+    deps=[AssetKey(["engines", "scan"]), AssetKey(["engines", "signal_hit_fwd_fill"])],
     fn=lambda: __import__(
         "bifrost_research.engines.alert_scan.entry", fromlist=["run"]
     ).run(),
     spec=ALERT_SCAN_SPEC,
 )
+
+#: The trading-day asset that writes each table a decay lens fires on
+#: (signal_hit.entry.LENS_SOURCE). raw_market.stock_daily, the forward legs, is
+#: the gate's; option_surface_fit_daily (skew) is SVI's, at 23:20 UTC before the
+#: batch. tests/orchestration/test_judge_after_writer.py holds the edges.
+SIGNAL_HIT_SOURCES: tuple[tuple[str, str], ...] = (
+    ("features.option_metric_iv_percentile_daily", "engines/volatility"),
+    ("features.option_metric_max_pain_daily", "engines/volatility"),
+    ("features.stock_signal_vrp_daily", "engines/vrp"),
+    ("features.option_metric_gex_levels_daily", "engines/gex"),
+    ("features.stock_forecast_terrain_daily", "engines/terrain"),
+    ("features.option_flow_sentiment_daily", "engines/flow"),
+    ("features.stock_signal_momentum_daily", "engines/momentum"),
+    ("features.stock_signal_sepa_daily", "features/sepa_projection"),
+    ("raw_market.stock_daily", "batch/husbandry_gate"),
+)
+
+
+def _signal_hit_judged_session(result: dict[str, Any]) -> list[tuple[Any, str]]:
+    """TD-156: the newest day walked is the New York session the batch closed."""
+    session = result.get("session")
+    if session and result.get("as_of") != session:
+        return [(ERROR, f"walked to {result.get('as_of')}, the New York session is {session}")]
+    return []
+
+
+SIGNAL_HIT_SPEC = OutputSpec(
+    rows=field("rows_written"), expect_rows=True, extra=_signal_hit_judged_session
+)
+
+
+# In research_trading_day, after every writer of a lens source (TD-156). Its own
+# 00:10 UTC schedule fired two hours before the batch wrote the session's
+# features, so each night walked the previous night's view of every lens.
 engines_signal_hit = _run_asset(
     key_path=["engines", "signal_hit"],
     group=GROUP_SIGNALS,
-    description="Lens hit-rate (former research-signal-hit)",
+    description=(
+        "Lens hit-rate: the last 3 sessions re-walked — in research_trading_day "
+        "after the features each lens fires on"
+    ),
+    deps=[AssetKey(w.split("/")) for w in dict.fromkeys(w for _t, w in SIGNAL_HIT_SOURCES)],
     fn=lambda: __import__(
         "bifrost_research.engines.signal_hit.entry", fromlist=["run"]
     ).run(),
-    spec=OutputSpec(rows=field("rows_written"), expect_rows=True),
+    spec=SIGNAL_HIT_SPEC,
 )
 engines_settlement = _run_asset(
     key_path=["engines", "settlement"],
@@ -472,14 +512,24 @@ def maint_event_radar_purge(
     return MaterializeResult(metadata=meta(result))
 
 
-#: Assets outside the trading-day graph's own engines that read a table
-#: research_trading_day writes, and the trading-day asset that writes it. Each
-#: runs inside research_trading_day downstream of that writer, or on schedules
-#: that fire outside 20:00-02:30 UTC, when the batch has not yet written the
-#: session (TD-97: alert_scan at 22:30 UTC judged the previous night's scan).
+#: Assets that read tables research_trading_day writes, with each table and the
+#: trading-day asset that writes it. Each runs inside research_trading_day
+#: downstream of every writer, or on schedules that fire outside 20:00-02:30
+#: UTC, when the batch has not yet written the session (TD-97: alert_scan at
+#: 22:30 UTC judged the previous night's scan; TD-156: signal_hit at 00:10 UTC).
 #: tests/orchestration/test_judge_after_writer.py holds every entry to that.
-READS_TRADING_DAY_OUTPUT: dict[str, tuple[str, str]] = {
-    "engines/alert_scan": ("features.stock_signal_scan_daily", "engines/scan"),
+READS_TRADING_DAY_OUTPUT: dict[str, tuple[tuple[str, str], ...]] = {
+    "engines/alert_scan": (
+        ("features.stock_signal_scan_daily", "engines/scan"),
+        ("features.stock_signal_lens_hit_daily", "engines/signal_hit_fwd_fill"),
+    ),
+    "engines/signal_hit": SIGNAL_HIT_SOURCES,
+    # The same walk over 30 sessions with repair; it rewrites the 3 days
+    # signal_hit just wrote, so it must not read the session's features earlier.
+    "engines/signal_hit_fwd_fill": (
+        *SIGNAL_HIT_SOURCES,
+        ("features.stock_signal_lens_hit_daily", "engines/signal_hit"),
+    ),
 }
 
 RESEARCH_AUX_ASSETS = [
@@ -550,14 +600,6 @@ _specs: list[tuple[str, str, list[Any], str, str, str]] = [
         "25 23 * * 1-5",
         "UTC",
         "IV reconstructed",
-    ),
-    (
-        "research_signal_hit_schedule",
-        "research_signal_hit_job",
-        [engines_signal_hit],
-        "10 0 * * 1-6",
-        "UTC",
-        "signal-hit",
     ),
     (
         "research_settlement_schedule",
