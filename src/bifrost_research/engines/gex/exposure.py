@@ -232,6 +232,18 @@ def compute_gex_levels(distribution: Sequence[Mapping[str, Any]], spot: float) -
     }
 
 
+def has_gamma_exposure(levels: Mapping[str, Any]) -> bool:
+    """Whether a strike distribution carries any gamma exposure at all.
+
+    Without it both walls are just the first strike listed and zero gamma is the
+    strike nearest spot: an expiry whose open interest is all zero (CTVA's new
+    series on 2026-10-02, the day after its spin-off), or whose few contracts sit
+    so far from spot that their gamma rounds to nothing (GOOG 2027-12-17 with only
+    the 75 strike at spot 357). 1,534 such levels rows stood on 2026-10-06 (TD-136).
+    """
+    return bool(float(levels.get("call_wall_gex") or 0) or float(levels.get("put_wall_gex") or 0))
+
+
 def compute_gex_distribution(
     contracts: Sequence[ContractGreeks],
     spot: float,
@@ -557,8 +569,14 @@ def compute_gex_for_symbol(
     level_rows: list[tuple[Any, ...]] = []
     summaries: list[dict[str, Any]] = []
 
+    no_exposure = 0
     for exp, contracts in sorted(by_exp.items()):
         dist, levels = compute_gex_distribution(contracts, spot)
+        if not has_gamma_exposure(levels):
+            # No wall and no zero-gamma level exist here; writing the fallbacks
+            # put them on an arbitrary strike that terrain and scan then read.
+            no_exposure += 1
+            continue
         for r in dist:
             dist_rows.append(
                 (
@@ -637,12 +655,21 @@ def compute_gex_for_symbol(
         )
     conn.commit()
 
+    if not summaries:
+        return {
+            "ok": False,
+            "error": "No gamma exposure",
+            "symbol": sym,
+            "trade_date": trade_date.isoformat(),
+            "expiries_without_exposure": no_exposure,
+        }
     return {
         "ok": True,
         "symbol": sym,
         "trade_date": trade_date.isoformat(),
         "spot": spot,
         "expiries": len(summaries),
+        "expiries_without_exposure": no_exposure,
         "distribution_rows": len(dist_rows),
         "levels": summaries,
     }
@@ -701,6 +728,8 @@ def compute_gex_intraday(
     all_contracts = [c for _, c in pairs]
     dist = strike_gex_from_contracts(all_contracts, spot)
     levels = compute_gex_levels(dist, spot)
+    if not has_gamma_exposure(levels):
+        return {"ok": False, "error": "No gamma exposure", "symbol": symbol.strip().upper()}
 
     now = datetime.now(timezone.utc)
     sym = symbol.strip().upper()
