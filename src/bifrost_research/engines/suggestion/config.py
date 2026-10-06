@@ -14,14 +14,17 @@ from typing import Any
 THRESHOLDS: dict[str, Any] = {
     # .2 (2026-10-06): the delta rule below, added after the first night's
     # suggestions picked 35/39/27-delta puts under 30/20-delta rules.
-    "version": "2026-10-06.2",
+    # .3 (Owner 2026-10-06): 10 settled per IV regime, not 20. At one baseline
+    # suggestion a week the two-year replay had 15 low-IV and 14 high-IV weeks,
+    # so 20 each would take 2.5-3 years against a six-month floor.
+    "version": "2026-10-06.3",
     "counts_from": "first counted suggestion issued after the ledger went live; forward samples only",
     "min_months": 6,
     "regimes": {
         "label": "SPY iv_percentile_1y at the suggestion's as_of_session (features.option_metric_iv_percentile_daily)",
         "low_below": 30,
         "high_above": 70,
-        "min_settled_each": 20,
+        "min_settled_each": 10,
     },
     "sample": {
         "kind": "option_structure",
