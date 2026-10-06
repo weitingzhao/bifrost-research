@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { runScript, validateSource } from './server.mjs'
+import { createServer, runScript, validateOptions, validateSource } from './server.mjs'
 
 const bars = []
 let p = 100
@@ -84,4 +84,127 @@ test('every reported session is one of the bars sent', async () => {
   const r = await runScript(pine(`plotshape(${A}, "buy")\nplotshape(${B}, "buy")\nplotshape(${B}, "sell")`), W)
   const sent = new Set(W.map((b) => b.t))
   for (const t of [...r.buy, ...r.sell]) assert.ok(sent.has(t))
+})
+
+// -- 0.2.0: numeric plots, strategy trades, /health under load ----------------------
+
+const ST = `//@version=5
+indicator("st", overlay=true)
+[st, dir] = ta.supertrend(3.0, 10)
+plot(st, "Supertrend")
+plotshape(dir < 0 and dir[1] > 0, "buy")
+plotshape(dir > 0 and dir[1] < 0, "sell")`
+
+test('a numeric plot comes back as [session, value], warm-up as null', async () => {
+  const r = await runScript(ST, W, { plots: ['Supertrend'] })
+  const s = r.series.Supertrend
+  assert.equal(s.length, W.length)
+  assert.deepEqual(s.map((p) => p[0]), W.map((b) => b.t))
+  assert.equal(s[0][1], null, 'no ATR on the first bar')
+  assert.ok(s.slice(20).every((p) => typeof p[1] === 'number' && Number.isFinite(p[1])))
+  assert.deepEqual(r.warnings, [])
+  // the signals are unchanged by asking for a series
+  const plain = await runScript(ST, W)
+  assert.deepEqual([r.buy, r.sell], [plain.buy, plain.sell])
+  assert.equal(plain.series, undefined)
+  assert.equal('trades' in plain, false)
+})
+
+test('missing and repeated plot titles are reported, the first repeat is returned', async () => {
+  const src = ST + '\nplot(close, "Supertrend")'
+  const r = await runScript(src, W, { plots: ['Supertrend', 'nope'] })
+  assert.deepEqual(r.series.nope, [])
+  assert.ok(r.series.Supertrend[20][1] !== W[20].c, 'the first plot, not the repeat')
+  assert.deepEqual(r.warnings.map((w) => w.code + ':' + w.title).sort(), ['duplicate_plot:Supertrend', 'missing_plot:nope'])
+})
+
+const STRAT = `//@version=5
+strategy("s", overlay=true, default_qty_type=strategy.fixed, default_qty_value=1)
+[st, dir] = ta.supertrend(3.0, 10)
+if dir < 0 and dir[1] > 0
+    strategy.entry("L", strategy.long, comment="flip up")
+if dir > 0 and dir[1] < 0
+    strategy.close("L", comment="flip down")
+if strategy.position_size > 0
+    strategy.exit("SL", "L", stop=strategy.position_avg_price * 0.97)
+plotshape(dir < 0 and dir[1] > 0, "buy")`
+
+test('strategy trades: sessions from fill time; market fills at the open, stops inside the bar', async () => {
+  const r = await runScript(STRAT, W, { trades: true })
+  const { closed, open } = r.trades
+  assert.ok(closed.length >= 4)
+  const byT = new Map(W.map((b, i) => [b.t, i]))
+  const kinds = new Set()
+  for (const t of closed) {
+    assert.equal(t.direction, 'long')
+    assert.ok(byT.has(t.entry_time) && byT.has(t.exit_time) && t.exit_time >= t.entry_time)
+    // entries are market orders: filled at the open of the bar after the buy plot
+    assert.equal(t.entry_at_open, true)
+    assert.equal(t.entry_price, W[byT.get(t.entry_time)].o)
+    assert.ok(r.buy.includes(W[byT.get(t.entry_time) - 1].t))
+    assert.equal(t.entry_comment, 'flip up')
+    if (t.exit_id === 'SL') {
+      kinds.add('stop')
+      assert.equal(t.exit_comment, 'SL', 'no comment falls back to the exit id')
+      if (!t.exit_at_open) assert.ok(t.exit_price < W[byT.get(t.exit_time)].o)
+    } else {
+      kinds.add('close')
+      assert.equal(t.exit_comment, 'flip down')
+      assert.equal(t.exit_at_open, true)
+      assert.equal(t.exit_price, W[byT.get(t.exit_time)].o)
+    }
+  }
+  assert.deepEqual([...kinds].sort(), ['close', 'stop'], 'fixture: both exit kinds occur')
+  assert.ok(closed.some((t) => t.exit_id === 'SL' && !t.exit_at_open), 'fixture: an intrabar stop')
+  for (const t of open) assert.equal(t.exit_time, undefined)
+})
+
+test('trades on an indicator: null and a warning', async () => {
+  const r = await runScript(ST, W, { trades: true })
+  assert.equal(r.trades, null)
+  assert.ok(r.warnings.some((w) => w.code === 'not_a_strategy'))
+})
+
+test('option validation', () => {
+  assert.equal(validateOptions({}), null)
+  assert.equal(validateOptions({ plots: ['a'], trades: true }), null)
+  assert.match(validateOptions({ plots: 'a' }), /list/)
+  assert.match(validateOptions({ plots: Array(9).fill('a') }), /at most 8/)
+  assert.match(validateOptions({ trades: 'yes' }), /true or false/)
+  assert.match(validateOptions({ series: Array(101).fill({}) }), /at most 100 series/)
+})
+
+test('/health answers while a large /run is computing', async () => {
+  const server = createServer().listen(0)
+  await new Promise((r) => server.once('listening', r))
+  const base = `http://127.0.0.1:${server.address().port}`
+  try {
+    const bars = walk(800)
+    const series = Array.from({ length: 100 }, (_, i) => ({ symbol: 'S' + i, bars }))
+    const t0 = performance.now()
+    const run = fetch(base + '/run', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: ST, series, plots: ['Supertrend'] }),
+    }).then((r) => r.json())
+    let done = false
+    run.then(() => (done = true))
+    const lat = []
+    await new Promise((r) => setTimeout(r, 50))
+    while (!done) {
+      const h0 = performance.now()
+      const h = await fetch(base + '/health').then((r) => r.json())
+      if (!done) lat.push(performance.now() - h0)
+      assert.equal(h.ok, true)
+    }
+    const body = await run
+    const total = performance.now() - t0
+    assert.equal(body.results.length, 100)
+    assert.equal(body.runner, '0.2.0')
+    assert.ok(total > 500, `fixture: the run should be long enough to matter (${total.toFixed(0)} ms)`)
+    assert.ok(lat.length >= 3, `/health answered ${lat.length} times during a ${total.toFixed(0)} ms run`)
+    assert.ok(Math.max(...lat) < 250, `slowest /health ${Math.max(...lat).toFixed(0)} ms`)
+  } finally {
+    server.close()
+  }
 })

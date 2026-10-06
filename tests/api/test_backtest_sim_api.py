@@ -191,3 +191,60 @@ def test_a_signal_kind_defaults_to_the_next_session_and_a_dated_event_to_the_one
     for kind in ("sepa_hit", "iv_percentile_threshold"):
         resp = client.post(_PATH, json={**_BODY, "entry_event": {"kind": kind}, "entry_offset_sessions": -1})
         assert resp.status_code == 422 and "0 = the session after the signal" in resp.text
+
+
+_PINE = {"kind": "pine_signal", "params": {"script": "supertrend", "side": "buy"}}
+
+
+def test_pine_exit_and_strike_anchor_reach_the_simulator(client: TestClient, env: _Env) -> None:
+    body = {
+        **_BODY,
+        "entry_event": _PINE,
+        "entry_offset_sessions": 0,
+        "pine_exit": "auto",
+        "strike_anchor": {"plot": "Supertrend", "max_delta": 0.35},
+    }
+    resp = client.post(_PATH, json=body)
+    assert resp.status_code == 200, resp.text
+    cfg = env.sims[0][3]
+    assert cfg.pine_exit == "auto"
+    assert cfg.strike_anchor == {"plot": "Supertrend", "min_delta": 0.05, "max_delta": 0.35}
+    assert env.created[0]["params"]["strike_anchor"]["plot"] == "Supertrend"
+    # omitted: off, and the stored params say so
+    resp = client.post(_PATH, json=_BODY)
+    assert env.sims[1][3].pine_exit is None and env.sims[1][3].strike_anchor is None
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"pine_exit": "auto"},  # no Pine entry
+        {"entry_event": {"kind": "earnings"}, "strike_anchor": {"plot": "x"}},
+        {"entry_event": _PINE, "entry_offset_sessions": 0, "pine_exit": "sometimes"},
+        {"entry_event": _PINE, "entry_offset_sessions": 0, "strike_anchor": {"plot": ""}},
+        {"entry_event": _PINE, "entry_offset_sessions": 0, "strike_anchor": {"plot": "x", "min_delta": 0.3, "max_delta": 0.2}},
+    ],
+)
+def test_bad_pine_options_are_422(client: TestClient, env: _Env, patch: dict[str, Any]) -> None:
+    resp = client.post(_PATH, json={**_BODY, **patch})
+    assert resp.status_code == 422, resp.text
+    assert env.sims == []
+
+
+def test_runner_down_is_503_and_a_bad_pine_request_400(client: TestClient, env: _Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    from bifrost_research.engines.backtest.sim.pine import PineRunnerUnavailable
+
+    def down(*a: Any, **k: Any) -> SimResult:
+        raise PineRunnerUnavailable("pine-runner: URLError: refused")
+
+    monkeypatch.setattr(f"{_MOD}.run_sim", down)
+    body = {**_BODY, "entry_event": _PINE, "entry_offset_sessions": 0, "pine_exit": "auto"}
+    resp = client.post(_PATH, json=body)
+    assert resp.status_code == 503 and "refused" in resp.text
+
+    def bad(*a: Any, **k: Any) -> SimResult:
+        raise ValueError("strike_anchor places one short strike; short_strangle picks 2 legs by delta")
+
+    monkeypatch.setattr(f"{_MOD}.run_sim", bad)
+    resp = client.post(_PATH, json=body)
+    assert resp.status_code == 400 and "picks 2 legs" in resp.text

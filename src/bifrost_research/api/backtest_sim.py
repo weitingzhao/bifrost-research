@@ -24,6 +24,7 @@ from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.event_defs import check_entry_offset, default_entry_offset
 from bifrost_research.engines.backtest.sim import STRUCTURES, SimConfig, run_sim
+from bifrost_research.engines.backtest.sim.pine import PineRunnerUnavailable
 from bifrost_research.repositories import backtest_run as repo
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,21 @@ class SimEntryEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["earnings", "opex", "sepa_hit", "iv_percentile_threshold", "indicator_signal", "pine_signal"]
     params: dict[str, Any] = Field(default_factory=dict)
+
+
+class SimStrikeAnchor(BaseModel):
+    """Place the short strike against a Pine plot's level (P1, B5); see ``SimConfig``."""
+
+    model_config = ConfigDict(extra="forbid")
+    plot: str = Field(..., min_length=1, max_length=80)
+    min_delta: float = Field(0.05, ge=0.0, lt=1.0)
+    max_delta: float = Field(0.40, gt=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _rails(self) -> "SimStrikeAnchor":
+        if self.min_delta >= self.max_delta:
+            raise ValueError("min_delta must be below max_delta")
+        return self
 
 
 class SimBody(BaseModel):
@@ -66,6 +82,11 @@ class SimBody(BaseModel):
     # An entry whose picked short delta is further than this from short_delta is
     # skipped (``delta_off_target``), not opened at the wrong strike. None turns it off.
     delta_tolerance: float | None = Field(0.05, gt=0.0, le=0.5)
+    # P1 (pine_signal entries only): the script's own exit beside the premium
+    # rules, and a strike placed against one of its plots. Both additive; the
+    # response's summary then carries ``pine`` and ``pine_exit_comparison``.
+    pine_exit: Literal["auto", "strategy", "reverse_plot"] | None = None
+    strike_anchor: SimStrikeAnchor | None = None
     price_field: Literal["vwap", "close"] = "vwap"
     slippage_scale: float = Field(1.0, ge=0.0, le=10.0)
     commission_per_contract: float = Field(0.65, ge=0.0, le=10.0)
@@ -87,6 +108,8 @@ class SimBody(BaseModel):
         if self.entry_offset_sessions is None:
             self.entry_offset_sessions = default_entry_offset(kind)
         check_entry_offset(kind, self.entry_offset_sessions)
+        if (self.pine_exit or self.strike_anchor) and (not self.entry_event or self.entry_event.kind != "pine_signal"):
+            raise ValueError("pine_exit and strike_anchor need entry_event kind pine_signal")
         return self
 
 
@@ -115,6 +138,8 @@ def simulate(body: SimBody) -> dict[str, Any]:
         dte_exit=body.dte_exit,
         max_stale_sessions=body.max_stale_sessions,
         delta_tolerance=body.delta_tolerance,
+        pine_exit=body.pine_exit,
+        strike_anchor=body.strike_anchor.model_dump() if body.strike_anchor else None,
         price_field=body.price_field,
         slippage_scale=body.slippage_scale,
         commission_per_contract=body.commission_per_contract,
@@ -126,6 +151,8 @@ def simulate(body: SimBody) -> dict[str, Any]:
             result = run_sim(conn, body.symbols, body.start, body.end, cfg)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except PineRunnerUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         params = {
             **result.params,
             "symbols": [s.strip().upper() for s in body.symbols],

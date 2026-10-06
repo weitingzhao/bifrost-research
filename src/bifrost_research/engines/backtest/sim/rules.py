@@ -34,6 +34,23 @@ class SimConfig:
     this from ``short_delta`` (absolute delta) is skipped as
     ``delta_off_target``. 0.05 is the suggestion ledger's DELTA_TOLERANCE.
     None accepts whatever strike is nearest.
+
+    Pine (P1, both need ``entry_event`` of kind ``pine_signal``; ``sim.pine``):
+
+    - ``pine_exit``: ``auto`` / ``strategy`` / ``reverse_plot`` adds the script's
+      own exit to the management rules: a position also closes (``pine_exit``)
+      on the session after the script's exit was known, if no premium rule or
+      expiry closed it first. None (default) manages by premium rules only. A
+      run with it also reports the premium-only run beside it
+      (``summary.pine_exit_comparison``).
+    - ``strike_anchor``: ``{"plot": title, "min_delta": .., "max_delta": ..}``
+      places the short strike at the first listed strike at or beyond the
+      plot's last value before entry — at or below it for a put, at or above it
+      for a call — instead of by ``short_delta``. The delta bounds are rails,
+      not a target: a strike whose |delta| falls outside them is skipped
+      (``anchor_delta_out_of_band``), as is an entry with no level yet
+      (``anchor_missing``) or no strike beyond it (``anchor_no_strike``). Only
+      for a structure with one delta-picked leg.
     """
 
     structure: str = "short_put"
@@ -51,6 +68,8 @@ class SimConfig:
     dte_exit: int | None = 21
     max_stale_sessions: int | None = 3
     delta_tolerance: float | None = 0.05
+    pine_exit: str | None = None
+    strike_anchor: dict[str, Any] | None = None
     price_field: PriceField = "vwap"
     slippage_scale: float = 1.0
     commission_per_contract: float = 0.65

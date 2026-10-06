@@ -25,6 +25,13 @@ on the chosen expiry, from ``option_daily`` plus the 16:00 option snapshot
 where ``option_daily`` has thinned out (``ChainStore.attach_snapshot_fill``).
 If even the nearest is further than ``delta_tolerance`` from the target, the
 entry is skipped as ``delta_off_target`` rather than opened at the wrong strike.
+
+Pine (P1): with ``strike_anchor`` the short strike is placed against a Pine
+plot's level instead of by delta, inside delta rails; with ``pine_exit`` the
+script's own exit closes a position (``pine_exit``) on the session after it
+was known, unless expiry or a premium rule got there first. On a tie the Pine
+exit wins: it fills at the session's ``price_field``, a premium rule only at
+that session's close. Timing rules and sources: ``sim.pine``.
 """
 
 from __future__ import annotations
@@ -34,7 +41,7 @@ import logging
 import math
 import random
 import statistics
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from typing import Any, Sequence
 
@@ -46,6 +53,15 @@ from bifrost_research.engines.backtest.event_defs import (
     entry_timing,
 )
 from bifrost_research.engines.backtest.sim.chain import ChainStore, OptBar
+from bifrost_research.engines.backtest.sim.pine import (
+    ANCHOR_MAX_DELTA,
+    ANCHOR_MIN_DELTA,
+    PineOverlay,
+    check_pine,
+    compare_pine_exit,
+    direction_of,
+    load_overlays,
+)
 from bifrost_research.engines.backtest.sim.rules import (
     SimConfig,
     fill_basis,
@@ -60,6 +76,7 @@ logger = logging.getLogger(__name__)
 # Below this an OTM leg without a print is left at its last mark rather than
 # counted stale.
 _CHEAP_OTM = 0.10
+
 
 
 @dataclass
@@ -78,6 +95,7 @@ class _Leg:
     entry_delta: float | None = None
     stale: int = 0
     source: str = "daily"
+    anchor_level: float | None = None
 
     @property
     def sign(self) -> int:
@@ -96,6 +114,7 @@ class _Position:
     margin: float
     max_loss: float | None
     path: list[float] = field(default_factory=list)
+    pine_exit_on: date | None = None
 
     def entry_value(self) -> float:
         return sum(lg.sign * lg.entry_fill * lg.qty for lg in self.legs) * self.mult
@@ -121,6 +140,11 @@ class SimResult:
 # -- entry ------------------------------------------------------------------------
 
 
+def _target_expiry(chain: Sequence[OptBar], d: date, cfg: SimConfig) -> date:
+    target = d + timedelta(days=cfg.target_dte)
+    return min({b.expiry for b in chain}, key=lambda e: (abs((e - target).days), e))
+
+
 def _pick_by_delta(
     store: ChainStore, d: date, leg: SimLeg, cfg: SimConfig, expiry: date | None
 ) -> tuple[OptBar, tuple[float, float]] | str:
@@ -128,8 +152,7 @@ def _pick_by_delta(
     if not chain:
         return "no_chain"
     if expiry is None:
-        target = d + timedelta(days=cfg.target_dte)
-        expiry = min({b.expiry for b in chain}, key=lambda e: (abs((e - target).days), e))
+        expiry = _target_expiry(chain, d, cfg)
     pool = [b for b in chain if b.expiry == expiry]
     want = abs(cfg.short_delta)
     best: tuple[float, OptBar, tuple[float, float]] | None = None
@@ -147,6 +170,38 @@ def _pick_by_delta(
         # run a different trade under this config's name.
         return "delta_off_target"
     return best[1], best[2]
+
+
+def _pick_by_level(
+    store: ChainStore, d: date, leg: SimLeg, cfg: SimConfig, level: float | None
+) -> tuple[OptBar, tuple[float, float]] | str:
+    """The first strike at or beyond a Pine level: at/below it for a put, at/above for a call.
+
+    The delta rails stay: a strike outside them is skipped, never opened.
+    """
+    if level is None or not math.isfinite(level):
+        return "anchor_missing"
+    chain = [b for b in store.chain_on(d, leg.right) if (b.expiry - d).days >= cfg.min_dte]
+    if not chain:
+        return "no_chain"
+    expiry = _target_expiry(chain, d, cfg)
+    if leg.right == "P":
+        pool = [b for b in chain if b.expiry == expiry and b.strike <= level]
+        bar = max(pool, key=lambda b: b.strike) if pool else None
+    else:
+        pool = [b for b in chain if b.expiry == expiry and b.strike >= level]
+        bar = min(pool, key=lambda b: b.strike) if pool else None
+    if bar is None:
+        return "anchor_no_strike"
+    g = store.iv_delta(bar, d, cfg.price_field, use_rate=cfg.use_treasury_rate)
+    if g is None:
+        return "no_iv"
+    anchor = cfg.strike_anchor or {}
+    lo = float(anchor.get("min_delta", ANCHOR_MIN_DELTA))
+    hi = float(anchor.get("max_delta", ANCHOR_MAX_DELTA))
+    if not lo <= abs(g[1]) <= hi:
+        return "anchor_delta_out_of_band"
+    return bar, g
 
 
 def _pick_anchored(store: ChainStore, d: date, leg: SimLeg, anchor: _Leg, cfg: SimConfig) -> OptBar | str:
@@ -187,13 +242,19 @@ def _margin(structure: str, legs: list[_Leg], spot: float, credit: float, mult: 
     return best * mult * qty, None
 
 
-def _open(store: ChainStore, d: date, cfg: SimConfig) -> _Position | str:
+def _open(store: ChainStore, d: date, cfg: SimConfig, *, level: float | None = None) -> _Position | str:
+    """Open ``cfg.structure`` on ``d``; ``level`` is the Pine level when ``cfg.strike_anchor`` is set."""
     specs = STRUCTURES[cfg.structure]
     legs: list[_Leg] = []
     expiry: date | None = None
     for spec in specs:
+        by_level = cfg.strike_anchor is not None and spec.anchor is None and spec.side == "sell"
         if spec.anchor is None:
-            got = _pick_by_delta(store, d, spec, cfg, expiry)
+            got = (
+                _pick_by_level(store, d, spec, cfg, level)
+                if by_level
+                else _pick_by_delta(store, d, spec, cfg, expiry)
+            )
             if isinstance(got, str):
                 return got
             bar, (iv, delta) = got
@@ -219,6 +280,7 @@ def _open(store: ChainStore, d: date, cfg: SimConfig) -> _Position | str:
                 entry_iv=iv,
                 entry_delta=delta,
                 source=bar.source,
+                anchor_level=level if by_level else None,
             )
         )
     assert expiry is not None
@@ -271,6 +333,7 @@ def _close(pos: _Position, d: date, reason: str, cfg: SimConfig, *, settle_spot:
                 "entry_delta": round(lg.entry_delta, 4) if lg.entry_delta is not None else None,
                 "stale_sessions": lg.stale,
                 "source": lg.source,
+                **({"anchor_level": round(lg.anchor_level, 4)} if lg.anchor_level is not None else {}),
             }
         )
     pnl = exit_value - pos.entry_value() - commission
@@ -300,6 +363,7 @@ def _close(pos: _Position, d: date, reason: str, cfg: SimConfig, *, settle_spot:
         "mfe": round(max(path), 2),
         "mae": round(min(path), 2),
         "fill_basis": fill_basis(cfg),
+        **({"pine_exit_on": pos.pine_exit_on.isoformat() if pos.pine_exit_on else None} if cfg.pine_exit else {}),
     }
 
 
@@ -328,6 +392,10 @@ def _manage(pos: _Position, store: ChainStore, d: date, cfg: SimConfig) -> dict[
     # The premium at stake: the credit taken in, or the debit paid for a
     # structure bought (only ``walk_legs`` opens those; ``_open`` refuses them).
     basis = abs(pos.credit())
+    if pos.pine_exit_on is not None and d >= pos.pine_exit_on:
+        # Known before this session opened: it fills at the session's own
+        # price, ahead of any rule checked on the close.
+        return _close(pos, d, "pine_exit", cfg)
     if cfg.max_stale_sessions is not None and any(lg.stale >= cfg.max_stale_sessions for lg in pos.legs):
         return _close(pos, d, "stale", cfg)
     if cfg.profit_take_pct is not None and pnl >= cfg.profit_take_pct * basis:
@@ -367,6 +435,7 @@ def _run_symbol(
     cfg: SimConfig,
     *,
     events: Sequence[date] | None = None,
+    overlay: PineOverlay | None = None,
 ) -> tuple[list[dict[str, Any]], dict[date, tuple[float, float, int]], dict[str, int]]:
     trades: list[dict[str, Any]] = []
     curve: dict[date, tuple[float, float, int]] = {}
@@ -374,6 +443,7 @@ def _run_symbol(
     open_: list[_Position] = []
     realized = 0.0
     entry_sessions = [d for d in store.sessions if start <= d <= end]
+    direction = direction_of(((cfg.entry_event or {}).get("params") or {}).get("side"))
     if events is None:
         entry_set = {d for i, d in enumerate(entry_sessions) if i % max(1, cfg.entry_every_sessions) == 0}
     else:
@@ -395,10 +465,13 @@ def _run_symbol(
                 realized += done["pnl"]
         open_ = still
         if d in entry_set and len(open_) < cfg.max_open_per_symbol:
-            got = _open(store, d, cfg)
+            level = overlay.level_before(d) if overlay is not None and cfg.strike_anchor else None
+            got = _open(store, d, cfg, level=level)
             if isinstance(got, str):
                 skips[got] = skips.get(got, 0) + 1
             else:
+                if cfg.pine_exit and overlay is not None:
+                    got.pine_exit_on = overlay.exit_after(direction, d)
                 open_.append(got)
         curve[d] = (
             realized + sum(p.open_pnl() for p in open_),
@@ -506,6 +579,13 @@ def _entry_rule(
 
 
 
+def _load_store(conn: Any, sym: str, start: date, end: date, cfg: SimConfig) -> ChainStore:
+    store = ChainStore.load(conn, sym, start, end, max_dte=cfg.target_dte)
+    if conn is not None:
+        store.attach_snapshot_fill(conn, min_dte=cfg.min_dte, max_dte=cfg.target_dte * 2 + 14)
+    return store
+
+
 def run_sim(
     conn: Any,
     symbols: Sequence[str],
@@ -514,32 +594,60 @@ def run_sim(
     cfg: SimConfig,
     *,
     stores: dict[str, ChainStore] | None = None,
+    overlays: dict[str, PineOverlay] | None = None,
 ) -> SimResult:
     """Run ``cfg`` over each symbol in [start, end] and aggregate.
 
     Symbols run independently (no shared margin limit yet — that is P4); the
     equity curve is the sum of their P&L on the shared session calendar.
+    ``overlays`` injects the Pine exits / levels (tests); otherwise they are
+    computed by the pine-runner when ``cfg`` asks for them.
     """
     if cfg.structure not in STRUCTURES:
         raise ValueError(f"unknown structure {cfg.structure!r}; available: {sorted(STRUCTURES)}")
     if end < start:
         raise ValueError("end must not be before start")
     check_entry_offset((cfg.entry_event or {}).get("kind"), cfg.entry_offset_sessions)
+    script = check_pine(cfg, STRUCTURES)
+    names = [s for s in (str(raw).strip().upper() for raw in symbols) if s]
+    pine_report: dict[str, Any] | None = None
+    if script is not None and overlays is None:
+        overlays, pine_report = load_overlays(
+            conn,
+            script,
+            names,
+            start,
+            end,
+            exit_mode=cfg.pine_exit,
+            anchor_plot=str((cfg.strike_anchor or {}).get("plot") or "") or None,
+        )
+    stores = dict(stores or {})
+    comparison: dict[str, Any] | None = None
+    if cfg.pine_exit:
+        # Load each chain once; the premium-only run walks the same stores.
+        for sym in names:
+            if sym not in stores:
+                stores[sym] = _load_store(conn, sym, start, end, cfg)
+        base = run_sim(conn, names, start, end, replace(cfg, pine_exit=None), stores=stores, overlays=overlays)
     all_trades: list[dict[str, Any]] = []
     curves: list[dict[date, tuple[float, float, int]]] = []
     skips: dict[str, int] = {}
     per_symbol: dict[str, dict[str, Any]] = {}
     events_by_symbol, entry_rule = _entry_rule(conn, symbols, start, end, cfg)
     fill = {"sessions_queried": 0, "bars_added": 0, "symbols_filled": 0}
-    for raw in symbols:
-        sym = str(raw).strip().upper()
-        if not sym:
-            continue
-        store = (stores or {}).get(sym)
+    for sym in names:
+        overlay = None
+        if script is not None:
+            overlay = (overlays or {}).get(sym)
+            if overlay is None:
+                # The runner failed on this name: without its exits or level the
+                # run would quietly fall back to premium rules / no strike.
+                skips["pine_unavailable"] = skips.get("pine_unavailable", 0) + 1
+                per_symbol[sym] = {"n_trades": 0, "skipped": "pine_unavailable"}
+                continue
+        store = stores.get(sym)
         if store is None:
-            store = ChainStore.load(conn, sym, start, end, max_dte=cfg.target_dte)
-            if conn is not None:
-                store.attach_snapshot_fill(conn, min_dte=cfg.min_dte, max_dte=cfg.target_dte * 2 + 14)
+            store = _load_store(conn, sym, start, end, cfg)
         if not store.sessions:
             skips["no_stock"] = skips.get("no_stock", 0) + 1
             per_symbol[sym] = {"n_trades": 0, "skipped": "no_stock"}
@@ -547,7 +655,7 @@ def run_sim(
         if store.delisted_on is None and conn is not None:
             store.delisted_on = listing_end(conn, sym, as_of=date.today())
         events = None if events_by_symbol is None else events_by_symbol.get(live_label(sym), [])
-        trades, curve, sk = _run_symbol(store, start, end, cfg, events=events)
+        trades, curve, sk = _run_symbol(store, start, end, cfg, events=events, overlay=overlay)
         st = store.fill_stats()
         if st["active"]:
             fill["symbols_filled"] += 1
@@ -595,6 +703,12 @@ def run_sim(
         "delta_tolerance": cfg.delta_tolerance,
     }
     summary["evaluation"] = evaluation("option_simulator")
+    if script is not None:
+        summary["pine"] = pine_report or {"script": script, "overlays": "injected"}
+    if cfg.pine_exit:
+        result_now = SimResult(summary=summary, trades=all_trades, equity=equity, params={})
+        comparison = compare_pine_exit(base, result_now, cfg.bootstrap_seed, ci=_bootstrap_ci)
+        summary["pine_exit_comparison"] = comparison
     summary["advisory"] = "D10 BLOCKED — historical replay only"
     # Stored runs before 0.175.0 have no version: their signal entries opened on
     # the signal session (entry_timing v1). The rows themselves are not rewritten.
