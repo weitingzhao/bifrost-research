@@ -1,0 +1,39 @@
+# pine-runner runs caller-supplied Pine as JavaScript in its own process, so
+# whoever can reach :8797 can run code in that container. Only its callers may:
+#   research-api        POST /research/pine/check (k8s/api/deployment.yaml)
+#   dagster-daemon      scheduled runs execute in the daemon (DefaultRunLauncher)
+#   dagster-webserver   runs launched from the Dagster UI execute in the webserver
+#   research-pine-build one-off build Jobs (python -m bifrost_research.engines.pine.build)
+# A podSelector without a namespaceSelector matches the research namespace only.
+# The runner opens no connections, so all egress (DNS included) is denied.
+# Kubelet probes come from the node itself and are not subject to this policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: research-pine
+  namespace: research
+  labels:
+    app.kubernetes.io/name: research-pine
+    app.kubernetes.io/part-of: bifrost-research
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: research-pine
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - research-api
+                  - dagster-daemon
+                  - dagster-webserver
+                  - research-pine-build
+      ports:
+        - protocol: TCP
+          port: 8797
+  egress: []

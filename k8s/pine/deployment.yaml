@@ -2,7 +2,8 @@
 # PineTS), so it is its own image and process — see pine-runner/LICENSE.md.
 # Image built by the bifrost-build-research-pine pipeline (bifrost-trade-infra);
 # bump the tag only after it is in the registry.
-# No database, no secrets, no egress beyond the cluster. D10: no order path.
+# No database, no secrets, no egress (networkpolicy.yaml). D10: no order path.
+# The image runs node with the permission model (pine-runner/Dockerfile).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,9 +28,11 @@ spec:
       nodeSelector:
         kubernetes.io/arch: amd64
       automountServiceAccountToken: false
+      # scripts can read process.env; keep the namespace's service addresses out of it
+      enableServiceLinks: false
       containers:
         - name: pine
-          image: 192.168.10.73:30500/bifrost-research-pine:0.1.0
+          image: 192.168.10.73:30500/bifrost-research-pine:0.1.1
           imagePullPolicy: IfNotPresent
           env:
             - name: PORT
