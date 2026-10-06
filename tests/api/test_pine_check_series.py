@@ -105,6 +105,7 @@ def test_overlay_marks_the_scripts_whose_lines_are_prices() -> None:
     assert lines["supertrend"] == (True, ["Supertrend"])
     assert lines["donchian_breakout"] == (True, ["upper", "lower"])
     assert lines["ichimoku_tk"] == (True, ["tenkan", "kijun"])
+    assert lines["chandelier_exit"] == (True, ["Chandelier stop"])
     assert lines["wavetrend"][0] is False and lines["adx_trend"][0] is False
     assert is_overlay('strategy("s", overlay = true, initial_capital=1)')
     assert not is_overlay('indicator("x", overlay=false)')

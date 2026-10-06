@@ -14,5 +14,7 @@ var int dir = 1
 dir := close > ss[1] ? 1 : close < ls[1] ? -1 : dir
 buy  = dir == 1 and dir[1] == -1
 sell = dir == -1 and dir[1] == 1
+// The stop in force: below price while long, above while short — the level a short strike can sit behind.
+plot(dir == 1 ? ls : ss, "Chandelier stop")
 plotshape(buy,  "buy",  shape.triangleup,   location.belowbar)
 plotshape(sell, "sell", shape.triangledown, location.abovebar)
