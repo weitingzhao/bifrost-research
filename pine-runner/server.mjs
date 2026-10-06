@@ -14,11 +14,25 @@ const PORT = Number(process.env.PORT || 8797)
 const MAX_BODY = 64 * 1024 * 1024
 const MAX_SOURCE = 200_000
 const DAY_MS = 86_400_000
+// Pine sources are transpiled to JS and run in this process, so a script can
+// reach anything the process can. The image starts node with the permission
+// model (Dockerfile CMD): reads limited to the app, no child processes, workers,
+// addons or WASI; the NetworkPolicy in k8s/pine/ denies all egress.
+const SANDBOXED = Boolean(process.permission)
 
-const SIGNAL_PLOTS = { buy: 'buy', sell: 'sell' }
+const SIGNAL_SIDES = ['buy', 'sell']
 
 function truthy(v) {
   return v === true || (typeof v === 'number' && Number.isFinite(v) && v !== 0)
+}
+
+// PineTS keys plots by title, and repeats change the key: two plotshape() calls
+// titled "buy" merge into one interleaved series ("buy", two points per bar),
+// and a repeated plot() title is renamed ("buy#3"). Every point carries its
+// bar's openTime, so the session comes from d.time, never from the index.
+function titleOf(key, plot) {
+  const t = typeof plot?.title === 'string' ? plot.title : plot?.data?.find((d) => typeof d?.title === 'string')?.title
+  return t ?? key.replace(/#\d+$/, '')
 }
 
 /** bars: [{t: epoch ms of the session date, o, h, l, c, v}] oldest first. */
@@ -33,14 +47,35 @@ export async function runScript(source, bars) {
     closeTime: b.t + DAY_MS - 1,
   }))
   const { plots } = await new PineTS(candles).run(source)
-  const out = { buy: [], sell: [] }
-  for (const [side, title] of Object.entries(SIGNAL_PLOTS)) {
-    const data = plots?.[title]?.data ?? []
-    data.forEach((d, i) => {
-      if (truthy(d?.value) && i < bars.length) out[side].push(bars[i].t)
-    })
+  const sessions = new Set(bars.map((b) => b.t))
+  const keys = Object.keys(plots ?? {}).filter((k) => !k.startsWith('__'))
+  const out = { buy: [], sell: [], plots: keys, warnings: [] }
+  for (const side of SIGNAL_SIDES) {
+    const fired = new Set()
+    let calls = 0
+    for (const key of keys) {
+      const plot = plots[key]
+      if (titleOf(key, plot) !== side) continue
+      const data = Array.isArray(plot?.data) ? plot.data : []
+      // a merged key holds one point per bar per call
+      calls += bars.length ? Math.max(1, Math.round(data.length / bars.length)) : 1
+      for (const d of data) {
+        if (truthy(d?.value) && sessions.has(d?.time)) fired.add(d.time)
+      }
+    }
+    out[side] = [...fired].sort((a, b) => a - b)
+    if (calls > 1) {
+      out.warnings.push({
+        code: 'duplicate_title',
+        side,
+        count: calls,
+        message: `${calls} plots are titled "${side}"; their sessions were merged (fired on any)`,
+      })
+    }
+    if (calls === 0) {
+      out.warnings.push({ code: 'missing_title', side, message: `no plot is titled "${side}"; no ${side} signals` })
+    }
   }
-  out.plots = Object.keys(plots ?? {}).filter((k) => !k.startsWith('__'))
   return out
 }
 
@@ -62,7 +97,7 @@ async function handleRun(body) {
     const bars = Array.isArray(s?.bars) ? s.bars : []
     try {
       const r = await runScript(body.source, bars)
-      results.push({ symbol: s.symbol, buy: r.buy, sell: r.sell, plots: r.plots })
+      results.push({ symbol: s.symbol, buy: r.buy, sell: r.sell, plots: r.plots, warnings: r.warnings })
     } catch (e) {
       results.push({ symbol: s.symbol, error: String(e?.message ?? e).slice(0, 500) })
     }
@@ -79,7 +114,7 @@ function send(res, status, payload) {
 export function createServer() {
   return http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
-      return send(res, 200, { ok: true, service: 'pine-runner', pinets: PINETS_VERSION })
+      return send(res, 200, { ok: true, service: 'pine-runner', pinets: PINETS_VERSION, sandboxed: SANDBOXED })
     }
     if (req.method !== 'POST' || req.url !== '/run') return send(res, 404, { ok: false, error: 'not found' })
     let size = 0
@@ -110,5 +145,5 @@ export function createServer() {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  createServer().listen(PORT, () => console.log(`pine-runner on :${PORT} (pinets ${PINETS_VERSION})`))
+  createServer().listen(PORT, () => console.log(`pine-runner on :${PORT} (pinets ${PINETS_VERSION}, sandboxed=${SANDBOXED})`))
 }

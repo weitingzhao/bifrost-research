@@ -1,6 +1,6 @@
 {
   "name": "bifrost-pine-runner",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Runs Pine Script over daily bars for bifrost-research, over HTTP only. AGPL-3.0 because it links PineTS.",
   "license": "AGPL-3.0-only",

@@ -59,7 +59,9 @@ def run(
 ) -> dict[str, dict[str, Any]]:
     """Run ``source`` over each symbol's bars ``[{date, open, high, low, close, volume}]``.
 
-    Returns ``{symbol: {"buy": [date], "sell": [date]}}`` or ``{symbol: {"error": str}}``.
+    Returns ``{symbol: {"buy": [date], "sell": [date], "warnings": [...]}}`` or
+    ``{symbol: {"error": str}}``. ``warnings`` (runner 0.1.1+) flags a script whose
+    ``buy`` / ``sell`` title is repeated (merged) or missing; older runners send none.
     """
     payload = {
         "source": source,
@@ -88,5 +90,9 @@ def run(
         if r.get("error"):
             out[sym] = {"error": r["error"]}
         else:
-            out[sym] = {"buy": [_day(t) for t in r.get("buy") or []], "sell": [_day(t) for t in r.get("sell") or []]}
+            out[sym] = {
+                "buy": [_day(t) for t in r.get("buy") or []],
+                "sell": [_day(t) for t in r.get("sell") or []],
+                "warnings": list(r.get("warnings") or []),
+            }
     return out

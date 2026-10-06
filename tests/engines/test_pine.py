@@ -46,6 +46,25 @@ def test_client_sends_ms_dates_and_reads_back_sessions(monkeypatch: pytest.Monke
     assert out["AAA"]["buy"] == [date(2024, 1, 3)] and out["BBB"] == {"error": "boom"}
 
 
+
+def test_client_carries_runner_warnings_and_tolerates_an_older_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    warn = {"code": "duplicate_title", "side": "buy", "count": 2, "message": "2 plots are titled \"buy\""}
+
+    def fake_post(path, payload, timeout):  # noqa: ANN001
+        return {
+            "ok": True,
+            "results": [
+                {"symbol": "AAA", "buy": [], "sell": [], "warnings": [warn]},
+                {"symbol": "BBB", "buy": [], "sell": []},  # runner 0.1.0 sends no warnings
+            ],
+        }
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    bars = [{"date": date(2024, 1, 2), "close": 10.0}]
+    out = client.run("src", {"AAA": bars, "BBB": bars})
+    assert out["AAA"]["warnings"] == [warn]
+    assert out["BBB"]["warnings"] == []
+
 def test_signal_rows_keep_only_recent_sessions_and_report_errors() -> None:
     s = PineScript(id="x", name="x", source='plotshape(true, "buy")', version=3)
     bars = {"AAA": [{"date": date(2024, 1, 2), "close": 10.0}, {"date": date(2024, 1, 9), "close": 12.0}]}

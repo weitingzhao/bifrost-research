@@ -159,7 +159,10 @@ def check(body: CheckBody) -> dict[str, Any]:
         for d in res.get(side) or []
     ]
     marks.sort(key=lambda m: m["date"])
-    return {"ok": True, "data": {"symbol": sym, "bars": len(bars), "marks": marks}}
+    return {
+        "ok": True,
+        "data": {"symbol": sym, "bars": len(bars), "marks": marks, "warnings": res.get("warnings") or []},
+    }
 
 
 @router.get("/signals")
