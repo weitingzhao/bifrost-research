@@ -33,7 +33,7 @@ GET /research/canonical-pnl/trajectory?symbol=SPY&entry_date=2026-01-15&structur
 | `api/canonical_pnl.py` | HTTP |
 | `schema/ddl.py` / `schemas.py` | DDL + constants |
 | `dbt/models/marts/mart_canonical_pnl_daily.sql` | human-read mart |
-| `k8s/engines/cronjob-canonical-pnl.yaml` | schedule |
+| `orchestration/schedules.py` (`research_canonical_pnl_schedule`) | schedule (Dagster; the CronJob was deleted, TD-124) |
 
 ## Constraints
 

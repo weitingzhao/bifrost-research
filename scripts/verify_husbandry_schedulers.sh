@@ -3,8 +3,11 @@
 #
 # Nothing here is a hand-kept list (TD-108: the old one asserted retired schedules
 # and only WARNed when one was absent):
-#   - CronJobs: every CronJob in the husbandry namespaces must be suspended,
-#     except the ones Dagster does not own (ALLOW_ACTIVE).
+#   - CronJobs: none may exist in the husbandry namespaces (TD-124: Dagster owns
+#     every slot), except ALLOW_ACTIVE (outside Dagster, must be active) and
+#     ALLOW_TEMPLATE (suspended Job templates that platform-api's
+#     cronjob_trigger.go whitelist still creates Jobs from; must stay suspended).
+#     tests/test_k8s_cronjobs.py keeps both lists equal to k8s/.
 #   - Schedules: the expected set is research-api's roster
 #     (bifrost_research.api.schedule_roster, test-locked to the Dagster
 #     definitions); each must be listed by the daemon and RUNNING. A schedule the
@@ -20,18 +23,31 @@ NS_RESEARCH="${NS_RESEARCH:-research}"
 # CronJobs that stay active on purpose. research-harness is the only research
 # CronJob outside Dagster (weekdays 13:30 UTC).
 ALLOW_ACTIVE="${ALLOW_ACTIVE:-research-harness}"
+# Suspended CronJobs kept only as Job templates for platform-api's trigger
+# whitelist (bifrost-platform api/internal/research/cronjob_trigger.go).
+ALLOW_TEMPLATE="${ALLOW_TEMPLATE:-bifrost-analytics-daily research-engines-event-radar research-engines-forecast research-engines-momentum research-gex-intraday research-iv-percentile research-terrain-intraday}"
 FAIL=0
 
-echo "== Husbandry CronJobs must be suspended =="
+echo "== Husbandry CronJobs must not exist =="
 for ns in plugin-market-data plugin-flex-query "$NS_RESEARCH"; do
   while read -r name sus; do
     [[ -z "$name" ]] && continue
     if [[ " $ALLOW_ACTIVE " == *" $name "* ]]; then
-      echo "OK   ${ns}/${name} suspend=${sus:-false} (outside Dagster by design)"
-    elif [[ "$sus" == "true" ]]; then
-      echo "OK   suspend ${ns}/${name}"
+      if [[ "$sus" == "true" ]]; then
+        echo "FAIL ${ns}/${name} suspended (it runs outside Dagster and must be active)"
+        FAIL=1
+      else
+        echo "OK   ${ns}/${name} active (outside Dagster by design)"
+      fi
+    elif [[ " $ALLOW_TEMPLATE " == *" $name "* ]]; then
+      if [[ "$sus" == "true" ]]; then
+        echo "OK   ${ns}/${name} suspended (Job template for platform-api trigger)"
+      else
+        echo "FAIL ${ns}/${name} suspend=${sus:-false} (template must stay suspended — Dagster owns this slot)"
+        FAIL=1
+      fi
     else
-      echo "FAIL ${ns}/${name} suspend=${sus:-false} (must be true — Dagster owns this slot)"
+      echo "FAIL ${ns}/${name} exists (Dagster owns every slot; delete it — TD-124)"
       FAIL=1
     fi
   done < <(kubectl -n "$ns" get cronjob \

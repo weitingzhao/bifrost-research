@@ -26,7 +26,7 @@ kubectl -n research set image cronjob/research-terrain-intraday \
   compute=192.168.10.73:30500/bifrost-research:0.38.0
 kubectl -n research set image cronjob/research-engines-forecast \
   compute=192.168.10.73:30500/bifrost-research:0.38.0
-kubectl apply -f k8s/engines/cronjob-scan.yaml
+# (2026-10: scan runs in Dagster research_trading_day; cronjob-scan.yaml was deleted, TD-124)
 
 # 3) Verify
 kubectl -n research get cronjob | grep -E 'terrain-intraday|forecast|scan'

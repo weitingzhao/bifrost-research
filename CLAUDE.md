@@ -58,7 +58,7 @@
 - **`features.stock_signal_*`**：momentum / SEPA projection / event_radar
 - **`features.stock_forecast_*`**：terrain / forecast session / hourly
 - **`features.stock_backtest_*`**：settlement / results
-- CronJobs：`k8s/engines/cronjob-volatility.yaml` + `k8s/engines/cronjob-engines.yaml` + `k8s/engines/cronjob-intraday.yaml` + **`cronjob-event-radar.yaml`**（W3–W4 + news ingest；镜像 tag `0.5.7`）
+- 调度：Dagster（`orchestration/`）。`k8s/` 只剩 `research-harness`（活跃）和 7 个挂起的 Job 模板（platform-api `cronjob_trigger.go` 白名单用）；清单见 `tests/test_k8s_cronjobs.py`（TD-124）
 - LLM：`engines/forecast/llm.py` 可插拔（OpenAI/Anthropic/Ollama）；默认 **heuristic** 离线可测
 
 ### Wave 5.1+ — Dagster 批调度（Data Husbandry）
