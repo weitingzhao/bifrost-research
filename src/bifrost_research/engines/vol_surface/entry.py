@@ -16,11 +16,11 @@ import os
 import sys
 from datetime import date, datetime, timezone
 from typing import Any, Sequence
-from zoneinfo import ZoneInfo
 
 from bifrost_research.db.calendar import (
     fetch_recent_trading_days,
     load_symbols_from_env_or_query,
+    ny_today,
     union_iv_radar_benchmarks,
 )
 from bifrost_research.db.conn import connect
@@ -34,7 +34,6 @@ from bifrost_research.engines.volatility.surface import (
 
 logger = logging.getLogger(__name__)
 
-_NY = ZoneInfo("America/New_York")
 
 _MIN_POINTS = 10
 _MIN_DTE = 7
@@ -71,10 +70,6 @@ _RESIDUAL_COLS = (
     "option_right",
     "option_ticker",
 )
-
-
-def _today_ny() -> date:
-    return datetime.now(timezone.utc).astimezone(_NY).date()
 
 
 def _dte(trade_date: date, expiry: date) -> int:
@@ -321,7 +316,7 @@ def run(
     dry_run: bool = False,
     single_symbol: str | None = None,
 ) -> dict[str, Any]:
-    day = as_of or _today_ny()
+    day = as_of or ny_today()
     conn = connect()
     try:
         underlyings = load_symbols_from_env_or_query(conn, symbols=symbols)

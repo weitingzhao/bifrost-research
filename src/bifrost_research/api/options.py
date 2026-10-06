@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence
 
 from fastapi import APIRouter, HTTPException, Query
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 
@@ -75,7 +76,7 @@ def _apply_date_filters(
                 resolved_td = _as_date(row[0])
 
     if lookback_days is not None and lookback_days > 0:
-        end = resolved_td or date.today()
+        end = resolved_td or ny_today()
         start = end - timedelta(days=int(lookback_days))
         clauses.append("trade_date >= %s")
         params.append(start)

@@ -55,6 +55,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.engines.backtest.event_defs import (
@@ -157,7 +158,7 @@ def _read_failed(conn: Any, what: str, exc: Exception, errors: list[str]) -> Non
 
 
 def _lookback_window(lookback_years: int, today: date | None = None) -> tuple[date, date]:
-    end = today or date.today()
+    end = today or ny_today()
     years = max(1, int(lookback_years))
     start = date(end.year - years, end.month, min(end.day, 28))
     return start, end
@@ -1319,7 +1320,7 @@ def run_event_query(
         hi_off = max(max(int(lg.entry_offset_days), int(lg.exit_offset_days)) for lg in legs)
         pad_before = int(abs(min(lo_off, 0)) * 1.5) + 10
         pad_after = int((max(hi_off, 0) + (1 if after_event else 0)) * 1.5) + 10
-        as_of = today or date.today()
+        as_of = today or ny_today()
         delisted_exits = 0
         for raw_symbol, event_date in resolved.events[: max(1, int(max_events))]:
             # Options sit under the ticker the company trades as now (Plugin

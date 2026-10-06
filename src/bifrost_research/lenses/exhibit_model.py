@@ -39,7 +39,7 @@ def age_hours(ts: Any) -> float | None:
         return None
     if isinstance(ts, datetime):
         if ts.tzinfo is None:
-            return (datetime.utcnow() - ts).total_seconds() / 3600.0
+            return (datetime.now(timezone.utc).replace(tzinfo=None) - ts).total_seconds() / 3600.0
         return (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds() / 3600.0
     return None
 

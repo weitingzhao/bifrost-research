@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from statistics import median
 from typing import Any, Literal, Sequence
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.fastcount import breakdown_with_dominant, distinct_count, estimate_rows
 from bifrost_research.db.upsert import batch_upsert
 from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
@@ -586,7 +587,7 @@ def run_cohort(
     source: Literal["all", "daily", "snapshot"] = "all",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    end = as_of or date.today()
+    end = as_of or ny_today()
     start = end.fromordinal(end.toordinal() - int(lookback_days * 1.5))  # calendar buffer
     # Prefer trading-day lookback via stock calendar when available
     try:

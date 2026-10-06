@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.signal_hit.build import expected_sign
@@ -231,7 +232,7 @@ def signal_decay(
     sym = symbol.strip().upper() if symbol and symbol.strip() else None
     conn = _connect_or_503()
     try:
-        cutoff = date.today() - timedelta(days=window_days + 5)
+        cutoff = ny_today() - timedelta(days=window_days + 5)
         raw = _fetch_lens_rows(conn, lens=lens, cutoff=cutoff, symbol=sym, regime=regime_n)
     except HTTPException:
         raise
@@ -333,7 +334,7 @@ def signal_decay_by_symbol(
         raise HTTPException(status_code=400, detail="symbols is empty")
     conn = _connect_or_503()
     try:
-        cutoff = date.today() - timedelta(days=window_days)
+        cutoff = ny_today() - timedelta(days=window_days)
         with conn.cursor() as cur:
             cur.execute(
                 f"""
@@ -383,7 +384,7 @@ def signal_decay_intersect(
 
     conn = _connect_or_503()
     try:
-        cutoff = date.today() - timedelta(days=window_days + 5)
+        cutoff = ny_today() - timedelta(days=window_days + 5)
         # Load each lens/side set keyed by (trade_date, symbol)
         per_pair: list[dict[tuple[Any, str], dict[str, Any]]] = []
         baselines: dict[str, Any] = {}

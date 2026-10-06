@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.engines.backtest.regime_stats import compute_regime_stats
 from bifrost_research.engines.brief.cards import (
     BRIEF_LENSES,
@@ -76,7 +77,7 @@ def freshness_lamp(
     if not has_data:
         return "gray"
     td = _date_prefix(trade_date)
-    target = selected_date or date.today().isoformat()
+    target = selected_date or ny_today().isoformat()
     if not td:
         return "yellow"
     if td == target:
@@ -483,7 +484,7 @@ def build_verdict(
 def synthesize_daily_brief(conn: Any, symbol: str, trade_date: date | None = None) -> dict[str, Any]:
     sym = symbol.strip().upper()
     resolved = _resolve_trade_date(conn, sym, trade_date)
-    selected_date = resolved.isoformat() if resolved else date.today().isoformat()
+    selected_date = resolved.isoformat() if resolved else ny_today().isoformat()
 
     events = _load_events(conn)
     sepa_candidates: list[dict[str, Any]] = []

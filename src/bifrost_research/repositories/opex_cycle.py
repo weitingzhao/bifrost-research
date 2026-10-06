@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.engines.opex_cycle.calendar import (
     days_to_opex,
     is_opex_week,
@@ -106,7 +107,7 @@ def get_current(
         return None
     out = _row_to_dict(row, _DAILY_COLUMNS)
     # Refresh dte/is_opex_week against today (persisted value is as-of trade_date).
-    today = date.today()
+    today = ny_today()
     out["next_opex_date"] = next_opex_friday(today).isoformat()
     out["dte_to_opex_today"] = days_to_opex(today)
     out["is_opex_week_today"] = is_opex_week(today)
@@ -195,7 +196,7 @@ def get_history(
     """
     sym = symbol.strip().upper()
     cyc = max(1, min(int(cycles), 60))
-    today = date.today()
+    today = ny_today()
     # Enumerate last `cyc + 1` monthly OpEx Fridays ending on or before today.
     fridays: list[date] = []
     yr, mo = today.year, today.month
@@ -268,7 +269,7 @@ def get_pin_analysis(
     """
     sym = symbol.strip().upper()
     cyc = max(1, min(int(cycles), 60))
-    today = date.today()
+    today = ny_today()
     fridays: list[date] = []
     yr, mo = today.year, today.month
     while len(fridays) < cyc + 2:

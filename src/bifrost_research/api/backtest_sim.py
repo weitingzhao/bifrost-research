@@ -22,6 +22,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.event_defs import check_entry_offset, default_entry_offset
@@ -99,7 +100,7 @@ class SimBody(BaseModel):
 
     @model_validator(mode="after")
     def _window(self) -> "SimBody":
-        end = self.end or date.today()
+        end = self.end or ny_today()
         start = self.start or (end - timedelta(days=730))
         if start >= end:
             raise ValueError("start must be before end")

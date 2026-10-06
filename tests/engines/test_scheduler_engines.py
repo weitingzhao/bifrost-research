@@ -181,7 +181,7 @@ def test_gex_intraday_runs_the_names_the_intraday_chain_observed() -> None:
         seen.append(symbol)
         return {"ok": True, "spot_source": "prior_close" if symbol != "SPX" else "oi_max_strike"}
 
-    with patch.object(sched, "_today_ny", return_value=date(2026, 9, 28)), \
+    with patch.object(sched, "ny_today", return_value=date(2026, 9, 28)), \
          patch.object(sched, "compute_gex_intraday", side_effect=fake), \
          patch.object(sched, "fetch_recent_trading_days", return_value=[date(2026, 9, 28)]):
         result = sched.run_gex_intraday(conn, trading_days=[], symbols=["AAPL", "PLTR", "SPX", "SPY"])
@@ -195,7 +195,7 @@ def test_gex_intraday_runs_the_names_the_intraday_chain_observed() -> None:
 
 def test_gex_intraday_keeps_to_an_explicit_symbol_list() -> None:
     conn = _gex_conn(["PLTR", "SPX", "SPY"])
-    with patch.object(sched, "_today_ny", return_value=date(2026, 9, 28)), \
+    with patch.object(sched, "ny_today", return_value=date(2026, 9, 28)), \
          patch.object(sched, "compute_gex_intraday", return_value={"ok": True}) as compute, \
          patch.object(sched, "fetch_recent_trading_days", return_value=[date(2026, 9, 28)]):
         sched.run_gex_intraday(conn, trading_days=[], symbols=["SPY"])
@@ -207,14 +207,14 @@ def test_gex_intraday_raises_when_a_trading_day_writes_nothing() -> None:
     import pytest
 
     conn = _gex_conn(["PLTR", "SPY"])
-    with patch.object(sched, "_today_ny", return_value=date(2026, 9, 28)), \
+    with patch.object(sched, "ny_today", return_value=date(2026, 9, 28)), \
          patch.object(sched, "compute_gex_intraday", return_value={"ok": False, "error": "No OI contracts"}), \
          patch.object(sched, "fetch_recent_trading_days", return_value=[date(2026, 9, 28)]), \
          pytest.raises(RuntimeError, match="all failed"):
         sched.run_gex_intraday(conn, trading_days=[], symbols=["PLTR", "SPY"])
 
     empty = _gex_conn([])
-    with patch.object(sched, "_today_ny", return_value=date(2026, 9, 28)), \
+    with patch.object(sched, "ny_today", return_value=date(2026, 9, 28)), \
          patch.object(sched, "fetch_recent_trading_days", return_value=[date(2026, 9, 28)]), \
          pytest.raises(RuntimeError, match="observed no name"):
         sched.run_gex_intraday(empty, trading_days=[], symbols=["PLTR"])
@@ -223,7 +223,7 @@ def test_gex_intraday_raises_when_a_trading_day_writes_nothing() -> None:
 def test_gex_intraday_is_quiet_on_a_closed_day() -> None:
     conn = _gex_conn([])
     # 2026-11-26 is Thanksgiving: the calendar's latest session is the day before.
-    with patch.object(sched, "_today_ny", return_value=date(2026, 11, 26)), \
+    with patch.object(sched, "ny_today", return_value=date(2026, 11, 26)), \
          patch.object(sched, "fetch_recent_trading_days", return_value=[date(2026, 11, 25)]):
         result = sched.run_gex_intraday(conn, trading_days=[], symbols=["PLTR"])
     assert result["symbols"] == 0 and result["symbols_ok"] == 0
@@ -239,7 +239,7 @@ def test_terrain_intraday_stands_on_the_sessions_inputs_where_the_chain_observed
         written.extend(rows)
         return len(rows)
 
-    with patch.object(sched, "_today_ny", return_value=date(2026, 9, 28)), \
+    with patch.object(sched, "ny_today", return_value=date(2026, 9, 28)), \
          patch.object(sched, "_intraday_chain_symbols", return_value=["PLTR"]), \
          patch.object(sched, "load_upstream_signals", return_value=(192.59, daily_gex, {"score": 62.2}, {"iv_rank_1y": 15.8})), \
          patch.object(sched, "fetch_spot_reading", return_value=(191.97, "parity", date(2026, 9, 28))), \

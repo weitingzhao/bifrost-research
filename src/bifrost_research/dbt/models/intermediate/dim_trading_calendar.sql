@@ -11,7 +11,14 @@
 
 with all_dates as (
     select d::date as calendar_date
-    from generate_series('2020-01-01'::date, current_date, '1 day'::interval) as d
+    -- Up to New York's date, not the database's UTC current_date: the nightly
+    -- build runs at 02:30 UTC, when current_date is already New York's
+    -- tomorrow (TD-93/TD-98).
+    from generate_series(
+        '2020-01-01'::date,
+        (now() at time zone 'America/New_York')::date,
+        '1 day'::interval
+    ) as d
 ),
 
 holidays as (

@@ -35,6 +35,7 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.forecast.terrain import (
     compute_market_terrain,
@@ -62,10 +63,6 @@ OPTION_OPEN_INTEREST = "raw_market.option_open_interest"
 #: An input row more than a week older than the session is not that session's reading.
 MAX_INPUT_STALENESS_DAYS = 7
 EXECUTIONS_LIMIT = 10000
-
-
-def _today() -> date:
-    return datetime.now(timezone.utc).date()
 
 
 # ── what to fill (Trade API, read-only HTTP) ──────────────────────────────
@@ -271,7 +268,7 @@ def backfill(
 def run(*, as_of: date | None = None, force: bool = False) -> dict[str, Any]:
     from bifrost_research.mcp.tools._trade_api_client import base_trading, get
 
-    day = as_of or _today()
+    day = as_of or ny_today()
     try:
         targets, target_stats = trade_targets(get, base_trading())
     except Exception as exc:  # noqa: BLE001 — no target list, no backfill

@@ -24,6 +24,8 @@ import logging
 import math
 from typing import Any
 
+from bifrost_research.db.calendar import ny_today
+
 logger = logging.getLogger(__name__)
 
 BUY_ZONE_PCT = 0.05
@@ -417,8 +419,6 @@ def prior_scores(
     stock screen scored it 82 — and a drift computed across them is not an
     outlook, it is a change of ruler.
     """
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
 
     from bifrost_research.repositories import candidate_pool as pool_repo
 
@@ -427,7 +427,7 @@ def prior_scores(
     # a run after 20:00 ET would read its own row as a prior. A run rated after
     # the fact passes its own session date as `as_of`, otherwise it would read
     # its own candidate row as the prior and every outlook would be "stable".
-    today = as_of or datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    today = as_of or ny_today().isoformat()
     for sym in symbols:
         try:
             rows = pool_repo.list_candidates(conn, status=None, symbol=sym, days=days, limit=20)

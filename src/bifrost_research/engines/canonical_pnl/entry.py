@@ -13,16 +13,14 @@ import argparse
 import json
 import logging
 import sys
-from datetime import date, datetime, timezone
-from zoneinfo import ZoneInfo
+from datetime import date
 
-from bifrost_research.db.calendar import load_symbols_from_env_or_query, union_iv_radar_benchmarks
+from bifrost_research.db.calendar import load_symbols_from_env_or_query, ny_today, union_iv_radar_benchmarks
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.canonical_pnl import run_cohort
 from bifrost_research.schema.ddl import apply_features_ddl
 
 logger = logging.getLogger(__name__)
-_NY = ZoneInfo("America/New_York")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -47,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    as_of = date.fromisoformat(args.as_of) if args.as_of else datetime.now(timezone.utc).astimezone(_NY).date()
+    as_of = date.fromisoformat(args.as_of) if args.as_of else ny_today()
 
     conn = connect()
     try:

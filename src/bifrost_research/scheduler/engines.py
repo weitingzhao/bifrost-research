@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 from bifrost_research.db.calendar import (
     fetch_recent_trading_days,
     load_symbols_from_env_or_query,
+    ny_today,
 )
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.flow import compute_order_flow_for_symbol
@@ -65,10 +66,6 @@ SLOT_NAMES = (
     "gex-intraday",
     "settlement",
 )
-
-
-def _today_ny() -> date:
-    return datetime.now(timezone.utc).astimezone(_NY).date()
 
 
 #: A name that entered the option universe fewer days ago than this is still
@@ -375,7 +372,7 @@ def run_terrain_intraday(
     skipped = 0
     live = 0
     triggers = TriggerTally()
-    today = _today_ny()
+    today = ny_today()
     observed = set(_intraday_chain_symbols(conn, today))
     for sym in symbols:
         spot, gex, momentum, iv = load_upstream_signals(conn, sym, today)
@@ -476,7 +473,7 @@ def run_gex_intraday(
     failure shows where the schedule is watched.
     """
     now_utc = datetime.now(timezone.utc)
-    today = _today_ny()
+    today = ny_today()
     wanted = {str(x).strip().upper() for x in symbols}
     observed = [x for x in _intraday_chain_symbols(conn, today) if not wanted or x in wanted]
     ok = 0
@@ -716,7 +713,7 @@ def run_slot(
     symbols: Sequence[str] | None = None,
     as_of: date | None = None,
 ) -> dict[str, Any]:
-    day = as_of or _today_ny()
+    day = as_of or ny_today()
     runner = _SLOT_RUNNERS.get(slot)
     if runner is None:
         raise ValueError(f"unknown slot: {slot}")

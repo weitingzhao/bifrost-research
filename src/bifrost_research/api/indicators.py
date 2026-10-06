@@ -17,6 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.engines.indicators import bollinger, catalog, ema, get_signal, macd, rsi, signal_mask
@@ -68,7 +69,7 @@ def _params(raw: str | None) -> dict[str, Any]:
 
 
 def _window(start: date | None, end: date | None, default_days: int) -> tuple[date, date]:
-    end = end or date.today()
+    end = end or ny_today()
     start = start or end - timedelta(days=default_days)
     if start >= end:
         raise HTTPException(status_code=400, detail="start must be before end")

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, timedelta
+from datetime import timedelta
 from typing import Any, Protocol
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.conn import rollback_quietly
 from bifrost_research.copilot.harness.policy_schema import EventsLayerPolicy, LoopPolicy
 
@@ -44,7 +45,7 @@ def fetch_event_symbols(
     limit: int = 500,
 ) -> tuple[list[str], dict[str, dict[str, Any]], str]:
     layer = layer or EventsLayerPolicy()
-    cutoff = date.today() - timedelta(days=layer.within_days)
+    cutoff = ny_today() - timedelta(days=layer.within_days)
 
     sql = """
         SELECT event_id, affected_symbols, importance, theme, event_summary,

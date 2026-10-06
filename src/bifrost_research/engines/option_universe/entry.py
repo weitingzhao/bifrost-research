@@ -49,9 +49,10 @@ Writes `research.option_universe` only. D10 BLOCKED.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from typing import Any
 
+from bifrost_research.db.calendar import session_today
 from bifrost_research.db.conn import connect
 from bifrost_research.schema.schemas import TABLE_RESEARCH_OPTION_UNIVERSE
 
@@ -79,10 +80,6 @@ EDGE_HISTORY_MONTHS = 12
 LIVENESS_DAYS = 14
 
 TIER_RANK = {"resident": 0, "core": 1, "edge": 2}
-
-
-def _today() -> date:
-    return datetime.now(timezone.utc).date()
 
 
 # ── inputs ────────────────────────────────────────────────────────────────
@@ -292,9 +289,12 @@ def write_universe(conn: Any, rows: dict[str, dict[str, Any]], *, existing: dict
 
 
 def run(*, as_of: date | None = None) -> dict[str, Any]:
-    day = as_of or _today()
     conn = connect()
     try:
+        # The session, not the UTC date: the nightly run fires at 02:30 UTC, and
+        # the UTC date stamped last_seen/entered_on one day ahead — Saturday for
+        # Friday's run (TD-98).
+        day = as_of or session_today(conn)
         # The liquidity scan walks a month of bars for every listed name; the
         # role's default statement timeout is sized for page reads, not this.
         with conn.cursor() as cur:

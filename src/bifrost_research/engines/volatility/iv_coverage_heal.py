@@ -29,11 +29,10 @@ import argparse
 import json
 import logging
 import sys
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, Iterator, Sequence
-from zoneinfo import ZoneInfo
 
-from bifrost_research.db.calendar import load_symbols_from_env_or_query, union_iv_radar_benchmarks
+from bifrost_research.db.calendar import load_symbols_from_env_or_query, ny_today, union_iv_radar_benchmarks
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 from bifrost_research.engines.volatility.atm_iv import compute_atm_iv_for_date
@@ -162,7 +161,7 @@ def run(
     ratio: float = COVERAGE_RATIO,
     apply: bool = True,
 ) -> dict[str, Any]:
-    end = end or datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
+    end = end or ny_today()
     start = end - timedelta(days=int(window_days))
     conn = connect()
     try:

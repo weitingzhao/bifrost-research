@@ -6,6 +6,7 @@ import logging
 from datetime import date
 from typing import Any, Protocol
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.copilot.harness import data_sources as ds
 from bifrost_research.copilot.harness.policy_schema import LoopPolicy
 
@@ -26,7 +27,7 @@ def sepa_stale_days(conn: _Connection, *, today: date | None = None) -> int | No
                 return None
             val = row[0]
             latest = val if isinstance(val, date) else date.fromisoformat(str(val)[:10])
-            ref = today or date.today()
+            ref = today or ny_today()
             return max(0, (ref - latest).days)
     except Exception as exc:  # noqa: BLE001
         logger.warning("sepa_stale_days failed: %s", exc)

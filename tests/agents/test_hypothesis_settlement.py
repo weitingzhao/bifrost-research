@@ -315,7 +315,7 @@ def api(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _Conn, list[dict[s
     monkeypatch.setattr(
         hypothesis_api.repo, "get_hypothesis", lambda c, hid: next((dict(r) for r in rows if r["id"] == hid), None)
     )
-    monkeypatch.setattr(hs, "_new_york_today", lambda: TODAY)
+    monkeypatch.setattr(hs, "ny_today", lambda: TODAY)
     return TestClient(create_app()), conn, rows
 
 

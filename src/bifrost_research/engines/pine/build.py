@@ -44,7 +44,7 @@ import sys
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
-from bifrost_research.db.calendar import load_symbols_from_env_or_query
+from bifrost_research.db.calendar import load_symbols_from_env_or_query, ny_today
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.pine import client
 from bifrost_research.engines.pine.library import PineScript, ensure_builtins, list_scripts
@@ -188,7 +188,7 @@ def run(
     full: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    end = as_of or date.today()
+    end = as_of or ny_today()
     conn = connect()
     try:
         seeded = 0 if dry_run else ensure_builtins(conn)

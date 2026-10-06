@@ -45,6 +45,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from typing import Any, Sequence
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.engines.backtest.event_defs import (
     ENTRY_TIMING_VERSION,
@@ -653,7 +654,7 @@ def run_sim(
             per_symbol[sym] = {"n_trades": 0, "skipped": "no_stock"}
             continue
         if store.delisted_on is None and conn is not None:
-            store.delisted_on = listing_end(conn, sym, as_of=date.today())
+            store.delisted_on = listing_end(conn, sym, as_of=ny_today())
         events = None if events_by_symbol is None else events_by_symbol.get(live_label(sym), [])
         trades, curve, sk = _run_symbol(store, start, end, cfg, events=events, overlay=overlay)
         # One symbol's bars resident at a time, also when the Pine comparison

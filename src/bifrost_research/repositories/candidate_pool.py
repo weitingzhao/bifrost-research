@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Protocol
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.schema.schemas import TABLE_RESEARCH_CANDIDATE_POOL
 
 _ALLOWED_STATUSES = frozenset({"open", "promoted", "dismissed", "expired"})
@@ -116,7 +117,7 @@ def create_candidate(
         raise ValueError(f"invalid source: {source!r}")
 
     cid = candidate_id or generate_candidate_id(sym)
-    td = trade_date or date.today()
+    td = trade_date or ny_today()
     ttl_at = datetime.now(timezone.utc) + timedelta(days=max(1, ttl_days))
     tag_list = [t.strip() for t in (tags or []) if t and str(t).strip()]
 

@@ -9,6 +9,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.conn import connect
 from bifrost_research.db.upsert import batch_upsert
 
@@ -49,7 +50,7 @@ def ingest_macro_csv(path: Path, *, source: str = "csv_drop") -> dict[str, Any]:
             if not indicator:
                 continue
             event_date_raw = (row.get("event_date") or row.get("date") or "").strip()
-            event_date = date.fromisoformat(event_date_raw[:10]) if event_date_raw else date.today()
+            event_date = date.fromisoformat(event_date_raw[:10]) if event_date_raw else ny_today()
             actual = _parse_float(row.get("actual") or row.get("actual_value"))
             expected = _parse_float(row.get("expected") or row.get("expected_value"))
             prior = _parse_float(row.get("prior") or row.get("prior_value"))

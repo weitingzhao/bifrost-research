@@ -32,14 +32,13 @@ import logging
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from bifrost_research.copilot.agents.hypothesis_resolution import (
     lineage_refs,
     rule_from_objective,
 )
 from bifrost_research.copilot.harness.policy_schema import ResolutionPolicy
-from bifrost_research.db.calendar import cached_closed_days, settlement_session
+from bifrost_research.db.calendar import cached_closed_days, ny_today, settlement_session
 from bifrost_research.db.conn import rollback_quietly
 from bifrost_research.engines.candidate_outcome.build import (
     DEFAULT_HORIZONS,
@@ -54,7 +53,6 @@ from bifrost_research.schema.schemas import (
 
 logger = logging.getLogger(__name__)
 
-_NY = ZoneInfo("America/New_York")
 
 FROM_OUTCOME = "candidate_outcome"
 FROM_TRADE_DATE = "candidate_trade_date"
@@ -108,10 +106,6 @@ def _read(conn: Any, what: str, sql: str, ids: Iterable[str]) -> list[Any] | Non
         return None
 
 
-def _new_york_today() -> date:
-    return datetime.now(_NY).date()
-
-
 def _closed_reason(hyp: Mapping[str, Any]) -> dict[str, Any] | None:
     """A hypothesis that is no longer waiting on a window."""
     status = str(hyp.get("status") or "")
@@ -137,7 +131,7 @@ def settlements_for(
     today: date | None = None,
 ) -> dict[str, dict[str, Any]]:
     """``{hypothesis_id: {"settles_on": iso | None, "settles_basis": {...}}}`` for every row."""
-    today = today or _new_york_today()
+    today = today or ny_today()
     out: dict[str, dict[str, Any]] = {}
     waiting: list[tuple[str, str, str, str]] = []  # (hid, candidate_id, objective_id, run_id)
 

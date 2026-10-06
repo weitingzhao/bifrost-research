@@ -14,8 +14,8 @@ import logging
 import statistics
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Sequence
-from zoneinfo import ZoneInfo
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.conn import connect
 from bifrost_research.db.upsert import batch_upsert
 from bifrost_research.lenses.registry import decay_lens_ids
@@ -26,7 +26,6 @@ from bifrost_research.schema.schemas import (
 )
 
 logger = logging.getLogger(__name__)
-_NY = ZoneInfo("America/New_York")
 
 LENSES = decay_lens_ids()
 UPSERT_COLS = (
@@ -40,10 +39,6 @@ UPSERT_COLS = (
 )
 
 
-def _today_ny() -> date:
-    return datetime.now(timezone.utc).astimezone(_NY).date()
-
-
 def _asof(conn: Any, as_of: date | None) -> date:
     if as_of:
         return as_of
@@ -52,7 +47,7 @@ def _asof(conn: Any, as_of: date | None) -> date:
         row = cur.fetchone()
         if row and row[0]:
             return row[0]
-    return _today_ny()
+    return ny_today()
 
 
 def _composite_high_alerts(conn: Any, as_of: date) -> list[tuple[Any, ...]]:

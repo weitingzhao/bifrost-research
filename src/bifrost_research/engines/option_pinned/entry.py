@@ -35,6 +35,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.conn import connect
 from bifrost_research.mcp.tools._trade_api_client import TradeApiShapeError, list_items
 from bifrost_research.schema.schemas import TABLE_RESEARCH_OPTION_PINNED_CONTRACT
@@ -52,10 +53,6 @@ EXECUTIONS_LOOKBACK_DAYS = 3 * 365
 EXECUTIONS_LIMIT = 10000
 REASON_HELD = "held"
 REASON_CLOSED = "closed_recent"
-
-
-def _today() -> date:
-    return datetime.now(timezone.utc).date()
 
 
 # ── the IB key ────────────────────────────────────────────────────────────
@@ -92,7 +89,9 @@ def parse_contract_key(key: Any) -> dict[str, Any] | None:
     if not underlying or right not in ("C", "P"):
         return None
     try:
-        expiry = datetime.strptime(parts[2], "%Y%m%d").date()
+        if len(parts[2]) != 8 or not parts[2].isdigit():  # YYYYMMDD only
+            return None
+        expiry = date.fromisoformat(parts[2])
         strike = float(parts[3])
     except (TypeError, ValueError):
         return None
@@ -153,7 +152,7 @@ def _execution_date(row: Mapping[str, Any]) -> date | None:
     raw = row.get("trade_date")
     if raw:
         try:
-            return datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
+            return date.fromisoformat(str(raw)[:10])
         except ValueError:
             pass
     ts = row.get("time")
@@ -353,7 +352,7 @@ def live_held_pins(conn: Any) -> int:
 def run(*, as_of: date | None = None) -> dict[str, Any]:
     from bifrost_research.mcp.tools._trade_api_client import base_trading, get
 
-    day = as_of or _today()
+    day = as_of or ny_today()
     try:
         base = base_trading()
         held = load_held_legs(get, base)

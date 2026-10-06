@@ -16,6 +16,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.opex_cycle.calendar import (
     days_to_opex,
@@ -68,7 +69,7 @@ def current(
             conn.close()
         except Exception:
             pass
-    today = date.today()
+    today = ny_today()
     return _ok(
         {
             "row": row,

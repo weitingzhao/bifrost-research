@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
@@ -1011,7 +1012,7 @@ def run_aggregate(body: AggregateBody) -> dict[str, Any]:
                 settlement_id=str(s.get("settlement_id") or "tmp"),
                 session_id=str(s.get("session_id") or ""),
                 symbol=str(s.get("symbol") or body.symbol or ""),
-                trade_date=_as_date(s.get("trade_date")) or date.today(),
+                trade_date=_as_date(s.get("trade_date")) or ny_today(),
                 expected_close=float(s.get("expected_close") or 0),
                 actual_close=float(s.get("actual_close") or 0),
                 close_miss=float(s.get("close_miss") or 0),

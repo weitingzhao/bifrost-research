@@ -18,11 +18,11 @@ import os
 import sys
 from datetime import date, datetime, timezone
 from typing import Any, Sequence
-from zoneinfo import ZoneInfo
 
 from bifrost_research.db.calendar import (
     fetch_recent_trading_days,
     load_symbols_from_env_or_query,
+    ny_today,
     union_iv_radar_benchmarks,
 )
 from bifrost_research.db.conn import connect
@@ -41,7 +41,6 @@ from bifrost_research.engines.volatility.surface import fetch_iv_points_for_date
 
 logger = logging.getLogger(__name__)
 
-_NY = ZoneInfo("America/New_York")
 
 _MIN_DTE = 7
 _MAX_DTE = 90
@@ -58,10 +57,6 @@ _COLS = (
     "is_opex_week",
     "computed_at",
 )
-
-
-def _today_ny() -> date:
-    return datetime.now(timezone.utc).astimezone(_NY).date()
 
 
 def compute_opex_for_symbol(
@@ -211,7 +206,7 @@ def run(
     dry_run: bool = False,
     single_symbol: str | None = None,
 ) -> dict[str, Any]:
-    day = as_of or _today_ny()
+    day = as_of or ny_today()
     conn = connect()
     try:
         underlyings = load_symbols_from_env_or_query(conn, symbols=symbols)

@@ -13,13 +13,13 @@ import argparse
 import logging
 import os
 import sys
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from typing import Sequence
-from zoneinfo import ZoneInfo
 
 from bifrost_research.db.calendar import (
     fetch_recent_trading_days,
     load_symbols_from_env_or_query,
+    ny_today,
     union_iv_radar_benchmarks,
 )
 from bifrost_research.db.conn import connect
@@ -31,13 +31,8 @@ from bifrost_research.engines.vrp.compute import (
 
 logger = logging.getLogger(__name__)
 
-_NY = ZoneInfo("America/New_York")
 # 20 sessions is about 28 calendar days; wait a little longer before trying a row.
 MIN_AGE_DAYS_FOR_20D = 30
-
-
-def _today_ny() -> date:
-    return datetime.now(timezone.utc).astimezone(_NY).date()
 
 
 def run(
@@ -48,7 +43,7 @@ def run(
     dry_run: bool = False,
     single_symbol: str | None = None,
 ) -> dict[str, object]:
-    day = as_of or _today_ny()
+    day = as_of or ny_today()
     conn = connect()
     try:
         underlyings = load_symbols_from_env_or_query(conn, symbols=symbols)
@@ -127,7 +122,7 @@ def backfill_fwd_ret_20d(*, lookback_days: int = 90, as_of: date | None = None) 
     on the day). This walks the last ``lookback_days`` of rows that are still
     NULL and old enough, and writes the log return from the close series.
     """
-    day = as_of or _today_ny()
+    day = as_of or ny_today()
     conn = connect()
     try:
         with conn.cursor() as cur:

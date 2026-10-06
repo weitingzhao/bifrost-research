@@ -30,6 +30,7 @@ from datetime import date, timedelta
 from statistics import median
 from typing import Any, Sequence
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.engines.backtest.canonical_pnl import bs_price
 from bifrost_research.engines.volatility.iv_solver import as_traded_close
 from bifrost_research.repositories.earnings_filings import (
@@ -124,7 +125,7 @@ def summarize(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
 
 def earnings_moves(conn: Any, symbol: str, *, limit: int = 8, as_of: date | None = None) -> dict[str, Any]:
     sym = symbol.strip().upper()
-    today = as_of or date.today()
+    today = as_of or ny_today()
     with conn.cursor() as cur:
         cur.execute(
             """

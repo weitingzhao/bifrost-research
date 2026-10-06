@@ -15,6 +15,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Mapping, Sequence
 from uuid import uuid4
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.upsert import batch_upsert
 
 _COLS = (
@@ -198,7 +199,7 @@ def step_parse(
     collected_at: date | None = None,
 ) -> list[RawEvent]:
     """01 parse — one fragment → one raw record; no dedupe."""
-    day = collected_at or date.today()
+    day = collected_at or ny_today()
     chunks = _split_bullets(payload)
     out: list[RawEvent] = []
     for i, chunk in enumerate(chunks, start=1):

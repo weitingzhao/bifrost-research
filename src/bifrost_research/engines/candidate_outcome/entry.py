@@ -21,6 +21,7 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Any
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.conn import connect
 from bifrost_research.db.upsert import batch_upsert
 from bifrost_research.engines.candidate_outcome.build import (
@@ -89,7 +90,7 @@ def _forward_leg(
     to the last close when the name was delisted inside the window — the exit
     date is then that session and the benchmark is priced over the same span.
     """
-    leg = forward_leg(conn, symbol, as_of, horizon, today=date.today())
+    leg = forward_leg(conn, symbol, as_of, horizon, today=ny_today())
     if leg is None:
         return None, None, None, None
     return leg.entry_close, leg.exit_close, leg.exit_date, leg.entry_date

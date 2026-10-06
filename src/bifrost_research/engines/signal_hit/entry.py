@@ -21,7 +21,6 @@ import logging
 import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable, Sequence
-from zoneinfo import ZoneInfo
 
 from bifrost_research.db.conn import connect
 from bifrost_research.db.upsert import batch_upsert
@@ -42,9 +41,9 @@ from bifrost_research.lenses.registry import decay_lens_ids
 from bifrost_research.lenses.slope_tenor import SLOPE_30D_WHERE_BINDS, slope_30d_sql
 from bifrost_research.repositories.listing_lineage import forward_leg
 from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_LENS_HIT_DAILY
+from bifrost_research.db.calendar import ny_today
 
 logger = logging.getLogger(__name__)
-_NY = ZoneInfo("America/New_York")
 
 LENS_IV = "iv_rank"
 LENS_VRP = "vrp"
@@ -69,10 +68,6 @@ UPSERT_COLS = (
     "hit_20d",
     "computed_at",
 )
-
-
-def _today_ny() -> date:
-    return datetime.now(timezone.utc).astimezone(_NY).date()
 
 
 def _parse_lenses(raw: str | None) -> list[str]:
@@ -118,7 +113,7 @@ def _fwd_return(conn: Any, symbol: str, as_of: date, horizon: int) -> float | No
     under its new ticker, and a name delisted inside the window is judged on its
     last close instead of being left out of the rate for good.
     """
-    leg = forward_leg(conn, symbol, as_of, horizon, today=_today_ny())
+    leg = forward_leg(conn, symbol, as_of, horizon, today=ny_today())
     return leg.ret if leg is not None else None
 
 
@@ -577,7 +572,7 @@ def run(
     ``dry_run`` reports what would be written and removed and writes nothing.
     """
     lens_list = list(lenses) if lenses else list(ALL_LENSES)
-    end = as_of or _today_ny()
+    end = as_of or ny_today()
     start = end - timedelta(days=max(lookback_days * 2, lookback_days + 5))
     conn = connect()
     try:

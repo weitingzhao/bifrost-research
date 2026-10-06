@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.upsert import batch_upsert
 
 _SETTLEMENT_COLS = (
@@ -310,7 +311,7 @@ def aggregate_accuracy(
     faults = sum(1 for s in settlements if (s.stats_json or {}).get("input_fault"))
     settlements = [s for s in settlements if not (s.stats_json or {}).get("input_fault")]
     if not settlements:
-        today = date.today()
+        today = ny_today()
         return BacktestSummary(
             result_id=result_id or f"bt-{uuid4().hex[:8]}",
             symbol=(symbol or "").upper(),

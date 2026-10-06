@@ -26,6 +26,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.engines.backtest.sim.chain import ChainStore
 from bifrost_research.engines.backtest.sim.engine import _open
 from bifrost_research.engines.backtest.sim.rules import SimConfig
@@ -262,7 +263,7 @@ def _symbol_paired(conn: Any, s: dict[str, Any], now: date, last_session: date) 
 
 
 def run_settle(conn: Any, *, today: date | None = None) -> dict[str, Any]:
-    now = today or date.today()
+    now = today or ny_today()
     pending = store.pending_settlements(
         conn, ALL_BASES, SETTLEMENT_METHOD_VERSION, symbol_paired_sources=tuple(SYMBOL_PAIRED["sources"])
     )

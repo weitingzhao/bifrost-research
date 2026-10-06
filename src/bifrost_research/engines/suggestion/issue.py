@@ -14,6 +14,7 @@ from dataclasses import replace
 from datetime import date
 from typing import Any, Sequence
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.engines.backtest.sim.chain import ChainStore
 from bifrost_research.engines.backtest.sim.engine import _open
 from bifrost_research.engines.backtest.sim.rules import SimConfig, fill_basis
@@ -167,7 +168,7 @@ def _specs() -> list[tuple[str, dict[str, Any], str]]:
 
 def run_issue(conn: Any, *, today: date | None = None) -> dict[str, Any]:
     """Issue the mechanical sources' suggestions for recent sessions; idempotent."""
-    end = today or date.today()
+    end = today or ny_today()
     calendar = store.recent_sessions(conn, BASELINE_SYMBOL, end)
     window = calendar[-CATCH_UP_SESSIONS:]
     written: list[str] = []

@@ -31,11 +31,11 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timezone
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.auth.deps import require_owner
 from bifrost_research.copilot.agents.hypothesis_settlement import attach_settlement
 from bifrost_research.db.conn import connect
@@ -121,7 +121,7 @@ def _parse_entry_date(created_at: Any) -> date:
             return date.fromisoformat(created_at[:10])
         except ValueError:
             pass
-    return date.today()
+    return ny_today()
 
 
 def _fetch_trajectory_rows(
@@ -133,7 +133,7 @@ def _fetch_trajectory_rows(
 ) -> tuple[date | None, list[dict[str, Any]]]:
     """The hypothesis's trajectory, simulated on request (0.117.0). Stored canonical
     entries sit one per week, so reading the table found 2 of 72 hypotheses' dates."""
-    today = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
+    today = ny_today()
     sim = simulate_entry(conn, symbol=symbol, entry_date=entry_date, structure=structure, as_of_end=today)
     return sim["entry_date"], [mark_row_json(r) for r in sim["rows"]]
 
@@ -152,7 +152,7 @@ def _trajectory_summary(rows: list[dict[str, Any]], *, structure: str, symbol: s
         "row_count": len(rows),
         "final_pnl": final_pnl,
         "last_pnl_since_entry": last_pnl,
-        "refreshed_at": datetime.utcnow().isoformat() + "Z",
+        "refreshed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
 
 

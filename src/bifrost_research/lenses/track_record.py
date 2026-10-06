@@ -11,6 +11,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_LENS_HIT_DAILY
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ def fetch_track_record(
     min_symbol_rows: int = MIN_SYMBOL_ROWS,
 ) -> dict[str, Any] | None:
     """Settled hit rates for the lens; None when the table has nothing in the window."""
-    cutoff = date.today() - timedelta(days=window_days)
+    cutoff = ny_today() - timedelta(days=window_days)
     try:
         rows = _lens_hit_rows(conn, decay_lens, cutoff, symbol)
         scoped = len(rows) >= min_symbol_rows

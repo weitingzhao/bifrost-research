@@ -18,12 +18,12 @@ from a name the feed carries, or a name the feed has never carried.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.conn import connect
 from bifrost_research.lenses.narrative import sec_item_tags, vendor_tag
 from bifrost_research.repositories.earnings_filings import expected_next, fetch_item_202, split_releases
@@ -48,10 +48,6 @@ def _connect_or_503() -> Any:
         raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
 
 
-def _today_et() -> Any:
-    """Filings are dated by the SEC's calendar, which is New York's."""
-    return datetime.now(ZoneInfo("America/New_York")).date()
-
 
 def _iso(v: Any) -> Any:
     return v.isoformat() if hasattr(v, "isoformat") else v
@@ -63,7 +59,7 @@ def narrative(
     limit: int = Query(400, ge=1, le=2000),
     symbol: str | None = Query(None, min_length=1, max_length=16),
 ) -> dict[str, Any]:
-    today = _today_et()
+    today = ny_today()  # SEC filings are dated on New York's calendar
     cutoff = today - timedelta(days=days)
     # The plugin stores tickers stripped and upper-cased; normalise the input,
     # never the column, so the (symbol, …) index is still usable.
@@ -260,7 +256,7 @@ def earnings_dates(symbol: str = Query(..., min_length=1, max_length=16)) -> dic
             n, first_filed, last_filed = cur.fetchone()
         kept, set_aside = split_releases(fetch_item_202(conn, sym)) if n else ([], [])
         dates = [_iso(d) for d in kept]
-        expected = expected_next(kept, as_of=_today_et()) if kept else None
+        expected = expected_next(kept, as_of=ny_today()) if kept else None
     except Exception as exc:
         logger.exception("narrative/earnings failed")
         raise HTTPException(status_code=503, detail=str(exc)) from exc

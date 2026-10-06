@@ -15,11 +15,11 @@ import os
 import sys
 from datetime import date, datetime, timezone
 from typing import Any, Mapping, Sequence
-from zoneinfo import ZoneInfo
 
 from bifrost_research.db.calendar import (
     fetch_recent_trading_days,
     load_symbols_from_env_or_query,
+    ny_today,
     union_iv_radar_benchmarks,
 )
 from bifrost_research.db.conn import connect
@@ -31,7 +31,6 @@ from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_SCAN_DAILY
 
 logger = logging.getLogger(__name__)
 
-_NY = ZoneInfo("America/New_York")
 
 _SCAN_COLS = (
     "trade_date",
@@ -156,10 +155,6 @@ LEFT JOIN (
 #: passed that argument until a scoped recompute did, so the parameter had been
 #: unusable since it was written.
 _ORDER_BY = "\nORDER BY u.symbol\n"
-
-
-def _today_ny() -> date:
-    return datetime.now(timezone.utc).astimezone(_NY).date()
 
 
 def _row_to_dict(row: Any, columns: Sequence[str]) -> dict[str, Any]:
@@ -302,7 +297,7 @@ def run(
     dry_run: bool = False,
     single_symbol: str | None = None,
 ) -> dict[str, object]:
-    day = as_of or _today_ny()
+    day = as_of or ny_today()
     conn = connect()
     try:
         underlyings = load_symbols_from_env_or_query(conn, symbols=symbols)

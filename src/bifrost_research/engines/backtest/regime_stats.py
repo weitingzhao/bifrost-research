@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import timedelta
 from typing import Any, Mapping
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.engines.backtest.settlement import forecast_result_sql
 
 
@@ -16,7 +17,7 @@ def compute_regime_stats(
     current_regime: str | None = None,
 ) -> dict[str, Any]:
     sym = symbol.strip().upper()
-    cutoff = date.today() - timedelta(days=max(lookback_days, 1))
+    cutoff = ny_today() - timedelta(days=max(lookback_days, 1))
     with conn.cursor() as cur:
         cur.execute(
             f"""

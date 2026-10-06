@@ -28,9 +28,8 @@ every expiry every session, so the horizons can be read back.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from bifrost_research.engines.volatility.atm_iv import (
     IV30_MAX_DTE,
@@ -40,6 +39,7 @@ from bifrost_research.engines.volatility.atm_iv import (
     interpolate_iv_at_dte,
     iv30_from_expiries,
 )
+from bifrost_research.db.calendar import ny_today
 
 TENORS: tuple[int, ...] = (7, 30, 60, 90)
 # The 7-day reading's DTE window: the store's shortest expiry to three times the horizon.
@@ -200,7 +200,7 @@ def fetch_cone(
     window_sessions: int = WINDOW_SESSIONS,
 ) -> dict[str, Any]:
     sym = symbol.strip().upper()
-    end = as_of or datetime.now(ZoneInfo("America/New_York")).date()
+    end = as_of or ny_today()
     start = end - timedelta(days=int(_FETCH_CALENDAR_DAYS * window_sessions / WINDOW_SESSIONS))
     with conn.cursor() as cur:
         cur.execute(

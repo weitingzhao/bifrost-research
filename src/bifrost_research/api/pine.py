@@ -20,6 +20,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.catalog import evaluation
@@ -157,7 +158,7 @@ def put_script(body: ScriptBody, script_id: str = Path(..., min_length=2, max_le
 def check(body: CheckBody) -> dict[str, Any]:
     """Run a source (or a library script) over one symbol and return its signals — nothing is stored."""
     sym = body.symbol.strip().upper()
-    end = date.today()
+    end = ny_today()
     conn = _connect_or_503()
     try:
         lib = get_script(conn, body.script) if body.script else None
@@ -219,7 +220,7 @@ def signals(
     try:
         with conn.cursor() as cur:
             if symbol:
-                e = end or date.today()
+                e = end or ny_today()
                 s = start or e - timedelta(days=730)
                 cur.execute(
                     f"""SELECT script_id, symbol, trade_date, side, close FROM {TABLE_STOCK_SIGNAL_PINE_DAILY}
@@ -277,7 +278,7 @@ def signal_stats(
 ) -> dict[str, Any]:
     """Return after a script's signal, entered the next session, net of cost, next to the
     same names' other sessions — method in ``engines/signal_stats.py`` (``data.method``)."""
-    e = end or date.today()
+    e = end or ny_today()
     s = start or e - timedelta(days=365 * 5)
     try:
         hs = sorted({int(x) for x in _csv(horizons)})

@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.engines.backtest.settlement import forecast_result_sql
 from bifrost_research.lenses.pin_expiry import monthly_expiry_sql
 from bifrost_research.lenses.registry import LENSES, classify, classify_category
@@ -280,7 +281,7 @@ def screen(
     if unknown:
         raise ValueError(f"unknown lens: {', '.join(unknown)}")
     universe = tuple(symbols) if symbols is not None else load_universe(conn, tiers=tiers)
-    since = (as_of or date.today()) - timedelta(days=window_days)
+    since = (as_of or ny_today()) - timedelta(days=window_days)
 
     unscreenable = {lens: UNSCREENABLE[lens] for lens in wanted if lens in UNSCREENABLE}
     readable = [lens for lens in wanted if lens not in unscreenable]

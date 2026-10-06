@@ -7,6 +7,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any, Mapping, Sequence
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.fastcount import breakdown_with_dominant, distinct_count, estimate_rows
 from bifrost_research.engines.volatility.atm_iv import IV30_MAX_DTE, IV30_MIN_DTE, iv30_from_expiries
 from bifrost_research.engines.backtest.canonical_pnl import (
@@ -427,7 +428,7 @@ def run_cohort(
     entry (a rebuild). Unless dry, each symbol's rows outside the window or off the
     phase go first, so the table holds exactly the window.
     """
-    end = as_of or date.today()
+    end = as_of or ny_today()
     start = end - timedelta(days=int(lookback_months * 30.5))
     if reset and not dry_run:
         clear_canonical_pnl_tables(conn)

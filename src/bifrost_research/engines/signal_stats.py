@@ -62,6 +62,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.repositories.listing_lineage import listing_ends, spliced_bars_sql
 
 METHOD_VERSION = 2
@@ -306,7 +307,7 @@ def evaluate(
     50 most recent signals (``recent``, undirected gross return per horizon and
     whether the cooldown counted it).
     """
-    today = today or date.today()
+    today = today or ny_today()
     rt = 2.0 * float(cost_bps) / 1e4
     hs = sorted(set(int(h) for h in horizons))
     by_sym = {s: sorted(set(ds)) for s, ds in by_sym.items() if ds}

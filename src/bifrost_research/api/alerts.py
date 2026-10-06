@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.conn import connect
 from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_ALERT_DAILY
 
@@ -44,7 +45,7 @@ def list_alerts(
 
     conn = _connect_or_503()
     try:
-        cutoff = date.today() - timedelta(days=days)
+        cutoff = ny_today() - timedelta(days=days)
         where = ["trade_date >= %s"]
         params: list[Any] = [cutoff]
         if kind:

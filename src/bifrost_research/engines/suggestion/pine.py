@@ -23,6 +23,7 @@ from dataclasses import replace
 from datetime import date
 from typing import Any, Callable, Iterable
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.engines.backtest.sim.chain import ChainStore
 from bifrost_research.engines.backtest.sim.walk import with_snapshot_fill
 from bifrost_research.engines.suggestion import store
@@ -211,7 +212,7 @@ def run_issue_pine(conn: Any, *, today: date | None = None, cfg: dict[str, Any] 
     """Issue Pine suggestions for recent sessions; idempotent."""
     if cfg.get("paused"):
         return {"paused": True, "rule_version": cfg["rule_version"], "written": 0}
-    end = today or date.today()
+    end = today or ny_today()
     calendar = store.recent_sessions(conn, BASELINE_SYMBOL, end)
     window = [d for d in calendar[-CATCH_UP_SESSIONS:] if d >= cfg["live_from"]]
     if not window:

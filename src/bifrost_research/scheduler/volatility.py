@@ -6,13 +6,13 @@ import argparse
 import logging
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Any, Sequence
-from zoneinfo import ZoneInfo
 
 from bifrost_research.db.calendar import (
     fetch_recent_trading_days,
     load_symbols_from_env_or_query,
+    ny_today,
     union_iv_radar_benchmarks,
 )
 from bifrost_research.db.conn import connect
@@ -26,13 +26,8 @@ from bifrost_research.engines.volatility.pcr import compute_pcr_for_date
 
 logger = logging.getLogger(__name__)
 
-_NY = ZoneInfo("America/New_York")
 
 SLOT_NAMES = ("max-pain", "atm-iv-pcr", "iv-percentile")
-
-
-def _today_ny() -> date:
-    return datetime.now(timezone.utc).astimezone(_NY).date()
 
 
 def run_slot(
@@ -44,7 +39,7 @@ def run_slot(
     as_of: date | None = None,
 ) -> dict[str, Any]:
     """Run one volatility compute slot against golden_source."""
-    day = as_of or _today_ny()
+    day = as_of or ny_today()
     conn = connect()
     try:
         underlyings = load_symbols_from_env_or_query(conn, symbols=symbols)

@@ -15,6 +15,7 @@ import logging
 from datetime import date
 from typing import Any, Protocol
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.conn import rollback_quietly
 from bifrost_research.api.scan import (
     load_adaptive_weights,
@@ -112,7 +113,7 @@ def scan_stale_days(conn: _Connection, *, today: date | None = None) -> int | No
     latest = latest_scan_trade_date(conn)
     if latest is None:
         return None
-    ref = today or date.today()
+    ref = today or ny_today()
     return max(0, (ref - latest).days)
 
 

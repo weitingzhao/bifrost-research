@@ -139,7 +139,7 @@ def _table_freshness(conn: Any, label: str, table: str) -> dict[str, Any]:
             if isinstance(max_ts, datetime):
                 iso = max_ts.isoformat()
                 if max_ts.tzinfo is None:
-                    age = (datetime.utcnow() - max_ts).total_seconds() / 3600.0
+                    age = (datetime.now(timezone.utc).replace(tzinfo=None) - max_ts).total_seconds() / 3600.0
                 else:
                     age = (datetime.now(timezone.utc) - max_ts.astimezone(timezone.utc)).total_seconds() / 3600.0
             else:
@@ -333,7 +333,7 @@ def _compute_signal_health() -> dict[str, Any]:
         return _ok(
             {
                 "overall": overall,
-                "as_of": datetime.utcnow().isoformat() + "Z",
+                "as_of": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "sla_hours": freshness_sla_hours(),
                 "freshness": freshness,
                 "extra_tables": extra,

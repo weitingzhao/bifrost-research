@@ -11,8 +11,10 @@ caveat, never to a 500 — an exhibit with a missing block is still an exhibit.
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.engines.backtest.settlement import forecast_result_sql
 from bifrost_research.lenses.pin_expiry import NO_MONTHLY_CAVEAT, monthly_expiry_sql
 from bifrost_research.lenses.exhibit_model import ExhibitResponse, freshness_from, iso_date, rollback_quietly
@@ -529,10 +531,11 @@ def exhibit_forecast_path(conn: Any, symbol: str) -> ExhibitResponse:
                    MAX(trade_date),
                    MAX(computed_at)
             FROM {TABLE_STOCK_BACKTEST_SETTLEMENT}
-            WHERE symbol = %s AND trade_date >= CURRENT_DATE - INTERVAL '30 days'
+            WHERE symbol = %s AND trade_date >= %s
               AND {forecast_result_sql()}
             """,
-            (symbol,),
+            # New York's date, not the database's UTC CURRENT_DATE (TD-98).
+            (symbol, ny_today() - timedelta(days=30)),
         )
         count = int(row[0] or 0) if row else 0
         if not row or count == 0:

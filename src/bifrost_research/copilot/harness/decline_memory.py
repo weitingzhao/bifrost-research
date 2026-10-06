@@ -30,6 +30,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from bifrost_research.db.calendar import ny_today
+
 logger = logging.getLogger(__name__)
 
 #: Where a name sits on the SEPA path, worst to best. From
@@ -262,7 +264,6 @@ def decline_stage(
     so in the funnel: a run that narrows silently on a database error is the
     failure this gate exists to prevent, pointed the other way.
     """
-    from datetime import date
 
     from bifrost_research.copilot.harness.universe.types import FunnelStep
     from bifrost_research.db.conn import rollback_quietly
@@ -314,10 +315,11 @@ def decline_stage(
             symbols,
             statuses=("dismissed", "promoted"),
             objective_id=objective_id,
-            # Must match how `create_candidate` stamps `trade_date`, which is
-            # `date.today()` on the same host — a UTC date would disagree with
-            # the stored value for part of every day.
-            trade_date=date.today(),  # noqa: DTZ011
+            # Must match how `create_candidate` stamps `trade_date`: both use
+            # New York's date (db/calendar.ny_today). Until 0.183.0 both used
+            # `ny_today()`, which on the UTC pods is New York's tomorrow from
+            # 20:00 on (TD-98).
+            trade_date=ny_today(),
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("decline lookup failed for run %s: %s", run_id, exc)

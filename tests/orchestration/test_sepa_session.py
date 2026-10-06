@@ -65,7 +65,7 @@ def test_the_feature_mart_carries_the_session_test() -> None:
 
 @pytest.fixture
 def no_holidays(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(calendar, "cached_closed_days", lambda _conn, _s, _e: frozenset())
+    monkeypatch.setattr(calendar, "closed_days", lambda _conn, _s, _e: frozenset())
 
 
 @pytest.mark.parametrize(
@@ -88,7 +88,7 @@ def test_latest_closed_session_is_the_new_york_session(no_holidays: None, now: d
 
 def test_a_holiday_is_not_a_session(monkeypatch: pytest.MonkeyPatch) -> None:
     labor_day = date(2026, 9, 7)
-    monkeypatch.setattr(calendar, "cached_closed_days", lambda _conn, _s, _e: frozenset({labor_day}))
+    monkeypatch.setattr(calendar, "closed_days", lambda _conn, _s, _e: frozenset({labor_day}))
     # Labor Day night's batch (02:30 UTC Tuesday) describes Friday 09-04.
     now = datetime(2026, 9, 8, 2, 30, tzinfo=UTC)
     assert calendar.latest_closed_session(object(), now=now) == date(2026, 9, 4)

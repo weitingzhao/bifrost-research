@@ -16,6 +16,7 @@ from typing import Any
 
 from psycopg2.extras import RealDictCursor
 
+from bifrost_research.db.calendar import ny_today
 from bifrost_research.schema.schemas import (
     TABLE_JOURNAL_HINT_DISMISSAL,
     TABLE_JOURNAL_MEMORY,
@@ -252,7 +253,7 @@ def _days_to_print(conn: Any, symbol: str) -> int | None:
         )
 
         releases = split_releases(fetch_item_202(conn, symbol))[0]
-        est = expected_next(releases, as_of=date.today())
+        est = expected_next(releases, as_of=ny_today())
     except Exception:  # noqa: BLE001 — a hint must never take the sheet down
         return None
     if not est:

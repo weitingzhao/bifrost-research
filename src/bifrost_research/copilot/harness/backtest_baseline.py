@@ -23,6 +23,8 @@ import logging
 from datetime import date
 from typing import Any
 
+from bifrost_research.db.calendar import ny_today
+
 logger = logging.getLogger(__name__)
 
 # (event kind, template, lookback, day) → summary. Day-scoped because settled
@@ -45,7 +47,7 @@ def template_baseline(
 ) -> dict[str, Any]:
     """Market-wide record for a template. Never raises — a failed baseline must
     not cost the Owner the batch, so it comes back as ``not_measured``."""
-    day = (today or date.today()).isoformat()
+    day = (today or ny_today()).isoformat()
     key = (event_kind, template, lookback_years, day)
     cached = _cache.get(key)
     if cached is not None:

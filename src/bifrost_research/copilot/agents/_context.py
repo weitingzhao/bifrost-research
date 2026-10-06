@@ -6,6 +6,8 @@ import logging
 from datetime import date, datetime, timezone
 from typing import Any, Protocol
 
+from bifrost_research.db.calendar import ny_today
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,7 +25,7 @@ def _safe(fn, *args, default: Any = None, **kwargs) -> Any:
 
 def gather_symbol_context(conn: _Connection, symbols: list[str]) -> dict[str, Any]:
     """Pull latest VRP / terrain regime / event radar hits per symbol (best-effort)."""
-    out: dict[str, Any] = {"symbols": {}, "as_of": date.today().isoformat()}
+    out: dict[str, Any] = {"symbols": {}, "as_of": ny_today().isoformat()}
     if not symbols:
         return out
 

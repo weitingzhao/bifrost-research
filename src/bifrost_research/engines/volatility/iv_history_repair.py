@@ -46,9 +46,8 @@ import logging
 import sys
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Iterator, Sequence
-from zoneinfo import ZoneInfo
 
-from bifrost_research.db.calendar import load_symbols_from_env_or_query, union_iv_radar_benchmarks
+from bifrost_research.db.calendar import load_symbols_from_env_or_query, ny_today, union_iv_radar_benchmarks
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 from bifrost_research.engines.canonical_pnl import run_cohort as run_canonical_cohort
@@ -311,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--canonical-only", action="store_true", help="rebuild canonical PnL only")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    today_ny = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
+    today_ny = ny_today()
     result = run(
         start=date.fromisoformat(args.start) if args.start else None,
         end=date.fromisoformat(args.end) if args.end else today_ny,
