@@ -43,6 +43,7 @@ from bifrost_research.engines.suggestion import store
 from bifrost_research.engines.suggestion.config import (
     BASELINE_SYMBOL,
     BASIS_SLIPPAGE,
+    LIQUIDITY,
     MAX_STALE_SESSIONS,
     SETTLEMENT_METHOD_VERSION,
     SYMBOL_PAIRED,
@@ -74,6 +75,27 @@ def rules_for(s: dict[str, Any], basis: str) -> WalkRules:
 
 def entry_session(sessions: list[date], as_of: date) -> date | None:
     return next((d for d in sessions if d > as_of), None)
+
+
+def tradeable_entry(
+    st: ChainStore, legs: list[LegSpec], as_of: date, max_delay: int | None = None
+) -> tuple[date | None, int | None, str | None]:
+    """(entry session, sessions late, void reason) for ``legs`` issued on ``as_of``.
+
+    The first session after ``as_of`` on which every leg traded, at most
+    ``max_delay`` sessions after the first one (walk-2). (None, None, None)
+    while the data has not reached that far yet: the suggestion stays open.
+    """
+    delay = int(LIQUIDITY["max_entry_delay"] if max_delay is None else max_delay)
+    after = [x for x in st.sessions if x > as_of][: delay + 1]
+    tickers = [lg.ticker for lg in legs]
+    for i, x in enumerate(after):
+        st.prefetch(x, tickers)
+        if all(st.bar(t, x) is not None for t in tickers):
+            return x, i, None
+    if len(after) <= delay:
+        return None, None, None
+    return None, None, f"no_entry_bar_within_{delay}"
 
 
 def settlement_row(
@@ -124,16 +146,20 @@ def settlement_row(
     return row
 
 
-def _walk(st: ChainStore, legs: list[LegSpec], s: dict[str, Any], basis: str) -> tuple[WalkOutcome, date | None, WalkRules]:
+def _walk(
+    st: ChainStore, legs: list[LegSpec], s: dict[str, Any], basis: str
+) -> tuple[WalkOutcome, date | None, WalkRules, dict[str, Any]]:
     rules = rules_for(s, basis)
-    entry = entry_session(st.sessions, s["as_of_session"])
+    entry, late, void = tradeable_entry(st, legs, s["as_of_session"])
+    if void is not None:
+        return WalkOutcome("void", void), None, rules, {}
     if entry is None:
-        return WalkOutcome("open", "no_entry_session_yet"), None, rules
+        return WalkOutcome("open", "no_entry_session_yet"), None, rules, {}
     out = walk_legs(st, legs, entry, rules, structure=s.get("structure") or "custom")
     if out.status == "void" and st.sessions[-1] <= entry:
         # The entry session's prints may still be landing; void only once past it.
-        return WalkOutcome("open", "entry_session_is_latest"), entry, rules
-    return out, entry, rules
+        return WalkOutcome("open", "entry_session_is_latest"), entry, rules, {}
+    return out, entry, rules, {"entry_delay_sessions": late}
 
 
 def _paired_legs(s: dict[str, Any], spy: ChainStore) -> list[LegSpec] | str:
@@ -223,9 +249,12 @@ def _symbol_paired(conn: Any, s: dict[str, Any], now: date, last_session: date) 
     exp = max(lg.expiry for lg in legs) + timedelta(days=3)
     st = load_leg_store(conn, sym, [lg.ticker for lg in legs], c, min(exp, now))
     st.delisted_on = listing_end(conn, sym, as_of=now)
-    entry = entry_session(st.sessions, c)
+    entry, late, void = tradeable_entry(st, legs, c)
+    if void is not None:
+        return WalkOutcome("void", f"control_{void}"), None, extra
     if entry is None:
         return WalkOutcome("open", "no_entry_session_yet"), None, extra
+    extra["entry_delay_sessions"] = late
     out = walk_legs(st, legs, entry, rules_for(s, SYMBOL_BASIS), structure=str(s.get("structure") or "custom"))
     if out.status == "void" and st.sessions[-1] <= entry:
         return WalkOutcome("open", "entry_session_is_latest"), entry, extra
@@ -261,13 +290,13 @@ def run_settle(conn: Any, *, today: date | None = None) -> dict[str, Any]:
                 if basis in s["done"]:
                     continue
                 if legs is None:
-                    out, entry, rules = WalkOutcome("void", "legs_unreadable"), None, rules_for(s, basis)
+                    out, entry, rules, extra = WalkOutcome("void", "legs_unreadable"), None, rules_for(s, basis), {}
                 else:
-                    out, entry, rules = _walk(st, legs, s, basis)
+                    out, entry, rules, extra = _walk(st, legs, s, basis)
                 if out.status == "open":
                     still_open += 1
                     continue
-                if store.insert_settlement(conn, settlement_row(s["suggestion_id"], basis, out, entry=entry, rules=rules)):
+                if store.insert_settlement(conn, settlement_row(s["suggestion_id"], basis, out, entry=entry, rules=rules, extra=extra)):
                     written[basis] = written.get(basis, 0) + 1
 
     spy_chains: dict[tuple[date, int], ChainStore] = {}
@@ -289,15 +318,15 @@ def run_settle(conn: Any, *, today: date | None = None) -> dict[str, Any]:
             if as_of not in spy.spot:
                 still_open += 1
                 continue
-            out, entry, rules = WalkOutcome("void", legs_or_reason), None, rules_for(s, basis)
+            out, entry, rules, extra = WalkOutcome("void", legs_or_reason), None, rules_for(s, basis), {}
         else:
             exp = max(lg.expiry for lg in legs_or_reason) + timedelta(days=3)
             spy_legs = load_leg_store(conn, BASELINE_SYMBOL, [lg.ticker for lg in legs_or_reason], as_of, min(exp, now))
-            out, entry, rules = _walk(spy_legs, legs_or_reason, s, basis)
+            out, entry, rules, extra = _walk(spy_legs, legs_or_reason, s, basis)
         if out.status == "open":
             still_open += 1
             continue
-        extra = {"paired_symbol": BASELINE_SYMBOL}
+        extra = {**extra, "paired_symbol": BASELINE_SYMBOL}
         if store.insert_settlement(conn, settlement_row(s["suggestion_id"], basis, out, entry=entry, rules=rules, extra=extra)):
             written[basis] = written.get(basis, 0) + 1
 
@@ -331,4 +360,5 @@ __all__ = [
     "rules_for",
     "run_settle",
     "settlement_row",
+    "tradeable_entry",
 ]

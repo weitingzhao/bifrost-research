@@ -25,6 +25,7 @@ from bifrost_research.engines.suggestion.config import (
     CATCH_UP_SESSIONS,
     DAILY_CAP,
     DELTA_TOLERANCE,
+    LIQUIDITY,
     MAX_STALE_SESSIONS,
     SIMULATOR_LIVE,
 )
@@ -65,6 +66,11 @@ def _sim_config(spec: dict[str, Any]) -> SimConfig:
     )
 
 
+def _leg_volume(chain: ChainStore, ticker: str, d: date) -> int:
+    bar = chain.bar(ticker, d)
+    return int(bar.volume or 0) if bar is not None else 0
+
+
 def build_suggestion(
     chain: ChainStore,
     d: date,
@@ -83,6 +89,11 @@ def build_suggestion(
         # The nearest strike the data has is not the delta the rule names — a
         # 35-delta put issued under a 30-delta rule is a different suggestion.
         return "delta_out_of_band"
+    min_volume = int(LIQUIDITY["min_leg_volume"])
+    if min(_leg_volume(chain, lg.ticker, d) for lg in pos.legs) < min_volume:
+        # A contract that barely traded on the as-of session often does not
+        # trade on the next one, where the suggestion would enter.
+        return "illiquid_leg"
     legs = []
     snap_legs = []
     for lg in pos.legs:
@@ -124,6 +135,7 @@ def build_suggestion(
         "margin": round(pos.margin, 2),
         "credit_basis": fill_basis(cfg),
         "regime": regime,
+        "liquidity": {"min_leg_volume": min_volume},
         "entry_rule": "next session's vwap with tiered slippage",
     }
     return Suggestion(

@@ -44,7 +44,9 @@ THRESHOLDS: dict[str, Any] = {
 
 # How each settlement basis prices the walk. ``model_stress`` is the 1.5x
 # slippage of threshold 4; ``baseline_paired`` uses ``model`` pricing on SPY.
-SETTLEMENT_METHOD_VERSION = "walk-1"
+# walk-2 (2026-10-06): entry may wait up to LIQUIDITY["max_entry_delay"]
+# sessions for every leg to trade (walk-1 voided on the first missing bar).
+SETTLEMENT_METHOD_VERSION = "walk-2"
 BASIS_SLIPPAGE: dict[str, float] = {"model": 1.0, "model_stress": 1.5, "baseline_paired": 1.0, "symbol_paired": 1.0}
 MAX_STALE_SESSIONS = 3
 
@@ -113,9 +115,17 @@ SIMULATOR_LIVE: tuple[dict[str, Any], ...] = (
 # - the universe is whatever the snapshot can pick a 20-delta for: a name with
 #   no chain, or whose nearest strike misses the delta by more than
 #   DELTA_TOLERANCE, is skipped (and does not use up the cap).
+#
+# rule_version 2 (Owner 2026-10-06, after the 2024-11..2026-10 replay,
+# REPORT-pine-s4-replay-2026-10-06.md): sell -> call credit spread is no longer
+# issued (-6% on risk in every IV regime and year), and the source is paused
+# while the buy side is iterated offline against held-out sessions -- its prior
+# was ~0 and the timing added nothing over entering a few days later. Unpausing
+# is a new rule_version with a new live_from.
 _SIM = SIMULATOR_LIVE[0]
 PINE_LIVE: dict[str, Any] = {
-    "rule_version": "1",
+    "rule_version": "2",
+    "paused": True,
     "live_from": date(2026, 10, 6),
     "scripts": (
         {"script_id": "supertrend", "script_version": 1},
@@ -123,7 +133,6 @@ PINE_LIVE: dict[str, Any] = {
     ),
     "sides": {
         "buy": {"structure": "short_put", "short_delta": 0.20},
-        "sell": {"structure": "call_credit_spread", "short_delta": 0.20},
     },
     "target_dte": _SIM["target_dte"],
     "min_dte": _SIM["min_dte"],
@@ -147,6 +156,17 @@ PINE_LIVE: dict[str, Any] = {
 # the single name's own premium. Settled once the window has passed.
 SYMBOL_PAIRED: dict[str, Any] = {"sources": ("pine",), "window_days": 7}
 
+# Every mechanical source (S4 liquidity, Owner 2026-10-06 option c):
+# - issue: each leg must have traded at least ``min_leg_volume`` contracts on
+#   the as-of session. Measured on single-name option_daily, 30-60 DTE,
+#   2026-03..04: a contract that traded 1 printed again the next session 49% of
+#   the time, 10-24: 80%, 25-99: 90%, 100+: 95%. (The 16:00 snapshot's
+#   day_volume is not used to measure this: it reads ~97% "printed" in every
+#   bucket, as if the last session's volume carries over.)
+# - settle: entry is the first session after the as-of session on which every
+#   leg trades, at most ``max_entry_delay`` sessions late; past that, void.
+LIQUIDITY: dict[str, int] = {"min_leg_volume": 25, "max_entry_delay": 3}
+
 # A mechanical source refuses to issue when the nearest strike's delta is
 # further than this from its rule's target (the suggestion would not be the rule).
 DELTA_TOLERANCE = 0.05
@@ -165,6 +185,7 @@ __all__ = [
     "CATCH_UP_SESSIONS",
     "DAILY_CAP",
     "DELTA_TOLERANCE",
+    "LIQUIDITY",
     "MAX_STALE_SESSIONS",
     "PINE_LIVE",
     "SETTLEMENT_METHOD_VERSION",

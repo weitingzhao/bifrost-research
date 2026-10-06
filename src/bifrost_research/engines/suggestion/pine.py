@@ -108,6 +108,9 @@ def issue_pine(
         if int(sig["script_version"]) != pinned[script]:
             skip("script_version_not_pinned")
             continue
+        if side not in cfg["sides"]:
+            skip(f"{side}_not_mapped")
+            continue
         if len(sides_on[(script, sym, d)]) > 1:
             skip("both_sides_same_session")
             continue
@@ -206,6 +209,8 @@ def _builder(conn: Any, cfg: dict[str, Any]) -> Callable[[dict[str, Any]], Sugge
 
 def run_issue_pine(conn: Any, *, today: date | None = None, cfg: dict[str, Any] = PINE_LIVE) -> dict[str, Any]:
     """Issue Pine suggestions for recent sessions; idempotent."""
+    if cfg.get("paused"):
+        return {"paused": True, "rule_version": cfg["rule_version"], "written": 0}
     end = today or date.today()
     calendar = store.recent_sessions(conn, BASELINE_SYMBOL, end)
     window = [d for d in calendar[-CATCH_UP_SESSIONS:] if d >= cfg["live_from"]]

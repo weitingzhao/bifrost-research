@@ -46,7 +46,7 @@ def _store(spot_fn: Callable[[int], float], *, n: int = 120, iv: float = 0.30) -
                     px = bs_price(s, float(k), t, iv, right=right)
                     if px < 0.01:
                         continue
-                    bars.append(OptBar(f"O:X{exp:%y%m%d}{right}{k:08d}", exp, float(k), right, d, round(px, 4), None, 10))
+                    bars.append(OptBar(f"O:X{exp:%y%m%d}{right}{k:08d}", exp, float(k), right, d, round(px, 4), None, 100))
     return ChainStore("X", spot, bars)
 
 
@@ -265,7 +265,7 @@ def test_a_rule_whose_delta_the_chain_lacks_is_not_issued() -> None:
     exp = next(d for d in days if d.weekday() == 4 and (d - START).days >= 40)
     # Only near-the-money strikes, like option_daily since mid-August 2026.
     bars = [
-        OptBar(f"O:X{exp:%y%m%d}P{k:08d}", exp, float(k), "P", START, round(bs_price(100.0, float(k), (exp - START).days / 365, 0.3, right="P"), 4), None, 10)
+        OptBar(f"O:X{exp:%y%m%d}P{k:08d}", exp, float(k), "P", START, round(bs_price(100.0, float(k), (exp - START).days / 365, 0.3, right="P"), 4), None, 100)
         for k in (98, 99, 100, 101, 102)
     ]
     store = ChainStore("X", {d: 100.0 for d in days}, bars)

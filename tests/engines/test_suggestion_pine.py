@@ -18,9 +18,20 @@ from bifrost_research.engines.suggestion.settle import _paired_legs
 LIVE = PINE_LIVE["live_from"]
 MON = date(2026, 10, 12)  # a Monday after live_from
 
+# The rule engine is tested on both sides; the live config (rule_version 2)
+# maps buy only and is paused.
+TWO_SIDED: dict[str, Any] = {
+    **PINE_LIVE,
+    "paused": False,
+    "sides": {
+        "buy": {"structure": "short_put", "short_delta": 0.20},
+        "sell": {"structure": "call_credit_spread", "short_delta": 0.20},
+    },
+}
+
 
 def _cfg(**kw: Any) -> dict[str, Any]:
-    return {**PINE_LIVE, **kw}
+    return {**TWO_SIDED, **kw}
 
 
 def _sig(sym: str, d: date, side: str = "buy", script: str = "supertrend", version: int = 1) -> dict[str, Any]:
@@ -28,7 +39,7 @@ def _sig(sym: str, d: date, side: str = "buy", script: str = "supertrend", versi
 
 
 def _row(sym: str, d: date, side: str = "buy", script: str = "supertrend") -> dict[str, Any]:
-    return {"script_id": script, "symbol": sym, "as_of": d, "structure": PINE_LIVE["sides"][side]["structure"]}
+    return {"script_id": script, "symbol": sym, "as_of": d, "structure": TWO_SIDED["sides"][side]["structure"]}
 
 
 # Other names' suggestions from long ago, so the share cap is not what a test meets.
@@ -36,7 +47,7 @@ FILLER = [{"script_id": sc, "symbol": f"Z{i}", "as_of": MON - timedelta(days=90)
 
 
 def _fake(sig: dict[str, Any]) -> Suggestion:
-    side = PINE_LIVE["sides"][sig["side"]]
+    side = TWO_SIDED["sides"][sig["side"]]
     return Suggestion(
         as_of_session=sig["trade_date"],
         source="pine",
@@ -93,9 +104,19 @@ def _run(signals: list[dict[str, Any]], issued: list[dict[str, Any]] | None = No
 # -- mapping ----------------------------------------------------------------------
 
 
+def test_live_config_is_paused_and_maps_buy_only() -> None:
+    """rule_version 2 (Owner 2026-10-06, after the replay): no sell, paused."""
+    assert PINE_LIVE["rule_version"] == "2" and PINE_LIVE["paused"] is True
+    assert set(PINE_LIVE["sides"]) == {"buy"}
+    assert pine.run_issue_pine(None) == {"paused": True, "rule_version": "2", "written": 0}
+    led = _Ledger()
+    out = pine.issue_pine([_sig("AAA", MON, "sell")], FILLER, build=led.build, write=led.write, cfg={**PINE_LIVE, "paused": False})
+    assert out["written"] == 0 and out["skipped"] == {"sell_not_mapped": 1} and led.built == []
+
+
 def test_buy_sells_the_20_delta_put_sell_sells_the_20_delta_call_credit_spread() -> None:
     buy = pine.spec_for("supertrend", 1, "buy")
-    sell = pine.spec_for("donchian_breakout", 3, "sell")
+    sell = pine.spec_for("donchian_breakout", 3, "sell", TWO_SIDED)
     assert (buy["structure"], buy["short_delta"]) == ("short_put", 0.20)
     assert (sell["structure"], sell["short_delta"]) == ("call_credit_spread", 0.20)
     assert sell["source_ref"] == "donchian_breakout" and sell["source_version"] == "3"
@@ -103,7 +124,7 @@ def test_buy_sells_the_20_delta_put_sell_sells_the_20_delta_call_credit_spread()
     for spec in (buy, sell):
         for k in ("target_dte", "min_dte", "wing_width_pct", "take_profit_pct", "stop_loss_mult", "exit_dte"):
             assert spec[k] == sim[k], k
-    assert pine.side_of("short_put") == "buy" and pine.side_of("call_credit_spread") == "sell"
+    assert pine.side_of("short_put") == "buy" and pine.side_of("call_credit_spread", TWO_SIDED) == "sell"
     assert PINE_LIVE["cooldown_days"] == sim["target_dte"] - sim["exit_dte"]
     assert [s["script_id"] for s in PINE_LIVE["scripts"]] == ["supertrend", "donchian_breakout"]
 
@@ -126,13 +147,13 @@ def _store(spot: float = 100.0, n: int = 30, symbol: str = "X") -> ChainStore:
                 for right in ("C", "P"):
                     px = bs_price(spot, k, dte / 365.0, 0.30, right=right)
                     if px >= 0.01:
-                        bars.append(OptBar(f"O:{symbol}{exp:%y%m%d}{right}{int(k * 1000):08d}", exp, k, right, d, round(px, 4), None, 10))
+                        bars.append(OptBar(f"O:{symbol}{exp:%y%m%d}{right}{int(k * 1000):08d}", exp, k, right, d, round(px, 4), None, 100))
     return ChainStore(symbol, {d: spot for d in days}, bars)
 
 
 def test_a_sell_signal_builds_a_complete_call_credit_spread_at_20_delta() -> None:
     st = _store()
-    got = build_suggestion(st, MON, source="pine", spec=pine.spec_for("donchian_breakout", 1, "sell"), regime={})
+    got = build_suggestion(st, MON, source="pine", spec=pine.spec_for("donchian_breakout", 1, "sell", TWO_SIDED), regime={})
     assert isinstance(got, Suggestion)
     got.validate()
     short, long_ = got.legs
@@ -154,7 +175,7 @@ def test_a_buy_signal_builds_a_20_delta_short_put() -> None:
 
 def test_the_paired_spy_baseline_mirrors_a_call_credit_spread() -> None:
     st = _store()
-    got = build_suggestion(st, MON, source="pine", spec=pine.spec_for("donchian_breakout", 1, "sell"), regime={})
+    got = build_suggestion(st, MON, source="pine", spec=pine.spec_for("donchian_breakout", 1, "sell", TWO_SIDED), regime={})
     assert isinstance(got, Suggestion)
     row = {
         "structure": got.structure,

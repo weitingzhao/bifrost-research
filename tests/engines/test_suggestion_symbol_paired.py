@@ -10,12 +10,14 @@ import pytest
 from bifrost_research.engines.backtest.canonical_pnl import bs_price
 from bifrost_research.engines.backtest.sim.chain import ChainStore, OptBar
 from bifrost_research.engines.suggestion import pine, settle, store
+from bifrost_research.engines.suggestion.config import PINE_LIVE
 from bifrost_research.engines.suggestion.contract import Suggestion
 from bifrost_research.engines.suggestion.issue import build_suggestion
 from bifrost_research.schema import migrate_symbol_paired as mig
 from bifrost_research.schema.suggestion_ledger_ddl import SETTLEMENT_BASES, ledger_statements
 
 MON = date(2026, 10, 12)
+SELL = {**PINE_LIVE, "sides": {**PINE_LIVE["sides"], "sell": {"structure": "call_credit_spread", "short_delta": 0.20}}}
 
 
 def _days(n: int, start: date = MON - timedelta(days=21)) -> list[date]:
@@ -41,12 +43,12 @@ def _store(symbol: str = "X", spot: float = 100.0) -> ChainStore:
                 for right in ("C", "P"):
                     px = bs_price(spot, k, max(dte, 0.5) / 365.0, 0.30, right=right)
                     if px >= 0.01:
-                        bars.append(OptBar(f"O:{symbol}{exp:%y%m%d}{right}{int(k * 1000):08d}", exp, k, right, d, round(px, 4), None, 10))
+                        bars.append(OptBar(f"O:{symbol}{exp:%y%m%d}{right}{int(k * 1000):08d}", exp, k, right, d, round(px, 4), None, 100))
     return ChainStore(symbol, {d: spot for d in days}, bars)
 
 
 def _row(st: ChainStore, side: str = "sell") -> dict[str, Any]:
-    got = build_suggestion(st, MON, source="pine", spec=pine.spec_for("donchian_breakout", 1, side), regime={})
+    got = build_suggestion(st, MON, source="pine", spec=pine.spec_for("donchian_breakout", 1, side, SELL), regime={})
     assert isinstance(got, Suggestion)
     return {
         "suggestion_id": got.suggestion_id,
