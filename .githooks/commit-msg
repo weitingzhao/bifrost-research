@@ -1,0 +1,6 @@
+#!/bin/sh
+# Bifrost commit lineage trailers (bifrost-trade-infra/agent-config/scripts/git-hooks).
+# No-op unless that directory was wired in with install.sh.
+d=$(git config --get bifrost.hooksDir) || exit 0
+[ -x "$d/lineage.sh" ] || exit 0
+exec "$d/lineage.sh" commit-msg "$@"
