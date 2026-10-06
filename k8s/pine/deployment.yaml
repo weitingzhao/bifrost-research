@@ -47,6 +47,9 @@ spec:
               cpu: "1"
               memory: 1Gi
           securityContext:
+            # the image's `node` user; numeric so the kubelet can check non-root
+            runAsUser: 1000
+            runAsGroup: 1000
             runAsNonRoot: true
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
