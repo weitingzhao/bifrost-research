@@ -15,17 +15,24 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.engines.indicators.bars import load_bars
 from bifrost_research.engines.pine import client, stats
-from bifrost_research.engines.pine.library import PineScript, get_script, list_scripts, upsert_script, validate
+from bifrost_research.engines.pine.library import (
+    MAX_PLOTS,
+    PineScript,
+    get_script,
+    list_scripts,
+    upsert_script,
+    validate,
+)
 from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_PINE_DAILY
 
 logger = logging.getLogger(__name__)
@@ -65,10 +72,24 @@ class ScriptBody(BaseModel):
 
 
 class CheckBody(BaseModel):
+    """A pasted ``source``, or a library ``script`` by id (P1, 0.183.0) — exactly one.
+
+    ``plots`` (P1, G10) asks for those numeric plots' values per session, e.g.
+    the Supertrend line the chart draws; the response then carries ``series``.
+    """
+
     model_config = ConfigDict(extra="forbid")
-    source: str = Field(..., min_length=1, max_length=200_000)
+    source: str | None = Field(None, min_length=1, max_length=200_000)
+    script: str | None = Field(None, min_length=2, max_length=48)
     symbol: str = Field(..., min_length=1, max_length=16)
     days: int = Field(730, ge=60, le=366 * 6)
+    plots: list[Annotated[str, Field(min_length=1, max_length=80)]] | None = Field(None, max_length=MAX_PLOTS)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "CheckBody":
+        if (self.source is None) == (self.script is None):
+            raise ValueError("send either source or script")
+        return self
 
 
 @router.get("/scripts")
@@ -134,18 +155,22 @@ def put_script(body: ScriptBody, script_id: str = Path(..., min_length=2, max_le
 
 @router.post("/check", dependencies=[Depends(require_owner)])
 def check(body: CheckBody) -> dict[str, Any]:
-    """Run a source over one symbol and return its signals — nothing is stored."""
+    """Run a source (or a library script) over one symbol and return its signals — nothing is stored."""
     sym = body.symbol.strip().upper()
     end = date.today()
     conn = _connect_or_503()
     try:
+        lib = get_script(conn, body.script) if body.script else None
+        if body.script and lib is None:
+            raise HTTPException(status_code=404, detail=f"pine script {body.script} not found")
         bars = load_bars(conn, sym, end - timedelta(days=body.days), end)
     finally:
         _close(conn)
     if not bars:
         raise HTTPException(status_code=404, detail=f"no daily bars for {sym}")
+    source = lib.source if lib is not None else str(body.source)
     try:
-        res = client.run(body.source, {sym: bars}).get(sym, {})
+        res = client.run(source, {sym: bars}, plots=body.plots).get(sym, {})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -159,10 +184,16 @@ def check(body: CheckBody) -> dict[str, Any]:
         for d in res.get(side) or []
     ]
     marks.sort(key=lambda m: m["date"])
-    return {
-        "ok": True,
-        "data": {"symbol": sym, "bars": len(bars), "marks": marks, "warnings": res.get("warnings") or []},
-    }
+    data: dict[str, Any] = {"symbol": sym, "bars": len(bars), "marks": marks, "warnings": res.get("warnings") or []}
+    if lib is not None:
+        data["script"], data["script_version"] = lib.id, lib.version
+    if body.plots:
+        # [[session, value | null]] oldest first; null in the warm-up or where the plot is na.
+        data["series"] = {
+            title: [[d.isoformat(), v] for d, v in sorted((res.get("series") or {}).get(title, {}).items())]
+            for title in body.plots
+        }
+    return {"ok": True, "data": data}
 
 
 @router.get("/signals")

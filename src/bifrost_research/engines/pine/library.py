@@ -23,6 +23,12 @@ BUILTIN_LICENSE = "Bifrost original implementation"
 _ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,47}$")
 _TITLE_RE = re.compile(r"""(?:indicator|strategy)\(\s*["']([^"']+)["']""")
 _SIGNAL_RE = re.compile(r"""(?:plot|plotshape|plotchar)\([^\n]*["'](buy|sell)["']""")
+# A numeric plot: plot(<series>, "Title") or plot(<series>, title="Title"). plotshape / plotchar
+# are marks, not lines, and do not match (``\bplot\(``).
+_PLOT_RE = re.compile(r"""\bplot\(\s*[^,\n]+,\s*(?:title\s*=\s*)?["']([^"']+)["']""")
+MAX_PLOTS = 8
+# overlay=true in the indicator() / strategy() declaration: the plots are prices, drawn on the price pane.
+_OVERLAY_RE = re.compile(r"""\b(?:indicator|strategy)\([^\n]*\boverlay\s*=\s*true\b""")
 MAX_SOURCE = 200_000
 
 _COLS = (
@@ -53,6 +59,8 @@ class PineScript:
             "notes": self.notes,
             "is_active": self.is_active,
             "signals": signal_sides(self.source),
+            "plots": plot_titles(self.source),
+            "overlay": is_overlay(self.source),
         }
         if with_source:
             out["source"] = self.source
@@ -62,6 +70,24 @@ class PineScript:
 def signal_sides(source: str) -> list[str]:
     """Which of ``buy`` / ``sell`` the script plots, by title."""
     return sorted(set(_SIGNAL_RE.findall(source or "")))
+
+
+def plot_titles(source: str) -> list[str]:
+    """Titles of the script's numeric ``plot()`` lines, in source order (not ``buy`` / ``sell``; at most 8).
+
+    Read from the source, so a title built at run time is missed; the runner
+    reports a requested title it cannot find as ``missing_plot``.
+    """
+    out: list[str] = []
+    for t in _PLOT_RE.findall(source or ""):
+        if t not in ("buy", "sell") and t not in out:
+            out.append(t)
+    return out[:MAX_PLOTS]
+
+
+def is_overlay(source: str) -> bool:
+    """True when the script declares ``overlay=true``: its plots are price levels."""
+    return bool(_OVERLAY_RE.search(source or ""))
 
 
 def validate(script_id: str, name: str, source: str) -> None:
