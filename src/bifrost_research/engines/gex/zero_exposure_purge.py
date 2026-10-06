@@ -21,10 +21,18 @@ The intraday terrain is a snapshot by ``asof_ts`` and is left alone; signal_hit'
 GEX lens is rebuilt by its Sunday full re-walk. Without ``--apply`` every step only
 counts.
 
+``--one-sided`` runs the 0.191.0 pass instead (TD-157): a levels row whose one side
+has no gamma exposure still named a wall for that side, the first strike listed
+with wall gex 0. Measured 2026-10-06 after the pass above: 1,762 rows (820 call
+side, 942 put side) on 754 name-sessions and 244 names; terrain read 237 of them.
+That wall and its gex become NULL; terrain and scan are recomputed on the
+name-sessions whose terrain read one.
+
 Usage::
 
     python -m bifrost_research.engines.gex.zero_exposure_purge
     python -m bifrost_research.engines.gex.zero_exposure_purge --apply
+    python -m bifrost_research.engines.gex.zero_exposure_purge --one-sided [--apply]
 """
 
 from __future__ import annotations
@@ -36,7 +44,7 @@ import sys
 from typing import Any
 
 from bifrost_research.db.conn import connect
-from bifrost_research.engines.adjusted_contract_purge import Pair, _by_date, _pairs
+from bifrost_research.engines.adjusted_contract_purge import Pair, _by_date, _pairs, _stored
 
 logger = logging.getLogger(__name__)
 
@@ -47,19 +55,24 @@ SCAN = "features.stock_signal_scan_daily"
 
 #: The row ``has_gamma_exposure`` would no longer write.
 NO_EXPOSURE = "COALESCE({t}.call_wall_gex, 0) = 0 AND COALESCE({t}.put_wall_gex, 0) = 0"
+#: A wall named on a side without exposure (``drop_empty_side_walls`` writes NULL).
+EMPTY_CALL_WALL = "{t}.major_call_wall IS NOT NULL AND COALESCE({t}.call_wall_gex, 0) = 0"
+EMPTY_PUT_WALL = "{t}.major_put_wall IS NOT NULL AND COALESCE({t}.put_wall_gex, 0) = 0"
+ONE_SIDED = f"(({EMPTY_CALL_WALL}) OR ({EMPTY_PUT_WALL}))"
 
-_TERRAIN_SQL = f"""
+_TERRAIN_READS = f"""
     SELECT t.symbol, t.trade_date
     FROM {TERRAIN} t
     CROSS JOIN LATERAL (
-        SELECT g.call_wall_gex, g.put_wall_gex
+        SELECT g.major_call_wall, g.major_put_wall, g.call_wall_gex, g.put_wall_gex
         FROM {LEVELS} g
         WHERE g.symbol = t.symbol AND g.trade_date <= t.trade_date
         ORDER BY g.trade_date DESC, g.expiry ASC
         LIMIT 1
     ) g
-    WHERE {NO_EXPOSURE.format(t="g")}
+    WHERE {{where}}
 """
+_TERRAIN_SQL = _TERRAIN_READS.format(where=NO_EXPOSURE.format(t="g"))
 
 # The scan's gex_30d: the expiry nearest 30 days on the session itself.
 _SCAN_SQL = f"""
@@ -84,13 +97,6 @@ def _scalars(conn: Any, sql: str) -> tuple[Any, ...]:
 
 
 def run(conn: Any, *, apply: bool) -> dict[str, Any]:
-    from bifrost_research.engines.forecast.terrain import (
-        compute_market_terrain,
-        load_upstream_signals,
-        upsert_market_terrain,
-    )
-    from bifrost_research.engines.scan.entry import compute_scan_for_date
-
     rows, sessions, names = _scalars(
         conn,
         f"""
@@ -134,7 +140,20 @@ def run(conn: Any, *, apply: bool) -> dict[str, Any]:
         raise RuntimeError(f"counted {rows} levels rows, the delete touched {summary['gex']['levels_deleted']}")
     conn.commit()
 
-    # 2. Terrain on today's inputs, the way the daily slot writes it.
+    # 2–3. Terrain on today's inputs, then the scan rows that read either.
+    summary["terrain"]["rows_written"], summary["scan"]["rows_written"] = _recompute(conn, terrain, scan | terrain)
+    return summary
+
+
+def _recompute(conn: Any, terrain: set[Pair], scan: set[Pair]) -> tuple[int, int]:
+    """Terrain the way the daily slot writes it, then scan; returns rows written."""
+    from bifrost_research.engines.forecast.terrain import (
+        compute_market_terrain,
+        load_upstream_signals,
+        upsert_market_terrain,
+    )
+    from bifrost_research.engines.scan.entry import compute_scan_for_date
+
     written = 0
     for sym, td in sorted(terrain):
         spot, gex, momentum, iv = load_upstream_signals(conn, sym, td)
@@ -142,21 +161,60 @@ def run(conn: Any, *, apply: bool) -> dict[str, Any]:
             continue
         row = compute_market_terrain(sym, td, spot=spot, gex=gex or None, momentum=momentum or None, iv=iv or None)
         written += upsert_market_terrain(conn, [row])
-    summary["terrain"]["rows_written"] = written
-
-    # 3. Scan rows that read either.
     scan_rows = 0
-    for td, syms in _by_date(scan | terrain).items():
+    for td, syms in _by_date(scan).items():
         scan_rows += int(
             compute_scan_for_date(conn, trade_date=td, watchlist=syms, symbols_filter=syms).get("rows_written") or 0
         )
-    summary["scan"]["rows_written"] = scan_rows
+    return written, scan_rows
+
+
+def run_one_sided(conn: Any, *, apply: bool) -> dict[str, Any]:
+    """TD-157: NULL the wall named on a side without exposure; terrain and scan after."""
+    call_rows, put_rows, sessions, names = _scalars(
+        conn,
+        f"""
+        SELECT COUNT(*) FILTER (WHERE {EMPTY_CALL_WALL.format(t="l")}),
+               COUNT(*) FILTER (WHERE {EMPTY_PUT_WALL.format(t="l")}),
+               COUNT(DISTINCT (symbol, trade_date)), COUNT(DISTINCT symbol)
+        FROM {LEVELS} l WHERE {ONE_SIDED.format(t="l")}
+        """,
+    )
+    terrain: set[Pair] = _pairs(conn, _TERRAIN_READS.format(where=ONE_SIDED.format(t="g")))
+    scan = _stored(conn, SCAN, terrain)
+    summary: dict[str, Any] = {
+        "applied": apply,
+        "gex": {"call_walls": int(call_rows), "put_walls": int(put_rows), "sessions": int(sessions), "symbols": int(names)},
+        "terrain": {"sessions": len(terrain)},
+        "scan": {"sessions": len(scan)},
+    }
+    if not apply:
+        return summary
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"UPDATE {LEVELS} l SET major_call_wall = NULL, call_wall_gex = NULL WHERE {EMPTY_CALL_WALL.format(t='l')}"
+        )
+        summary["gex"]["call_walls_cleared"] = int(cur.rowcount or 0)
+        cur.execute(
+            f"UPDATE {LEVELS} l SET major_put_wall = NULL, put_wall_gex = NULL WHERE {EMPTY_PUT_WALL.format(t='l')}"
+        )
+        summary["gex"]["put_walls_cleared"] = int(cur.rowcount or 0)
+    if (summary["gex"]["call_walls_cleared"], summary["gex"]["put_walls_cleared"]) != (int(call_rows), int(put_rows)):
+        conn.rollback()
+        raise RuntimeError(
+            f"counted {call_rows}/{put_rows} walls, the update touched "
+            f"{summary['gex']['call_walls_cleared']}/{summary['gex']['put_walls_cleared']}"
+        )
+    conn.commit()
+    summary["terrain"]["rows_written"], summary["scan"]["rows_written"] = _recompute(conn, terrain, scan)
     return summary
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="write; without it every step only counts")
+    parser.add_argument("--one-sided", action="store_true", help="the 0.191.0 pass: walls on a side without exposure")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     conn = connect()
@@ -166,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
             if not args.apply:
                 cur.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
         conn.commit()
-        summary = run(conn, apply=args.apply)
+        summary = run_one_sided(conn, apply=args.apply) if args.one_sided else run(conn, apply=args.apply)
     finally:
         conn.close()
     print(json.dumps(summary, default=str, indent=2))
