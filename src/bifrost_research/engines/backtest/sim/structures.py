@@ -1,5 +1,9 @@
 """Seller structures the simulator opens.
 
+``call_credit_spread`` (0.176.0) is the bearish mirror of ``put_credit_spread``:
+the short call by delta above spot, the long call ``wing_width_pct`` of spot
+above it, margin and max loss = width - credit (``engine._margin``).
+
 A leg is (right, side, how-to-pick): by target delta, or anchored to an earlier
 leg — same expiry, ``offset_pct`` of spot beyond that leg's strike.
 """
@@ -25,6 +29,10 @@ STRUCTURES: dict[str, tuple[SimLeg, ...]] = {
     "put_credit_spread": (
         SimLeg("P", "sell", label="short put"),
         SimLeg("P", "buy", by_delta=False, anchor=0, offset_sign=-1, label="long put"),
+    ),
+    "call_credit_spread": (
+        SimLeg("C", "sell", label="short call"),
+        SimLeg("C", "buy", by_delta=False, anchor=0, offset_sign=+1, label="long call"),
     ),
     "short_strangle": (
         SimLeg("C", "sell", label="short call"),

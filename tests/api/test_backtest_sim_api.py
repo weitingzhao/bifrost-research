@@ -149,7 +149,7 @@ def test_structures_lists_legs(client: TestClient) -> None:
     resp = client.get("/research/backtest/sim/structures")
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
-    assert set(data) == {"short_put", "put_credit_spread", "short_strangle", "iron_condor"}
+    assert set(data) == {"short_put", "put_credit_spread", "call_credit_spread", "short_strangle", "iron_condor"}
     assert len(data["iron_condor"]) == 4
 
 

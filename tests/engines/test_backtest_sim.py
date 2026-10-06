@@ -125,6 +125,70 @@ def test_iron_condor_wings_sit_beyond_the_shorts_and_define_the_risk() -> None:
     assert t["margin"] == t["max_loss"]
 
 
+def _spread(structure: str, spot_fn: Callable[[int], float], **kw: object) -> dict:
+    res = _run(_store(spot_fn), structure=structure, short_delta=0.20, wing_width_pct=0.05, **kw)
+    return res.trades[0]
+
+
+def test_call_credit_spread_sells_the_call_above_spot_and_buys_the_wing_above_it() -> None:
+    t = _spread("call_credit_spread", lambda i: 100.0)
+    legs = {lg["label"]: lg for lg in t["legs"]}
+    assert set(legs) == {"short call", "long call"}
+    assert legs["short call"]["side"] == "sell" and legs["long call"]["side"] == "buy"
+    assert legs["short call"]["right"] == legs["long call"]["right"] == "C"
+    assert legs["long call"]["strike"] > legs["short call"]["strike"] > 100
+    assert legs["short call"]["expiry"] == legs["long call"]["expiry"]
+    assert abs(legs["short call"]["entry_delta"] - 0.20) < 0.06
+    assert legs["long call"]["entry_delta"] is None  # anchored, not picked by delta
+    width = legs["long call"]["strike"] - legs["short call"]["strike"]
+    assert t["entry_credit"] > 0
+    assert t["max_loss"] == pytest.approx(width * 100 - t["entry_credit"])
+    assert t["margin"] == t["max_loss"]
+
+
+def test_call_and_put_credit_spreads_mirror_each_other() -> None:
+    """Same delta, wing and rules: the strikes mirror around spot, risk is width
+    minus credit on both, and each loses on the move the other wins on."""
+    put = _spread("put_credit_spread", lambda i: 100.0)
+    call = _spread("call_credit_spread", lambda i: 100.0)
+    pl = {lg["label"]: lg for lg in put["legs"]}
+    cl = {lg["label"]: lg for lg in call["legs"]}
+    put_width = pl["short put"]["strike"] - pl["long put"]["strike"]
+    call_width = cl["long call"]["strike"] - cl["short call"]["strike"]
+    assert put_width == pytest.approx(call_width, abs=2.5)  # 5% of spot on a 2.5 grid
+    assert 100 - pl["short put"]["strike"] == pytest.approx(cl["short call"]["strike"] - 100, abs=5.0)
+    assert abs(pl["short put"]["entry_delta"]) == pytest.approx(cl["short call"]["entry_delta"], abs=0.06)
+    for t, width in ((put, put_width), (call, call_width)):
+        assert t["max_loss"] == pytest.approx(width * 100 - t["entry_credit"])
+        assert t["margin"] == t["max_loss"]
+    # Flat: both decay into a profit (which rule closes it first depends on the credit).
+    for t in (put, call):
+        assert t["exit_reason"] in ("profit_take", "dte_exit") and t["pnl"] > 0
+
+    hold = {"profit_take_pct": None, "stop_loss_mult": None, "dte_exit": None}
+    # Through both strikes at expiry: the full width is lost, the entry costs on top
+    # (intrinsic settlement pays no exit commission).
+    put_crash = _spread("put_credit_spread", lambda i: 100.0 if i < 5 else 70.0, **hold)
+    call_rally = _spread("call_credit_spread", lambda i: 100.0 if i < 5 else 130.0, **hold)
+    for t in (put_crash, call_rally):
+        assert t["exit_reason"] == "expiry_itm"
+        assert t["pnl"] == pytest.approx(-t["max_loss"] - 2 * 0.65)
+    # The other way round both expire worthless and keep the credit. (The fixture
+    # stops printing contracts under a cent, so staleness is off here.)
+    put_rally = _spread("put_credit_spread", lambda i: 100.0 if i < 5 else 130.0, max_stale_sessions=None, **hold)
+    call_crash = _spread("call_credit_spread", lambda i: 100.0 if i < 5 else 70.0, max_stale_sessions=None, **hold)
+    for t in (put_rally, call_crash):
+        assert t["exit_reason"] == "expiry"
+        assert t["pnl"] == pytest.approx(t["entry_credit"] - 2 * 0.65)
+
+
+def test_a_rally_stops_the_call_credit_spread_out() -> None:
+    t = _spread("call_credit_spread", lambda i: 100.0 if i < 5 else 115.0, stop_loss_mult=1.0)
+    assert t["exit_reason"] == "stop"
+    assert t["pnl"] < 0
+    assert -t["pnl"] < t["max_loss"] + 100  # inside the width plus exit costs
+
+
 def test_a_leg_that_stops_printing_is_closed_as_stale() -> None:
     store0 = _store(lambda i: 100.0)
     first = _run(store0, profit_take_pct=None, stop_loss_mult=None, dte_exit=None).trades[0]

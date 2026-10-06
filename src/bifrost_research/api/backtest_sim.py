@@ -44,7 +44,9 @@ class SimBody(BaseModel):
     symbols: list[str] = Field(..., min_length=1, max_length=MAX_SYMBOLS)
     start: date | None = None
     end: date | None = None
-    structure: Literal["short_put", "put_credit_spread", "short_strangle", "iron_condor"] = "short_put"
+    structure: Literal[
+        "short_put", "put_credit_spread", "call_credit_spread", "short_strangle", "iron_condor"
+    ] = "short_put"
     target_dte: int = Field(45, ge=7, le=80)
     short_delta: float = Field(0.20, gt=0.0, lt=0.6)
     wing_width_pct: float = Field(0.05, gt=0.0, le=0.5)
