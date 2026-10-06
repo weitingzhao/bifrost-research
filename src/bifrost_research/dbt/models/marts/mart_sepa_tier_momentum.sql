@@ -111,7 +111,7 @@ select
     r.rsi_14,
     d.roc_10,
     d.roc_21,
-    current_date as eval_date,
+    {{ sepa_session() }} as eval_date,
 
     -- RSI signals
     coalesce(r.rsi_14 > 50, false) as rsi_above_50,

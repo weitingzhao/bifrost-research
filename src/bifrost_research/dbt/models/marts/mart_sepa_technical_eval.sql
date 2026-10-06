@@ -42,7 +42,7 @@ select
     l.high_52w,
     c.crs_percentile,
     c.return_252d,
-    current_date as eval_date,
+    {{ sepa_session() }} as eval_date,
 
     -- 11 core conditions
     coalesce(l.volume_ma_50 > 100000, false) as avg_volume_50_gt_threshold,

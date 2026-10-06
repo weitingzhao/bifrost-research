@@ -36,6 +36,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
 from bifrost_research.db.conn import connect
+from bifrost_research.mcp.tools._trade_api_client import TradeApiShapeError, list_items
 from bifrost_research.schema.schemas import TABLE_RESEARCH_OPTION_PINNED_CONTRACT
 
 logger = logging.getLogger(__name__)
@@ -120,7 +121,7 @@ def _match_key(leg: Mapping[str, Any]) -> tuple[str, date, float, str]:
 def load_held_legs(get: Any, base: str) -> list[dict[str, Any]]:
     """Option legs in the current position attribution."""
     payload = get(base, "/executions/position-attribution", {"sec_type": "OPT"})
-    rows = (payload or {}).get("attributions") or []
+    rows = list_items(payload, "attributions")
     legs: list[dict[str, Any]] = []
     for row in rows:
         leg = parse_contract_key(row.get("contract_key"))
@@ -133,7 +134,7 @@ def load_option_executions(get: Any, base: str, *, since: date) -> list[dict[str
     """Option executions since ``since``, each with the date it happened."""
     since_ts = datetime(since.year, since.month, since.day, tzinfo=timezone.utc).timestamp()
     payload = get(base, "/executions", {"from_ts": since_ts, "limit": EXECUTIONS_LIMIT})
-    rows = (payload or {}).get("executions") or []
+    rows = list_items(payload, "executions")
     out: list[dict[str, Any]] = []
     for row in rows:
         if str(row.get("sec_type") or "").upper() != "OPT":
@@ -335,6 +336,20 @@ def write_pins(conn: Any, rows: list[dict[str, Any]]) -> int:
     return len(rows)
 
 
+def live_held_pins(conn: Any) -> int:
+    """Held pins the table still keeps live — what an empty answer would contradict."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT count(*) FROM {TABLE_RESEARCH_OPTION_PINNED_CONTRACT} "
+            "WHERE reason = %s AND pin_until >= current_date",
+            (REASON_HELD,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return 0
+    return int(row[0] if not isinstance(row, Mapping) else next(iter(row.values())) or 0)
+
+
 def run(*, as_of: date | None = None) -> dict[str, Any]:
     from bifrost_research.mcp.tools._trade_api_client import base_trading, get
 
@@ -345,6 +360,10 @@ def run(*, as_of: date | None = None) -> dict[str, Any]:
         executions = load_option_executions(
             get, base, since=day - timedelta(days=EXECUTIONS_LOOKBACK_DAYS)
         )
+    except TradeApiShapeError:
+        # The API answered in a shape this engine cannot read: a code fault, not
+        # an outage, and it must fail the run rather than look like a quiet day.
+        raise
     except Exception as exc:  # noqa: BLE001 — a down Trade API must not empty the list
         logger.warning("option_pinned_contract skipped: trade api unavailable: %s", exc)
         return {
@@ -358,6 +377,17 @@ def run(*, as_of: date | None = None) -> dict[str, Any]:
     pins = build_pins(as_of=day, held=held, executions=executions)
     conn = connect()
     try:
+        if not held and not executions:
+            live = live_held_pins(conn)
+            if live:
+                # 2026-10-06: both lists came back empty for a key the engine did not
+                # read, and the run reported success with the pins frozen (TD-89).
+                # Closing every position leaves its closing fills in /executions, so
+                # two empty answers beside live held pins mean the read is broken.
+                raise RuntimeError(
+                    f"option_pinned_contract: the Trade API returned no option positions and no "
+                    f"option executions while {live} held pins are live; refusing to report success"
+                )
         catalog = load_catalog(conn, pins.keys())
         rows, unmatched = resolve_tickers(pins, catalog)
         written = write_pins(conn, rows)

@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+import pytest
+
 from bifrost_research.engines.option_pinned import entry as pinned
 
 TODAY = date(2026, 9, 15)
@@ -20,6 +22,7 @@ class _Cur:
         self.executed: list[tuple[str, Any]] = []
         self.many: list[list[tuple[Any, ...]]] = []
         self.many_sql: list[str] = []
+        self.live_held = 0
 
     def execute(self, sql: str, params: Any = None) -> None:
         self.executed.append((sql, params))
@@ -30,6 +33,9 @@ class _Cur:
 
     def fetchall(self) -> list[tuple[Any, ...]]:
         return list(self.rows)
+
+    def fetchone(self) -> tuple[Any, ...] | None:
+        return (self.live_held,)
 
     def __enter__(self) -> _Cur:
         return self
@@ -207,23 +213,28 @@ def test_the_happy_path_reads_positions_and_executions_and_writes_pins(monkeypat
     def _get(base: str, path: str, params: Any = None) -> Any:
         if path == "/executions/position-attribution":
             assert params == {"sec_type": "OPT"}
+            # The api 0.4.0+ list envelope (TD-89: the retired "attributions" key
+            # read as zero legs and the run still reported success).
             return {
-                "attributions": [
+                "items": [
                     {"contract_key": "NVDA|OPT|20261120|245.0|C", "sec_type": "OPT"},
                     # The same position seen through a second instance is one contract.
                     {"contract_key": "NVDA|OPT|20261120|245.0|C", "sec_type": "OPT"},
                     {"contract_key": "GOOG|OPT|20261218|300.0|P", "sec_type": "OPT"},
-                ]
+                ],
+                "count": 3,
             }
         assert path == "/executions"
         since = datetime.fromtimestamp(params["from_ts"], tz=timezone.utc).date()
         assert since < TODAY - timedelta(days=pinned.CLOSED_RECENT_DAYS)
         return {
-            "executions": [
+            "items": [
                 _exec_row("NVDA  261120C00245000|OPT|20261120|245.0|C", "2026-06-01"),
                 _exec_row("MU    261016P00180000|OPT|20261016|180.0|P", "2026-08-20"),
                 _exec_row("NVDA|STK|||", "2026-08-20", sec_type="STK"),
-            ]
+            ],
+            "count": 3,
+            "next_cursor": None,
         }
 
     catalog_rows = [
@@ -244,3 +255,51 @@ def test_the_happy_path_reads_positions_and_executions_and_writes_pins(monkeypat
     assert written["O:NVDA261120C00245000"][5] == "held"
     assert written["O:NVDA261120C00245000"][6] == date(2026, 6, 1)  # first_pinned
     assert written["O:MU261016P00180000"][5] == "closed_recent"
+
+
+# ── TD-89: an answer the engine cannot read is a failure, not "written 0" ──
+
+
+def _api(attribution: Any, executions: Any) -> Any:
+    def _get(base: str, path: str, params: Any = None) -> Any:
+        return attribution if path == "/executions/position-attribution" else executions
+
+    return _get
+
+
+def test_an_answer_without_the_list_fails_the_run(monkeypatch) -> None:
+    from bifrost_research.mcp.tools._trade_api_client import TradeApiShapeError
+
+    calls: list[str] = []
+    # HTTP 200 with a body that carries no list: the round must fail loudly.
+    monkeypatch.setattr(
+        "bifrost_research.mcp.tools._trade_api_client.get",
+        _api({"detail": "moved"}, {"items": [], "count": 0}),
+    )
+    monkeypatch.setattr(
+        "bifrost_research.engines.option_pinned.entry.connect",
+        lambda: calls.append("connected") or _Conn(),
+    )
+    with pytest.raises(TradeApiShapeError, match="no items or attributions"):
+        pinned.run(as_of=TODAY)
+    assert calls == []
+
+
+def test_two_empty_answers_beside_live_held_pins_fail_the_run(monkeypatch) -> None:
+    conn = _Conn()
+    conn.cur.live_held = 12
+    empty = {"items": [], "count": 0}
+    monkeypatch.setattr("bifrost_research.mcp.tools._trade_api_client.get", _api(empty, empty))
+    monkeypatch.setattr("bifrost_research.engines.option_pinned.entry.connect", lambda: conn)
+    with pytest.raises(RuntimeError, match="12 held pins are live"):
+        pinned.run(as_of=TODAY)
+    assert conn.cur.many == []
+
+
+def test_two_empty_answers_with_nothing_held_write_nothing_and_succeed(monkeypatch) -> None:
+    conn = _Conn()
+    empty = {"items": [], "count": 0}
+    monkeypatch.setattr("bifrost_research.mcp.tools._trade_api_client.get", _api(empty, empty))
+    monkeypatch.setattr("bifrost_research.engines.option_pinned.entry.connect", lambda: conn)
+    result = pinned.run(as_of=TODAY)
+    assert result["mode"] == "written" and result["rows_written"] == 0

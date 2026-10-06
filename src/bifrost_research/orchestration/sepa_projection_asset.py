@@ -2,9 +2,21 @@
 
 from typing import Any
 
-from dagster import AssetExecutionContext, AssetKey, MaterializeResult, asset
+from dagster import (
+    AssetCheckResult,
+    AssetCheckSeverity,
+    AssetExecutionContext,
+    AssetKey,
+    MaterializeResult,
+    asset,
+    asset_check,
+)
 
-from bifrost_research.orchestration.sepa_projection import run_sepa_projection
+from bifrost_research.orchestration.sepa_projection import (
+    newest_session,
+    off_session_dates,
+    run_sepa_projection,
+)
 
 # Upstreams: husbandry_gate (market_eod + flex enqueues) must pass, and dbt must
 # have rebuilt the mart this asset projects. Without the mart edge the projection
@@ -41,9 +53,14 @@ def _metadata(result: dict[str, Any]) -> dict[str, Any]:
 def sepa_projection(context: AssetExecutionContext) -> MaterializeResult:
     from bifrost_research.db.conn import connect
 
+    from bifrost_research.db.calendar import latest_closed_session
+
     conn = connect()
     try:
-        result = run_sepa_projection(conn)
+        # The New York session, written explicitly: the database's current_date is
+        # UTC and this runs at 02:3x UTC, one calendar day after the session (TD-87).
+        session = latest_closed_session(conn)
+        result = run_sepa_projection(conn, trade_date=session)
         context.log.info("sepa_projection result=%s", result)
         if result.get("skipped") and result.get("reason"):
             context.log.warning("sepa_projection skipped: %s", result.get("reason"))
@@ -55,4 +72,40 @@ def sepa_projection(context: AssetExecutionContext) -> MaterializeResult:
             pass
 
 
+@asset_check(
+    asset=sepa_projection,
+    name="sessions_are_trading_days",
+    blocking=False,
+    description=(
+        "TD-87 ratchet: features.stock_signal_sepa_daily holds no weekend, NYSE-holiday "
+        "or future trade_date, and its newest trade_date is the latest closed New York session."
+    ),
+)
+def sepa_sessions_are_trading_days() -> AssetCheckResult:
+    from bifrost_research.db.calendar import latest_closed_session
+    from bifrost_research.db.conn import connect
+
+    conn = connect()
+    try:
+        off = off_session_dates(conn)
+        newest = newest_session(conn)
+        session = latest_closed_session(conn)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return AssetCheckResult(
+        passed=not off and newest == session,
+        severity=AssetCheckSeverity.ERROR,
+        metadata={
+            "off_session_dates": len(off),
+            "off_session_sample": ", ".join(d.isoformat() for d in off[:20]) or "none",
+            "newest_trade_date": newest.isoformat() if newest else "none",
+            "new_york_session": session.isoformat(),
+        },
+    )
+
+
 SEPA_PROJECTION_ASSETS = [sepa_projection]
+SEPA_PROJECTION_CHECKS = [sepa_sessions_are_trading_days]

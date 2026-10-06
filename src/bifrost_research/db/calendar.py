@@ -6,7 +6,7 @@ import logging
 import time
 from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -169,6 +169,28 @@ def settlement_session(trade_date: date, horizon: int, closed: AbstractSet[date]
     settled ``candidate_outcome.exit_date`` always wins over the projection.
     """
     return nth_session_after(first_session_on_or_after(trade_date, closed), horizon, closed)
+
+
+#: NYSE's regular close in New York time. On an early-close day (13:00) the
+#: answer stays on the previous session until 16:00, which is the safe side.
+NY_REGULAR_CLOSE = dt_time(16, 0)
+
+
+def latest_closed_session(conn: Any, *, now: datetime | None = None) -> date:
+    """The newest NYSE session whose regular close has passed, by the New York clock.
+
+    The session a nightly batch describes. ``current_date`` in the database is
+    UTC, and research_trading_day fires at 22:30 New York = 02:30 UTC the next
+    day, so the UTC date is one calendar day late every night (TD-87: SEPA was
+    stamped Tuesday for Monday and Saturday for Friday). Holidays come from
+    ``cached_closed_days``; an unreadable calendar counts weekends only.
+    """
+    ny = (now or datetime.now(timezone.utc)).astimezone(_NY)
+    day = ny.date() if ny.time() >= NY_REGULAR_CLOSE else ny.date() - timedelta(days=1)
+    closed = cached_closed_days(conn, day - timedelta(days=21), day)
+    while not is_session(day, closed):
+        day -= timedelta(days=1)
+    return day
 
 
 def fetch_recent_trading_days(

@@ -28,6 +28,7 @@ Overridable via env vars for dev / staging:
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
@@ -103,3 +104,34 @@ def get(
         raise RuntimeError(f"trade api GET {url} unreachable: {exc}") from exc
     except ValueError as exc:  # json decode
         raise RuntimeError(f"trade api GET {url} returned non-JSON: {exc}") from exc
+
+
+class TradeApiShapeError(RuntimeError):
+    """A Trade API answer that does not carry the list the caller reads."""
+
+
+def list_items(payload: Any, legacy_key: str | None = None) -> list[Mapping[str, Any]]:
+    """The rows of a Trade API list answer — the one place Research reads that shape.
+
+    Every Trade API list is ``{items, count, total?, …}`` (``common/envelopes.list_body``;
+    ``items`` since api 0.2.3, the only key since api 0.4.0). ``legacy_key`` is the
+    route's retired key (``attributions``, ``executions`` …), read only when
+    ``items`` is absent. An answer with neither is raised, not read as no rows:
+    on 2026-10-06 option_pinned read the retired keys of an api 0.4.0 answer,
+    saw zero legs and reported success (TD-89). ``count`` must agree with ``items``.
+    """
+    if not isinstance(payload, Mapping):
+        raise TradeApiShapeError(f"trade api list answer is {type(payload).__name__}, not an object")
+    for key in ("items", legacy_key):
+        if key is None or key not in payload:
+            continue
+        rows = payload[key]
+        if not isinstance(rows, list):
+            raise TradeApiShapeError(f"trade api list key {key!r} is {type(rows).__name__}, not a list")
+        count = payload.get("count")
+        if key == "items" and isinstance(count, int) and count != len(rows):
+            raise TradeApiShapeError(f"trade api list holds {len(rows)} items but count={count}")
+        return [r for r in rows if isinstance(r, Mapping)]
+    keys = ", ".join(sorted(str(k) for k in payload)) or "none"
+    wanted = "items" + (f" or {legacy_key}" if legacy_key else "")
+    raise TradeApiShapeError(f"trade api list answer has no {wanted} (keys: {keys})")

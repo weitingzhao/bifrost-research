@@ -65,7 +65,7 @@ select
     sv.sv_ratio_latest,
     sv.sv_ratio_5d,
     sv.sv_ratio_20d,
-    current_date as eval_date,
+    {{ sepa_session() }} as eval_date,
 
     -- Short interest signals (declining SI = bullish squeeze potential)
     coalesce(

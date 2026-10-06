@@ -145,8 +145,12 @@ models:
         tests:
           - not_null
       - name: trade_date
+        description: >-
+          The session the row describes: the newest bar in int_stock_daily_enriched
+          (macro sepa_session), never the database's UTC clock (TD-87).
         tests:
           - not_null
+          - sepa_session_is_newest_trading_day
       - name: sepa_score
         description: "Composite SEPA score 0-100"
         tests:

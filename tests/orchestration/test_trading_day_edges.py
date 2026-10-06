@@ -24,7 +24,7 @@ like the Definitions smoke test.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -127,11 +127,14 @@ def _stub_projection(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Replace the database side of sepa_projection; returns what it projected."""
     projected: list[str] = []
 
-    def fake_projection(_conn: Any) -> dict[str, Any]:
+    def fake_projection(_conn: Any, **_kw: Any) -> dict[str, Any]:
         projected.append("mart_sepa_feature_daily")
         return {"rows": 0}
 
     monkeypatch.setattr(spa, "run_sepa_projection", fake_projection)
+    monkeypatch.setattr(
+        "bifrost_research.db.calendar.latest_closed_session", lambda _conn, **_kw: date(2026, 10, 5)
+    )
     monkeypatch.setattr(
         "bifrost_research.db.conn.connect", lambda: SimpleNamespace(close=lambda: None)
     )

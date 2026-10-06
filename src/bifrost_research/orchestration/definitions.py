@@ -28,7 +28,10 @@ from bifrost_research.orchestration.market_slot_schedules import MARKET_SCHEDULE
 from bifrost_research.orchestration.plugin_batch_assets import PLUGIN_BATCH_ASSETS
 from bifrost_research.orchestration.research_aux_schedules import RESEARCH_AUX_ASSETS
 from bifrost_research.orchestration.schedules import RESEARCH_JOBS, RESEARCH_SCHEDULES
-from bifrost_research.orchestration.sepa_projection_asset import SEPA_PROJECTION_ASSETS
+from bifrost_research.orchestration.sepa_projection_asset import (
+    SEPA_PROJECTION_ASSETS,
+    SEPA_PROJECTION_CHECKS,
+)
 
 
 def build_definitions() -> Definitions:
@@ -48,6 +51,7 @@ def build_definitions() -> Definitions:
             *ENGINE_ASSETS,
             *RESEARCH_AUX_ASSETS,
         ],
+        asset_checks=[*SEPA_PROJECTION_CHECKS],
         jobs=RESEARCH_JOBS,
         schedules=RESEARCH_SCHEDULES,
         sensors=FAILURE_SENSORS,

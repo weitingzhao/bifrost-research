@@ -137,7 +137,7 @@ select
     ar.aroon_down,
     vc.current_atr,
     vc.atr_50d_ago,
-    current_date as eval_date,
+    {{ sepa_session() }} as eval_date,
 
     -- BB squeeze: current width < 50-day average (tightening)
     coalesce(bbl.bb_width < bba.bb_width_avg_50d, false) as bb_squeeze,

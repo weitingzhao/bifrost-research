@@ -74,7 +74,7 @@ latest_income as (
 
 select
     u.symbol,
-    current_date as eval_date,
+    {{ sepa_session() }} as eval_date,
 
     -- Group 1: Profitability (5 conditions)
     coalesce(r.roe > 0.15, false) as roe_gt_15pct,

@@ -8,7 +8,7 @@ select
     m.momentum_score,
     o.options_structure_score as structure_score,
     se.sentiment_score,
-    current_date as eval_date,
+    {{ sepa_session() }} as eval_date,
     f.pass_count + t.pass_count as combined_pass_count,
 
     -- Weighted composite (30F + 35T + 20M + 15O) — Wave 12 canonical weights

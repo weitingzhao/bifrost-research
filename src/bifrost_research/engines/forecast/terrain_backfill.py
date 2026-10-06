@@ -42,6 +42,7 @@ from bifrost_research.engines.forecast.terrain import (
     upsert_market_terrain,
 )
 from bifrost_research.engines.option_pinned.entry import underlying_of
+from bifrost_research.mcp.tools._trade_api_client import list_items
 from bifrost_research.schema.schemas import TABLE_STOCK_FORECAST_TERRAIN_DAILY
 
 logger = logging.getLogger(__name__)
@@ -75,17 +76,6 @@ def _trade_id(row: Mapping[str, Any]) -> Any:
     return row.get("trade_id")
 
 
-def _rows(payload: Any, legacy_key: str) -> list[Mapping[str, Any]]:
-    """A Trade API list: ``items`` (api 0.2.3+), else the route's old key."""
-    if not isinstance(payload, Mapping):
-        return []
-    for key in ("items", legacy_key):
-        rows = payload.get(key)
-        if isinstance(rows, list):
-            return rows
-    return []
-
-
 def _open_date(rows: Sequence[Mapping[str, Any]]) -> date | None:
     for row in rows:
         epoch = row.get("trade_opened_at_epoch")
@@ -109,12 +99,12 @@ def trade_targets(get: Any, base: str) -> tuple[list[tuple[str, date]], dict[str
     attribution = get(base, "/executions/position-attribution")
     still_open = {
         _trade_id(row)
-        for row in _rows(attribution, "attributions")
+        for row in list_items(attribution, "attributions")
         if _trade_id(row) is not None
     }
     payload = get(base, "/executions", {"from_ts": 0, "limit": EXECUTIONS_LIMIT})
     by_trade: dict[Any, list[Mapping[str, Any]]] = defaultdict(list)
-    for row in _rows(payload, "executions"):
+    for row in list_items(payload, "executions"):
         tid = _trade_id(row)
         if tid is not None:
             by_trade[tid].append(row)

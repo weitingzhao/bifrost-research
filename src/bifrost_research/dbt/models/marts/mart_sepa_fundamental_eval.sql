@@ -22,7 +22,7 @@ select
     f.eps_fy_g1,
     f.rev_fy_g0,
     f.rev_fy_g1,
-    current_date as eval_date,
+    {{ sepa_session() }} as eval_date,
 
     -- Condition 1: EPS quarterly YoY ≥ 25%
     coalesce(f.eps_g0 >= 0.25, false) as eps_q2q_ge_25pct,

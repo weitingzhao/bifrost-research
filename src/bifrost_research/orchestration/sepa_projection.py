@@ -24,6 +24,13 @@ def run_sepa_projection(
 ) -> dict[str, Any]:
     """Copy dbt mart rows into Feature Store.
 
+    ``trade_date`` is the session to write — the Dagster asset passes the New
+    York session (``db.calendar.latest_closed_session``). The mart stamps the
+    newest bar it read (dbt macro ``sepa_session``); when the two disagree
+    nothing is written and the result says why, so a stale or misdated mart can
+    never land under another session's date (TD-87). Without ``trade_date`` the
+    mart's own session is used.
+
     PIT ``asof_ts`` = projection timestamp (daily UPSERT overwrite, not historical PIT).
     Uses pg advisory lock + retry to avoid concurrent projection races.
     """
@@ -75,20 +82,26 @@ def _run_projection_body(
     trade_date: date | None,
     symbols: Sequence[str] | None,
 ) -> dict[str, Any]:
-    resolved = trade_date
-    if resolved is None:
-        cur.execute("SELECT MAX(trade_date) FROM dw_stock.mart_sepa_feature_daily")
-        row = cur.fetchone()
-        if row is not None:
-            val = row[0] if not isinstance(row, dict) else row.get("max")
-            if val is not None:
-                resolved = val if isinstance(val, date) else date.fromisoformat(str(val)[:10])
-    if resolved is None:
+    mart_sessions = _mart_sessions(cur)
+    if not mart_sessions:
         return {
             "trade_date": None,
             "rows_written": 0,
             "skipped": True,
             "reason": "mart_sepa_feature_daily empty",
+        }
+    resolved = trade_date if trade_date is not None else max(mart_sessions)
+    if mart_sessions != [resolved]:
+        held = ", ".join(d.isoformat() for d in mart_sessions)
+        return {
+            "trade_date": resolved.isoformat(),
+            "mart_trade_date": held,
+            "rows_written": 0,
+            "skipped": True,
+            "reason": (
+                f"mart_sepa_feature_daily holds {held}, not the session {resolved.isoformat()}; "
+                "nothing written"
+            ),
         }
 
     now = datetime.now(timezone.utc)
@@ -153,3 +166,66 @@ def _run_projection_body(
         "symbols": len(symbols) if symbols else None,
         "source": "dw_stock.mart_sepa_feature_daily",
     }
+
+
+def _as_date(val: Any) -> date | None:
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val.date()
+    if isinstance(val, date):
+        return val
+    return date.fromisoformat(str(val)[:10])
+
+
+def _mart_sessions(cur: Any) -> list[date]:
+    """The distinct sessions the mart holds, oldest first (one, when dbt built it)."""
+    cur.execute("SELECT DISTINCT trade_date FROM dw_stock.mart_sepa_feature_daily ORDER BY 1")
+    out: list[date] = []
+    for row in cur.fetchall() or []:
+        val = row.get("trade_date") if isinstance(row, dict) else row[0]
+        d = _as_date(val)
+        if d is not None:
+            out.append(d)
+    return out
+
+
+#: Stamped sessions that cannot be sessions: a weekend, a day NYSE was closed,
+#: or a day later than the newest SPY bar (TD-87 wrote Fridays as Saturdays).
+OFF_SESSION_DATES_SQL = f"""
+    WITH stamped AS (
+        SELECT DISTINCT trade_date FROM {TABLE_STOCK_SIGNAL_SEPA_DAILY}
+    ),
+    newest AS (
+        SELECT max(bar_date) AS bar_date FROM raw_market.stock_daily WHERE symbol = 'SPY'
+    )
+    SELECT s.trade_date
+    FROM stamped AS s
+    CROSS JOIN newest AS n
+    WHERE extract(isodow FROM s.trade_date) > 5
+       OR s.trade_date > n.bar_date
+       OR EXISTS (
+           SELECT 1 FROM raw_market.us_market_holiday AS h
+           WHERE h.holiday_date = s.trade_date AND h.status = 'closed'
+       )
+    ORDER BY 1
+"""
+
+
+def off_session_dates(conn: Any) -> list[date]:
+    """Dates in features.stock_signal_sepa_daily that are not NYSE sessions (TD-87 ratchet)."""
+    with conn.cursor() as cur:
+        cur.execute(OFF_SESSION_DATES_SQL)
+        rows = cur.fetchall() or []
+    out = [_as_date(r.get("trade_date") if isinstance(r, dict) else r[0]) for r in rows]
+    return [d for d in out if d is not None]
+
+
+def newest_session(conn: Any) -> date | None:
+    """The newest trade_date in features.stock_signal_sepa_daily."""
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT max(trade_date) AS trade_date FROM {TABLE_STOCK_SIGNAL_SEPA_DAILY}")
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return _as_date(row.get("trade_date") if isinstance(row, dict) else row[0])
