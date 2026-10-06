@@ -229,3 +229,57 @@ def newest_session(conn: Any) -> date | None:
     if row is None:
         return None
     return _as_date(row.get("trade_date") if isinstance(row, dict) else row[0])
+
+
+#: How many closed sessions the coverage check looks back over (TD-189).
+COVERAGE_SESSIONS = 30
+
+_RESTATED = (
+    "inputs since restated (financials re-fetched from the v1 endpoint 09-29, "
+    "IV percentile store rebuilt, SEPA universe 3,446 -> 3,742 names), so a recompute "
+    "would not be what that night saw"
+)
+#: Sessions with no SEPA that were judged unrecoverable. They stay visible in the
+#: check's metadata; only a gap not listed here fails the check.
+ACCEPTED_GAPS: dict[date, str] = {
+    date(2026, 8, 28): "TD-189: research_trading_day had no dbt step yet; the projection "
+    "copied a mart still holding 08-27 (restated to 08-27 by TD-87); " + _RESTATED,
+    date(2026, 8, 31): "TD-189: same stale mart (run e92285e9 projected 08-27 closes); " + _RESTATED,
+    date(2026, 9, 8): "TD-189: husbandry_gate blocked on Flex [1003] (runs 831ad92b, "
+    "f638e59b); the next nights project only their own session; " + _RESTATED,
+    date(2026, 9, 16): "TD-189: husbandry_gate blocked on Flex [1003] (run f9d10c09); " + _RESTATED,
+}
+
+
+def stored_sessions(conn: Any, start: date, end: date) -> set[date]:
+    """Distinct SEPA trade_dates between ``start`` and ``end`` (inclusive)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT DISTINCT trade_date FROM {TABLE_STOCK_SIGNAL_SEPA_DAILY} "
+            "WHERE trade_date BETWEEN %s AND %s",
+            (start, end),
+        )
+        rows = cur.fetchall() or []
+    out = {_as_date(r.get("trade_date") if isinstance(r, dict) else r[0]) for r in rows}
+    return {d for d in out if d is not None}
+
+
+def missing_sessions(
+    conn: Any,
+    *,
+    newest: date,
+    sessions: int = COVERAGE_SESSIONS,
+) -> list[date]:
+    """Trading sessions among the last ``sessions`` ending at ``newest`` that hold no SEPA row.
+
+    The projection writes one session a night and never catches up, so a night
+    the batch does not reach (a failed gate, a stale mart) is a permanent hole
+    unless research_trading_day is re-run before the next session closes.
+    """
+    from bifrost_research.db.calendar import fetch_recent_trading_days
+
+    days = fetch_recent_trading_days(conn, sessions, as_of=newest)
+    if not days:
+        return []
+    have = stored_sessions(conn, days[0], days[-1])
+    return [d for d in days if d not in have]

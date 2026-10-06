@@ -13,6 +13,9 @@ from dagster import (
 )
 
 from bifrost_research.orchestration.sepa_projection import (
+    ACCEPTED_GAPS,
+    COVERAGE_SESSIONS,
+    missing_sessions,
     newest_session,
     off_session_dates,
     run_sepa_projection,
@@ -107,5 +110,44 @@ def sepa_sessions_are_trading_days() -> AssetCheckResult:
     )
 
 
+@asset_check(
+    asset=sepa_projection,
+    name="sepa_covers_recent_sessions",
+    blocking=False,
+    description=(
+        f"TD-189 ratchet: every NYSE session among the last {COVERAGE_SESSIONS} closed "
+        "sessions has SEPA rows. The projection writes one session a night and never "
+        "catches up, so a night the batch misses is lost unless research_trading_day "
+        "is re-run before the next close. WARN on any gap not in ACCEPTED_GAPS."
+    ),
+)
+def sepa_covers_recent_sessions() -> AssetCheckResult:
+    from bifrost_research.db.calendar import latest_closed_session
+    from bifrost_research.db.conn import connect
+
+    conn = connect()
+    try:
+        session = latest_closed_session(conn)
+        missing = missing_sessions(conn, newest=session)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    new_gaps = [d for d in missing if d not in ACCEPTED_GAPS]
+    accepted = [d for d in missing if d in ACCEPTED_GAPS]
+    return AssetCheckResult(
+        passed=not new_gaps,
+        severity=AssetCheckSeverity.WARN,
+        metadata={
+            "sessions_checked": COVERAGE_SESSIONS,
+            "newest_session": session.isoformat(),
+            "missing_sessions": len(new_gaps),
+            "missing_sample": ", ".join(d.isoformat() for d in new_gaps[:20]) or "none",
+            "accepted_gaps": ", ".join(d.isoformat() for d in accepted) or "none",
+        },
+    )
+
+
 SEPA_PROJECTION_ASSETS = [sepa_projection]
-SEPA_PROJECTION_CHECKS = [sepa_sessions_are_trading_days]
+SEPA_PROJECTION_CHECKS = [sepa_sessions_are_trading_days, sepa_covers_recent_sessions]

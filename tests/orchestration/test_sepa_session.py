@@ -224,3 +224,87 @@ def test_check_fails_on_a_saturday_row(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_check_fails_when_the_newest_row_is_not_the_new_york_session(monkeypatch: pytest.MonkeyPatch) -> None:
     result = _check(monkeypatch, off=[], newest=TUE, session=MON)
     assert result.passed is False
+
+
+# ── coverage over the last 30 sessions (TD-189 ratchet) ───────────────────
+
+
+class _CoverageCur:
+    def __init__(self, stored: set[date]) -> None:
+        self.stored = stored
+        self.params: Any = None
+
+    def execute(self, sql: str, params: Any = None) -> None:
+        assert "SELECT DISTINCT trade_date FROM features.stock_signal_sepa_daily" in sql
+        assert "BETWEEN %s AND %s" in sql
+        self.params = params
+
+    def fetchall(self) -> list[tuple[date]]:
+        lo, hi = self.params
+        return [(d,) for d in sorted(self.stored) if lo <= d <= hi]
+
+    def __enter__(self) -> _CoverageCur:
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        return False
+
+
+SESSIONS = [date(2026, 9, d) for d in (14, 15, 16, 17, 18)]
+
+
+def _coverage(monkeypatch: pytest.MonkeyPatch, stored: set[date]) -> list[date]:
+    monkeypatch.setattr(calendar, "fetch_recent_trading_days", lambda _c, n, as_of=None: SESSIONS[-n:])
+    return sp.missing_sessions(_Conn(_CoverageCur(stored)), newest=SESSIONS[-1], sessions=5)  # type: ignore[arg-type]
+
+
+def test_missing_sessions_lists_every_session_without_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _coverage(monkeypatch, set(SESSIONS)) == []
+    assert _coverage(monkeypatch, set(SESSIONS) - {date(2026, 9, 16)}) == [date(2026, 9, 16)]
+    # The newest session missing is a gap too (the other check also catches it).
+    assert _coverage(monkeypatch, set(SESSIONS[:-1])) == [SESSIONS[-1]]
+
+
+def test_the_accepted_gaps_are_the_four_judged_unrecoverable() -> None:
+    # Adding a date here means a night was lost and judged not recomputable:
+    # write the evidence into its reason, as TD-189 did.
+    assert sorted(sp.ACCEPTED_GAPS) == [
+        date(2026, 8, 28),
+        date(2026, 8, 31),
+        date(2026, 9, 8),
+        date(2026, 9, 16),
+    ]
+    assert all(reason.startswith("TD-189") for reason in sp.ACCEPTED_GAPS.values())
+
+
+def _coverage_check(monkeypatch: pytest.MonkeyPatch, missing: list[date]) -> Any:
+    pytest.importorskip("dagster")
+    from bifrost_research.orchestration import sepa_projection_asset as spa
+
+    monkeypatch.setattr("bifrost_research.db.conn.connect", lambda: _Conn(_Cur([MON])))
+    monkeypatch.setattr("bifrost_research.db.calendar.latest_closed_session", lambda _c, **_k: MON)
+    monkeypatch.setattr(spa, "missing_sessions", lambda _c, newest: missing)
+    return spa.sepa_covers_recent_sessions()
+
+
+def test_coverage_check_passes_with_only_accepted_gaps(monkeypatch: pytest.MonkeyPatch) -> None:
+    result = _coverage_check(monkeypatch, [date(2026, 9, 8), date(2026, 9, 16)])
+    assert result.passed is True
+    assert result.metadata["accepted_gaps"].value == "2026-09-08, 2026-09-16"
+    assert result.metadata["missing_sessions"].value == 0
+
+
+def test_coverage_check_warns_on_a_new_gap(monkeypatch: pytest.MonkeyPatch) -> None:
+    result = _coverage_check(monkeypatch, [date(2026, 9, 16), date(2026, 10, 2)])
+    severity = pytest.importorskip("dagster").AssetCheckSeverity
+
+    assert result.passed is False
+    assert result.severity == severity.WARN
+    assert result.metadata["missing_sample"].value == "2026-10-02"
+
+
+def test_coverage_check_is_registered() -> None:
+    pytest.importorskip("dagster")
+    from bifrost_research.orchestration import sepa_projection_asset as spa
+
+    assert spa.sepa_covers_recent_sessions in spa.SEPA_PROJECTION_CHECKS
