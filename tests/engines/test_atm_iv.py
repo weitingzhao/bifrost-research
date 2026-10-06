@@ -314,7 +314,7 @@ from bifrost_research.engines.backtest.canonical_pnl import bs_price  # noqa: E4
 
 
 def _bar(ticker: str, strike: float, right: str, iv: float, spot: float, td: date, expiry: date) -> tuple[Any, ...]:
-    px = bs_price(spot, strike, (expiry - td).days / 365.0, iv, right=right)
+    px = bs_price(spot, strike, (expiry - td).days / 365.0, iv, right=right, rate=0.0)
     return (ticker, "PLTR", expiry, strike, right, px, px, px, spot)
 
 

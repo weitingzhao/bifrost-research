@@ -19,7 +19,6 @@ D10 BLOCKED — read-only analytics.
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
@@ -27,6 +26,7 @@ from zoneinfo import ZoneInfo
 
 from bifrost_research.db.upsert import batch_upsert
 from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
+from bifrost_research.pricing import bs_gamma
 
 _NY = ZoneInfo("America/New_York")
 
@@ -74,10 +74,6 @@ class ContractGreeks:
     gamma: float | None = None
 
 
-def _norm_pdf(x: float) -> float:
-    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
-
-
 def approx_bs_gamma(
     spot: float,
     strike: float,
@@ -85,12 +81,12 @@ def approx_bs_gamma(
     iv: float = DEFAULT_IV,
     t_years: float = DEFAULT_T_YEARS,
 ) -> float:
-    """Black-Scholes gamma (per unit) with r=q=0."""
-    if spot <= 0 or strike <= 0 or iv <= 0 or t_years <= 0:
-        return 0.0
-    sqrt_t = math.sqrt(t_years)
-    d1 = (math.log(spot / strike) + 0.5 * iv * iv * t_years) / (iv * sqrt_t)
-    return _norm_pdf(d1) / (spot * iv * sqrt_t)
+    """Black-Scholes gamma (per unit) with r=q=0, for contracts the vendor gave no gamma.
+
+    r = 0 is the dealer-GEX convention and moves gamma by well under 1% at the
+    fallback's 30 days; the stored GEX history uses it.
+    """
+    return bs_gamma(spot, strike, t_years, iv, rate=0.0)
 
 
 def gex_notional(gamma: float, oi: int, spot: float, *, sign: float) -> float:

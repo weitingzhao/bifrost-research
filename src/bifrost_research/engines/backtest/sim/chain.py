@@ -28,6 +28,7 @@ from typing import Any, Literal, Mapping
 
 from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 from bifrost_research.repositories.listing_lineage import live_label, stock_clause
+from bifrost_research.pricing import RateCurve, bs_delta, load_rate_curve, solve_iv
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +99,8 @@ SPAN_DAYS = 31
 
 def _sessions_and_rates(
     conn: Any, symbol: str, start: date, end: date, *, max_dte: int
-) -> tuple[str, dict[date, float], dict[date, float], date]:
-    """(live label, as-traded closes, 1-month yields, tail) for a window.
+) -> tuple[str, dict[date, float], RateCurve, date]:
+    """(live label, as-traded closes, Treasury curve, tail) for a window.
 
     Positions opened near ``end`` run on toward their expiry; the tail keeps the
     sessions and the bars that far so they can be marked and settled.
@@ -110,7 +111,6 @@ def _sessions_and_rates(
     clause, sym_params = stock_clause(conn, sym)
     tail = end + timedelta(days=int(max_dte) * 2 + 14)
     spot: dict[date, float] = {}
-    rates: dict[date, float] = {}
     with conn.cursor() as cur:
         cur.execute(
             f"""
@@ -127,28 +127,8 @@ def _sessions_and_rates(
             d, px = _d(_col(r, 0, "bar_date")), _col(r, 1, "close_as_traded")
             if d is not None and px is not None and float(px) > 0:
                 spot[d] = float(px)
-        try:
-            cur.execute(
-                """
-                SELECT yield_date, COALESCE(yield_1_month, yield_3_month)
-                FROM raw_market.treasury_yield
-                WHERE yield_date BETWEEN %s AND %s
-                """,
-                (start - timedelta(days=14), tail),
-            )
-            for r in cur.fetchall() or []:
-                d, v = _d(_col(r, 0, "yield_date")), _col(r, 1, "coalesce")
-                if d is not None and v is not None:
-                    x = float(v)
-                    x = x / 100.0 if x > 1.0 else x
-                    if 0.0 <= x < 0.25:
-                        rates[d] = x
-        except Exception as exc:  # noqa: BLE001 — rates are optional
-            logger.info("treasury yields unavailable: %s", str(exc)[:120])
-            try:
-                conn.rollback()
-            except Exception:  # noqa: BLE001
-                pass
+    # One Treasury reader for the backtester and the IV features (TD-110).
+    rates = load_rate_curve(conn, start, tail)
     return sym, spot, rates, tail
 
 
@@ -213,7 +193,7 @@ class ChainStore:
         symbol: str,
         spot: Mapping[date, float],
         bars: list[OptBar],
-        rates: Mapping[date, float] | None = None,
+        rates: RateCurve | Mapping[date, float] | None = None,
     ) -> None:
         self.symbol = symbol
         # Set by the run when the listing was retired: its last close. Positions
@@ -225,8 +205,7 @@ class ChainStore:
         self._by_ticker: dict[str, dict[date, OptBar]] = {}
         for b in bars:
             self._index(b)
-        self._rate_days = sorted(rates or {})
-        self._rates = dict(rates or {})
+        self._rates = rates if isinstance(rates, RateCurve) else RateCurve(rates or {})
         self._greeks: dict[tuple[str, date, str], tuple[float, float] | None] = {}
         self._fill: _SnapshotFill | None = None
         self._span: _Span | None = None
@@ -438,18 +417,12 @@ class ChainStore:
         return self.spot[self.sessions[i]] if i >= 0 else None
 
     def rate(self, d: date) -> float:
-        i = bisect.bisect_right(self._rate_days, d) - 1
-        if i < 0 or (d - self._rate_days[i]).days > 14:
-            return 0.0
-        return self._rates[self._rate_days[i]]
+        return self._rates.on_or_before(d)
 
     def iv_delta(self, b: OptBar, d: date, price_field: str, *, use_rate: bool = True) -> tuple[float, float] | None:
         key = (b.ticker, d, price_field)
         if key in self._greeks:
             return self._greeks[key]
-        from bifrost_research.engines.backtest.canonical_pnl import bs_delta
-        from bifrost_research.engines.volatility.iv_solver import solve_iv
-
         out: tuple[float, float] | None = None
         spot = self.spot.get(d)
         if spot:

@@ -23,13 +23,13 @@ from bifrost_research.engines.opex_cycle.calendar import (
 )
 from bifrost_research.engines.opex_cycle.vanna_charm import (
     ContractGreek,
-    _norm_cdf,
-    _norm_pdf,
     bs_charm,
     bs_vanna,
     strike_vanna_charm_from_contracts,
     zero_crossing_strike,
 )
+from bifrost_research.pricing import norm_cdf as _norm_cdf
+from bifrost_research.pricing import norm_pdf as _norm_pdf
 
 
 # --------------------------------------------------------------------------
@@ -159,14 +159,14 @@ def _numerical_charm_call(
 
 def test_bs_vanna_matches_numerical_call_atm() -> None:
     spot, strike, sigma, t = 100.0, 100.0, 0.25, 30.0 / 365.0
-    analytical = bs_vanna(spot, strike, sigma, t, option_right="C")
+    analytical = bs_vanna(spot, strike, sigma, t, option_right="C", rate=0.0)
     numerical = _numerical_vanna_call(spot, strike, sigma, t)
     assert math.isclose(analytical, numerical, rel_tol=1e-3, abs_tol=1e-4)
 
 
 def test_bs_vanna_matches_numerical_call_otm() -> None:
     spot, strike, sigma, t = 100.0, 110.0, 0.30, 60.0 / 365.0
-    analytical = bs_vanna(spot, strike, sigma, t, option_right="C")
+    analytical = bs_vanna(spot, strike, sigma, t, option_right="C", rate=0.0)
     numerical = _numerical_vanna_call(spot, strike, sigma, t)
     assert math.isclose(analytical, numerical, rel_tol=5e-3, abs_tol=1e-4)
 
@@ -174,14 +174,14 @@ def test_bs_vanna_matches_numerical_call_otm() -> None:
 def test_bs_vanna_same_for_calls_and_puts() -> None:
     # Vanna formula is identical for calls and puts
     spot, strike, sigma, t = 100.0, 95.0, 0.28, 45.0 / 365.0
-    call = bs_vanna(spot, strike, sigma, t, option_right="C")
-    put = bs_vanna(spot, strike, sigma, t, option_right="P")
+    call = bs_vanna(spot, strike, sigma, t, option_right="C", rate=0.0)
+    put = bs_vanna(spot, strike, sigma, t, option_right="P", rate=0.0)
     assert math.isclose(call, put, abs_tol=1e-12)
 
 
 def test_bs_charm_matches_numerical_call_atm() -> None:
     spot, strike, sigma, t = 100.0, 100.0, 0.25, 30.0 / 365.0
-    analytical = bs_charm(spot, strike, sigma, t, option_right="C")
+    analytical = bs_charm(spot, strike, sigma, t, option_right="C", rate=0.0)
     numerical = _numerical_charm_call(spot, strike, sigma, t)
     # Charm has larger numerical error; accept 1% tolerance on ATM
     assert math.isclose(analytical, numerical, rel_tol=1e-2, abs_tol=1e-3)
@@ -189,14 +189,14 @@ def test_bs_charm_matches_numerical_call_atm() -> None:
 
 def test_bs_greeks_return_zero_for_bad_inputs() -> None:
     for bad_t in (-1.0, 0.0):
-        assert bs_vanna(100.0, 100.0, 0.25, bad_t) == 0.0
-        assert bs_charm(100.0, 100.0, 0.25, bad_t) == 0.0
+        assert bs_vanna(100.0, 100.0, 0.25, bad_t, rate=0.0) == 0.0
+        assert bs_charm(100.0, 100.0, 0.25, bad_t, rate=0.0) == 0.0
     for bad_sigma in (-0.1, 0.0):
-        assert bs_vanna(100.0, 100.0, bad_sigma, 0.1) == 0.0
-        assert bs_charm(100.0, 100.0, bad_sigma, 0.1) == 0.0
+        assert bs_vanna(100.0, 100.0, bad_sigma, 0.1, rate=0.0) == 0.0
+        assert bs_charm(100.0, 100.0, bad_sigma, 0.1, rate=0.0) == 0.0
     for bad_spot in (-1.0, 0.0):
-        assert bs_vanna(bad_spot, 100.0, 0.25, 0.1) == 0.0
-        assert bs_charm(bad_spot, 100.0, 0.25, 0.1) == 0.0
+        assert bs_vanna(bad_spot, 100.0, 0.25, 0.1, rate=0.0) == 0.0
+        assert bs_charm(bad_spot, 100.0, 0.25, 0.1, rate=0.0) == 0.0
 
 
 # --------------------------------------------------------------------------
@@ -220,7 +220,7 @@ def test_strike_vanna_charm_dealer_sign() -> None:
     strike = 100.0
     from bifrost_research.engines.gex.exposure import MULTIPLIER as MULT
 
-    raw_vanna = bs_vanna(spot, strike, 0.25, 30.0 / 365.0, option_right="C")
+    raw_vanna = bs_vanna(spot, strike, 0.25, 30.0 / 365.0, option_right="C", rate=0.0)
     expected_call = -1.0 * raw_vanna * 100 * MULT  # dealer short calls
     expected_put = 1.0 * raw_vanna * 100 * MULT  # dealer long puts
 

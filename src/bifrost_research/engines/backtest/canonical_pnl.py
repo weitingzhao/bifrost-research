@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Literal, Mapping, Sequence
+
+from bifrost_research.pricing import bs_delta, bs_price
 
 StructureName = Literal[
     "short_strangle",
@@ -131,58 +132,15 @@ def default_params(structure: StructureName) -> StructureParams:
 
 
 # ---------------------------------------------------------------------------
-# Black–Scholes helpers (European, continuous rates ≈ 0 for short-dated equity)
+# Black–Scholes: bifrost_research.pricing (TD-110)
 # ---------------------------------------------------------------------------
 
-
-def _norm_cdf(x: float) -> float:
-    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
-
-
-def _norm_pdf(x: float) -> float:
-    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
-
-
-def bs_price(
-    spot: float,
-    strike: float,
-    t_years: float,
-    iv: float,
-    *,
-    right: Literal["C", "P"],
-    rate: float = 0.0,
-) -> float:
-    """Black–Scholes mid price. ``iv`` is decimal (0.25 = 25%)."""
-    if spot <= 0 or strike <= 0 or iv <= 0:
-        return max(0.0, (spot - strike) if right == "C" else (strike - spot))
-    if t_years <= 1e-8:
-        return max(0.0, (spot - strike) if right == "C" else (strike - spot))
-    vol = iv * math.sqrt(t_years)
-    d1 = (math.log(spot / strike) + (rate + 0.5 * iv * iv) * t_years) / vol
-    d2 = d1 - vol
-    if right == "C":
-        return spot * _norm_cdf(d1) - strike * math.exp(-rate * t_years) * _norm_cdf(d2)
-    return strike * math.exp(-rate * t_years) * _norm_cdf(-d2) - spot * _norm_cdf(-d1)
-
-
-def bs_delta(
-    spot: float,
-    strike: float,
-    t_years: float,
-    iv: float,
-    *,
-    right: Literal["C", "P"],
-    rate: float = 0.0,
-) -> float:
-    if spot <= 0 or strike <= 0 or iv <= 0 or t_years <= 1e-8:
-        if right == "C":
-            return 1.0 if spot > strike else 0.0
-        return -1.0 if spot < strike else 0.0
-    vol = iv * math.sqrt(t_years)
-    d1 = (math.log(spot / strike) + (rate + 0.5 * iv * iv) * t_years) / vol
-    if right == "C":
-        return float(_norm_cdf(d1))
-    return float(_norm_cdf(d1) - 1.0)
+#: The canonical cohort marks synthetic structures at r = 0, as it always has.
+#: Its legs are priced off the ATM IV (a call+put average that the Treasury rate
+#: moves by +0.07 vol pts median) and every stored row in
+#: dw_stock.mart_canonical_pnl_daily was marked this way; moving it to the
+#: Treasury curve would restate the mart, which is the Owner's call.
+CANONICAL_RATE = 0.0
 
 
 def strike_for_delta(
@@ -192,6 +150,7 @@ def strike_for_delta(
     target_delta: float,
     *,
     right: Literal["C", "P"],
+    rate: float,
 ) -> float:
     """Invert BS delta → strike via binary search on moneyness."""
     if spot <= 0 or iv <= 0 or t_years <= 1e-8:
@@ -199,7 +158,7 @@ def strike_for_delta(
     lo, hi = spot * 0.3, spot * 2.5
     for _ in range(48):
         mid = 0.5 * (lo + hi)
-        d = bs_delta(spot, mid, t_years, iv, right=right)
+        d = bs_delta(spot, mid, t_years, iv, right=right, rate=rate)
         if right == "C":
             # higher strike → lower call delta
             if d > target_delta:
@@ -247,39 +206,39 @@ def build_entry_legs(
     if structure == "short_strangle":
         c_delta = float(p["short_call_delta"])
         p_delta = float(p["short_put_delta"])
-        c_k = strike_for_delta(spot, t, iv, c_delta, right="C")
-        p_k = strike_for_delta(spot, t, iv, p_delta, right="P")
+        c_k = strike_for_delta(spot, t, iv, c_delta, right="C", rate=CANONICAL_RATE)
+        p_k = strike_for_delta(spot, t, iv, p_delta, right="P", rate=CANONICAL_RATE)
         legs = [
-            LegMark("option", "sell", 1, "C", c_k, None, bs_price(spot, c_k, t, iv, right="C"), "short call"),
-            LegMark("option", "sell", 1, "P", p_k, None, bs_price(spot, p_k, t, iv, right="P"), "short put"),
+            LegMark("option", "sell", 1, "C", c_k, None, bs_price(spot, c_k, t, iv, right="C", rate=CANONICAL_RATE), "short call"),
+            LegMark("option", "sell", 1, "P", p_k, None, bs_price(spot, p_k, t, iv, right="P", rate=CANONICAL_RATE), "short put"),
         ]
     elif structure == "put_credit_spread":
         short_d = float(p["short_delta"])
         width = float(p["width"])
-        short_k = strike_for_delta(spot, t, iv, short_d, right="P")
+        short_k = strike_for_delta(spot, t, iv, short_d, right="P", rate=CANONICAL_RATE)
         long_k = short_k - width
         legs = [
-            LegMark("option", "sell", 1, "P", short_k, None, bs_price(spot, short_k, t, iv, right="P"), "short put"),
-            LegMark("option", "buy", 1, "P", long_k, None, bs_price(spot, long_k, t, iv, right="P"), "long put"),
+            LegMark("option", "sell", 1, "P", short_k, None, bs_price(spot, short_k, t, iv, right="P", rate=CANONICAL_RATE), "short put"),
+            LegMark("option", "buy", 1, "P", long_k, None, bs_price(spot, long_k, t, iv, right="P", rate=CANONICAL_RATE), "long put"),
         ]
     elif structure == "long_straddle":
         legs = [
-            LegMark("option", "buy", 1, "C", spot, None, bs_price(spot, spot, t, iv, right="C"), "ATM call"),
-            LegMark("option", "buy", 1, "P", spot, None, bs_price(spot, spot, t, iv, right="P"), "ATM put"),
+            LegMark("option", "buy", 1, "C", spot, None, bs_price(spot, spot, t, iv, right="C", rate=CANONICAL_RATE), "ATM call"),
+            LegMark("option", "buy", 1, "P", spot, None, bs_price(spot, spot, t, iv, right="P", rate=CANONICAL_RATE), "ATM put"),
         ]
     elif structure == "covered_call":
         c_delta = float(p["short_call_delta"])
         own = int(p.get("own_stock") or 100)
-        c_k = strike_for_delta(spot, t, iv, c_delta, right="C")
+        c_k = strike_for_delta(spot, t, iv, c_delta, right="C", rate=CANONICAL_RATE)
         legs = [
             LegMark("stock", "buy", own, None, None, None, spot, "long stock"),
-            LegMark("option", "sell", 1, "C", c_k, None, bs_price(spot, c_k, t, iv, right="C"), "short call"),
+            LegMark("option", "sell", 1, "C", c_k, None, bs_price(spot, c_k, t, iv, right="C", rate=CANONICAL_RATE), "short call"),
         ]
     elif structure == "short_put":
         short_d = float(p["short_delta"])
-        short_k = strike_for_delta(spot, t, iv, short_d, right="P")
+        short_k = strike_for_delta(spot, t, iv, short_d, right="P", rate=CANONICAL_RATE)
         legs = [
-            LegMark("option", "sell", 1, "P", short_k, None, bs_price(spot, short_k, t, iv, right="P"), "short put"),
+            LegMark("option", "sell", 1, "P", short_k, None, bs_price(spot, short_k, t, iv, right="P", rate=CANONICAL_RATE), "short put"),
         ]
     else:
         raise ValueError(f"unknown structure: {structure}")
@@ -356,7 +315,7 @@ def mark_structure(
             expired = True
             mid = max(0.0, (as_of_spot - strike) if right == "C" else (strike - as_of_spot))
         else:
-            mid = bs_price(as_of_spot, strike, dte / 365.0, as_of_atm_iv, right=right)
+            mid = bs_price(as_of_spot, strike, dte / 365.0, as_of_atm_iv, right=right, rate=CANONICAL_RATE)
         marked.append(
             LegMark(lg.kind, lg.side, lg.quantity, right, strike, expiry, mid, lg.label)
         )

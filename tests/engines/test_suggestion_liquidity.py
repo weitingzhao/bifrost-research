@@ -33,7 +33,7 @@ def _chain(volume: int) -> ChainStore:
             dte = (exp - d).days
             if 30 <= dte <= 70:
                 for k in range(60, 140, 1):
-                    px = bs_price(100.0, float(k), dte / 365.0, 0.30, right="P")
+                    px = bs_price(100.0, float(k), dte / 365.0, 0.30, right="P", rate=0.0)
                     if px >= 0.01:
                         bars.append(OptBar(f"O:X{exp:%y%m%d}P{k * 1000:08d}", exp, float(k), "P", d, round(px, 4), None, volume))
     return ChainStore("X", {d: 100.0 for d in days}, bars)

@@ -19,8 +19,8 @@ from bifrost_research.engines.backtest.canonical_pnl import (
 
 def test_bs_call_put_parity_rough():
     spot, k, t, iv = 100.0, 100.0, 30 / 365.0, 0.25
-    c = bs_price(spot, k, t, iv, right="C")
-    p = bs_price(spot, k, t, iv, right="P")
+    c = bs_price(spot, k, t, iv, right="C", rate=0.0)
+    p = bs_price(spot, k, t, iv, right="P", rate=0.0)
     assert c > 0 and p > 0
     # put-call parity at r=0: C - P ≈ S - K
     assert abs((c - p) - (spot - k)) < 0.5
@@ -28,8 +28,8 @@ def test_bs_call_put_parity_rough():
 
 def test_strike_for_call_delta_otm():
     spot, t, iv = 100.0, 45 / 365.0, 0.30
-    k = strike_for_delta(spot, t, iv, 0.15, right="C")
-    d = bs_delta(spot, k, t, iv, right="C")
+    k = strike_for_delta(spot, t, iv, 0.15, right="C", rate=0.0)
+    d = bs_delta(spot, k, t, iv, right="C", rate=0.0)
     assert k > spot
     assert abs(d - 0.15) < 0.03
 

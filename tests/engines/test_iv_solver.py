@@ -20,8 +20,8 @@ KNOWN_CASES = [
 
 @pytest.mark.parametrize("spot,strike,tte,right,known_iv", KNOWN_CASES)
 def test_solve_iv_round_trip(spot, strike, tte, right, known_iv):
-    mid = bs_price(spot, strike, tte, known_iv, right=right)
-    iv, status = solve_iv(spot, strike, tte, mid, right)
+    mid = bs_price(spot, strike, tte, known_iv, right=right, rate=0.0)
+    iv, status = solve_iv(spot, strike, tte, mid, right, rate=0.0)
     assert status == "ok"
     assert iv is not None
     assert abs(iv - known_iv) < 1e-3
@@ -29,13 +29,13 @@ def test_solve_iv_round_trip(spot, strike, tte, right, known_iv):
 
 def test_insufficient_when_mid_below_intrinsic():
     # Call intrinsic = 10, mid too low
-    iv, status = solve_iv(110.0, 100.0, 30 / 365.0, 5.0, "C")
+    iv, status = solve_iv(110.0, 100.0, 30 / 365.0, 5.0, "C", rate=0.0)
     assert status == "insufficient_inputs"
     assert iv is None
 
 
 def test_insufficient_zero_spot():
-    iv, status = solve_iv(0.0, 100.0, 0.1, 5.0, "C")
+    iv, status = solve_iv(0.0, 100.0, 0.1, 5.0, "C", rate=0.0)
     assert status == "insufficient_inputs"
 
 
@@ -46,8 +46,8 @@ def test_polygon_style_atm_backcheck_tolerance():
         spot = 100.0 + i
         known = 0.18 + i * 0.01
         tte = (20 + i) / 365.0
-        mid = bs_price(spot, spot, tte, known, right="C")
-        iv, status = solve_iv(spot, spot, tte, mid, "C")
+        mid = bs_price(spot, spot, tte, known, right="C", rate=0.0)
+        iv, status = solve_iv(spot, spot, tte, mid, "C", rate=0.0)
         assert status == "ok" and iv is not None
         rel_errs.append(abs(iv - known) / known)
     median = sorted(rel_errs)[len(rel_errs) // 2]
@@ -105,7 +105,7 @@ class _Conn:
 def test_brent_keeps_existing_vendor_rows():
     td, exp = date(2026, 8, 12), date(2026, 9, 18)
     spot = 171.04
-    mid = bs_price(spot, 170.0, (exp - td).days / 365.0, 0.47, right="C")
+    mid = bs_price(spot, 170.0, (exp - td).days / 365.0, 0.47, right="C", rate=0.0)
     daily = [
         ("O:PLTR260918C00170000", "PLTR", td, exp, 170.0, "C", None, mid, mid, mid, spot),
         ("O:PLTR260918C00175000", "PLTR", td, exp, 175.0, "C", None, mid, mid, mid * 0.8, spot),

@@ -34,8 +34,8 @@ from bifrost_research.engines.volatility.iv_solver import (
     _right_lit,
     as_traded_close,
     observed_near_session,
-    solve_iv,
 )
+from bifrost_research.pricing import risk_free_rate, solve_iv
 
 _COLS = (
     "symbol",
@@ -374,6 +374,8 @@ def fetch_option_daily_brent_rows_for_date(
             cur.execute(sql, (trade_date, trade_date))
         raw = cur.fetchall() if hasattr(cur, "fetchall") else []
     out: list[dict[str, Any]] = []
+    # The session's Treasury rate, as the stored Brent IV and the backtester use (TD-110).
+    rate = risk_free_rate(conn, trade_date)
     for ticker, und, expiry, strike, right_raw, high, low, close, spot in raw or []:
         if str(ticker) in skip:
             continue
@@ -386,7 +388,7 @@ def fetch_option_daily_brent_rows_for_date(
             continue
         if right is None or mid is None or exp is None:
             continue
-        iv, _status = solve_iv(spot_f, strike_f, max((exp - trade_date).days, 1) / 365.0, mid, right)
+        iv, _status = solve_iv(spot_f, strike_f, max((exp - trade_date).days, 1) / 365.0, mid, right, rate=rate)
         if iv is None:
             continue
         out.append(

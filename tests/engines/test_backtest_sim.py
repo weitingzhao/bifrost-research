@@ -49,7 +49,7 @@ def _store(
                     ticker = f"O:X{exp:%y%m%d}{right}{int(k * 1000):08d}"
                     if drop(ticker, d):
                         continue
-                    px = bs_price(s, float(k), t, iv, right=right)
+                    px = bs_price(s, float(k), t, iv, right=right, rate=0.0)
                     if px < 0.01:
                         continue
                     bars.append(OptBar(ticker, exp, float(k), right, d, round(px, 4), None, 10))

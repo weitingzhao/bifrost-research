@@ -41,7 +41,7 @@ def _store(symbol: str = "X", spot: float = 100.0) -> ChainStore:
             for k2 in range(120, 290, 5):
                 k = k2 / 2
                 for right in ("C", "P"):
-                    px = bs_price(spot, k, max(dte, 0.5) / 365.0, 0.30, right=right)
+                    px = bs_price(spot, k, max(dte, 0.5) / 365.0, 0.30, right=right, rate=0.0)
                     if px >= 0.01:
                         bars.append(OptBar(f"O:{symbol}{exp:%y%m%d}{right}{int(k * 1000):08d}", exp, k, right, d, round(px, 4), None, 100))
     return ChainStore(symbol, {d: spot for d in days}, bars)

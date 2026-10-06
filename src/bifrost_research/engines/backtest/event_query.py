@@ -80,6 +80,7 @@ from bifrost_research.repositories.earnings_filings import (
     split_releases,
 )
 from bifrost_research.repositories.listing_lineage import labels, listing_end, live_label, stock_clause
+from bifrost_research.pricing import bs_delta, risk_free_rate, solve_iv
 
 logger = logging.getLogger(__name__)
 
@@ -715,45 +716,6 @@ def _trading_sessions(conn: Any, symbol: str, start: date, end: date) -> list[da
     return out
 
 
-def _risk_free_rate(conn: Any, on_or_before: date, cache: dict[date, float] | None = None) -> float:
-    """1-month Treasury yield on or before the date, as a decimal; 0.0 if unknown.
-
-    Every Black–Scholes call in research ran at r = 0. At the ~4% short rates of
-    2025–26 that moves a 45-DTE strike's implied delta by about 0.01–0.02 —
-    enough to pick the neighbouring strike.
-    """
-    if cache is not None and on_or_before in cache:
-        return cache[on_or_before]
-    rate = 0.0
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT COALESCE(yield_1_month, yield_3_month)
-                FROM raw_market.treasury_yield
-                WHERE yield_date <= %s
-                  AND yield_date > %s
-                ORDER BY yield_date DESC
-                LIMIT 1
-                """,
-                (on_or_before, on_or_before - timedelta(days=14)),
-            )
-            row = cur.fetchone()
-        val = (row.get("coalesce") if isinstance(row, Mapping) else row[0]) if row else None
-        if val is not None:
-            v = float(val)
-            # The vendor reports percent (4.31); guard against a decimal feed.
-            rate = v / 100.0 if v > 1.0 else v
-    except Exception as exc:  # pragma: no cover
-        logger.debug("treasury lookup failed for %s: %s", on_or_before, exc)
-        rate = 0.0
-    if not (0.0 <= rate < 0.25):
-        rate = 0.0
-    if cache is not None:
-        cache[on_or_before] = rate
-    return rate
-
-
 # How far back a leg may reach for a contract's last bar when it did not trade on
 # the session itself. Beyond this the price is too stale to stand for the day.
 _STALE_LOOKBACK_DAYS = 7
@@ -871,9 +833,6 @@ def _pick_option(
 
     chosen: dict[str, Any] | None = None
     if target_delta is not None and spot and spot > 0:
-        # Late import keeps the module importable without the vol engine's deps.
-        from bifrost_research.engines.backtest.canonical_pnl import bs_delta
-        from bifrost_research.engines.volatility.iv_solver import solve_iv
 
         t_years = max((best_expiry - on).days, 1) / 365.0
         want = abs(float(target_delta))
@@ -994,7 +953,9 @@ def _price_option_leg(
     else:
         strike_target = spot * (1.0 + float(leg.target_moneyness_offset))
         target_delta = leg.target_delta
-    rate = _risk_free_rate(conn, entry_date, rate_cache) if target_delta is not None else 0.0
+    # The 1-month Treasury (pricing.rates), the rate the stored IV features use
+    # too (TD-110). At ~4% it moves a 45-DTE strike's delta by 0.01-0.02.
+    rate = risk_free_rate(conn, entry_date, rate_cache) if target_delta is not None else 0.0
 
     pick_kwargs: dict[str, Any] = dict(
         symbol=symbol,

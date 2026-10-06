@@ -157,10 +157,8 @@ class _FakeCursor:
             return
 
         if "from raw_market.treasury_yield" in q:
-            on, floor = params
-            self._fetched = [
-                (pct,) for (d, pct) in sorted(state.treasury, reverse=True) if floor < d <= on
-            ][:1]
+            lo, hi = params
+            self._fetched = [(d, pct) for (d, pct) in sorted(state.treasury) if lo <= d <= hi]
             return
 
         if "from raw_market.stock_daily" in q and "between" in q:
@@ -610,7 +608,7 @@ def _bs_chain(
     t = (expiry - on).days / 365.0
     for k in strikes:
         for right in ("C", "P"):
-            px = bs_price(spot, float(k), t, iv, right=right)
+            px = bs_price(spot, float(k), t, iv, right=right, rate=0.0)
             if px > 0.01:
                 _add_option_series(state, sym, expiry, float(k), right, [on], [round(px, 4)])
 

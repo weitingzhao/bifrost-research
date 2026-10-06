@@ -1,6 +1,7 @@
 """Analytical Black-Scholes Vanna and Charm — Wave RS-B-OpEx1.
 
-Formulas from Hull / Wilmott (r = risk-free, q = dividend yield; v1 uses r=q=0):
+Formulas from Hull / Wilmott (r = risk-free, q = dividend yield; v1 uses r=q=0).
+Implemented once in ``bifrost_research.pricing`` (TD-110):
 
   d1 = (ln(S/K) + (r - q + 0.5*σ²)*T) / (σ*sqrt(T))
   d2 = d1 - σ*sqrt(T)
@@ -23,79 +24,16 @@ D10 BLOCKED — read-only analytics.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from bifrost_research.engines.gex.exposure import ContractGreeks, MULTIPLIER
+from bifrost_research.pricing import bs_charm, bs_vanna
 
 
-_SQRT_2 = math.sqrt(2.0)
-_SQRT_2PI = math.sqrt(2.0 * math.pi)
-
-
-def _norm_pdf(x: float) -> float:
-    return math.exp(-0.5 * x * x) / _SQRT_2PI
-
-
-def _norm_cdf(x: float) -> float:
-    return 0.5 * (1.0 + math.erf(x / _SQRT_2))
-
-
-def _d1_d2(spot: float, strike: float, sigma: float, t_years: float, r: float, q: float) -> tuple[float, float]:
-    sqrt_t = math.sqrt(t_years)
-    d1 = (math.log(spot / strike) + (r - q + 0.5 * sigma * sigma) * t_years) / (sigma * sqrt_t)
-    d2 = d1 - sigma * sqrt_t
-    return d1, d2
-
-
-def bs_vanna(
-    spot: float,
-    strike: float,
-    sigma: float,
-    t_years: float,
-    *,
-    r: float = 0.0,
-    q: float = 0.0,
-    option_right: str = "C",
-) -> float:
-    """Analytical BS vanna (same formula for calls and puts).
-
-    Returns 0.0 when inputs are non-positive to keep aggregation defensive.
-    ``option_right`` accepted for API symmetry with ``bs_charm``.
-    """
-    _ = option_right
-    if spot <= 0 or strike <= 0 or sigma <= 0 or t_years <= 0:
-        return 0.0
-    d1, d2 = _d1_d2(spot, strike, sigma, t_years, r, q)
-    return -math.exp(-q * t_years) * _norm_pdf(d1) * d2 / sigma
-
-
-def bs_charm(
-    spot: float,
-    strike: float,
-    sigma: float,
-    t_years: float,
-    *,
-    r: float = 0.0,
-    q: float = 0.0,
-    option_right: str = "C",
-) -> float:
-    """Analytical BS charm (∂Delta/∂t; positive theta convention: units per year).
-
-    Returns 0.0 when inputs are non-positive.
-    """
-    if spot <= 0 or strike <= 0 or sigma <= 0 or t_years <= 0:
-        return 0.0
-    d1, d2 = _d1_d2(spot, strike, sigma, t_years, r, q)
-    sqrt_t = math.sqrt(t_years)
-    common = math.exp(-q * t_years) * _norm_pdf(d1) * (
-        2.0 * (r - q) * t_years - d2 * sigma * sqrt_t
-    ) / (2.0 * t_years * sigma * sqrt_t)
-    right = (option_right or "C").strip().upper()
-    if right in ("C", "CALL"):
-        return -q * math.exp(-q * t_years) * _norm_cdf(d1) - common
-    return q * math.exp(-q * t_years) * _norm_cdf(-d1) - common
+#: r = q = 0 (v1, unchanged by TD-110): dealer vanna/charm exposure is an
+#: aggregate shape, and every stored option_metric_vanna_charm_daily row used it.
+VANNA_CHARM_RATE = 0.0
 
 
 @dataclass(frozen=True)
@@ -153,13 +91,13 @@ def strike_vanna_charm_from_contracts(
 
         vanna = c.vanna
         if vanna is None:
-            vanna = bs_vanna(spot, sk, c.iv, c.t_years, option_right=right)
+            vanna = bs_vanna(spot, sk, c.iv, c.t_years, rate=VANNA_CHARM_RATE, option_right=right)
         else:
             bucket["has_live_vanna"] = True
 
         charm = c.charm
         if charm is None:
-            charm = bs_charm(spot, sk, c.iv, c.t_years, option_right=right)
+            charm = bs_charm(spot, sk, c.iv, c.t_years, rate=VANNA_CHARM_RATE, option_right=right)
         else:
             bucket["has_live_charm"] = True
 

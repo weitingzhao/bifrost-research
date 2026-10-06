@@ -31,7 +31,6 @@ from statistics import median
 from typing import Any, Sequence
 
 from bifrost_research.db.calendar import ny_today
-from bifrost_research.engines.backtest.canonical_pnl import bs_price
 from bifrost_research.engines.volatility.iv_solver import as_traded_close
 from bifrost_research.repositories.earnings_filings import (
     SAME_PRINT_DAYS,
@@ -39,6 +38,7 @@ from bifrost_research.repositories.earnings_filings import (
     fetch_item_202,
     split_releases,
 )
+from bifrost_research.pricing import bs_price
 
 def print_dates(filing_dates: Sequence[date], *, limit: int) -> list[date]:
     """The newest ``limit`` prints, oldest first; filings within ``SAME_PRINT_DAYS``
@@ -52,7 +52,9 @@ def straddle_move(spot: float, strike: float, iv: float, days: int) -> float | N
     if spot <= 0 or strike <= 0 or iv <= 0 or days <= 0:
         return None
     t = days / 365.0
-    return (bs_price(spot, strike, t, iv, right="C") + bs_price(spot, strike, t, iv, right="P")) / spot
+    # r = 0: an at-the-money straddle is first-order insensitive to the rate (the
+    # call gains what the put loses), and the stored history was priced this way.
+    return (bs_price(spot, strike, t, iv, right="C", rate=0.0) + bs_price(spot, strike, t, iv, right="P", rate=0.0)) / spot
 
 
 def one_print(

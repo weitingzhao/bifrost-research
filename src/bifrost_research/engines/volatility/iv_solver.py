@@ -10,7 +10,6 @@ Writes ``features.option_iv_reconstructed_daily``. See ``docs/IV_SOLVER_SPEC.md`
 from __future__ import annotations
 
 import logging
-import math
 from datetime import date, datetime, timedelta, timezone
 from statistics import median
 from typing import Any, Literal, Sequence
@@ -19,17 +18,18 @@ from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.fastcount import breakdown_with_dominant, distinct_count, estimate_rows
 from bifrost_research.db.upsert import batch_upsert
 from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
-from bifrost_research.engines.backtest.canonical_pnl import bs_delta, bs_price
+from bifrost_research.pricing import (
+    IV_HI,
+    IV_LO,
+    bs_delta,
+    bs_gamma,
+    bs_price,
+    load_rate_curve,
+    solve_iv,
+)
 from bifrost_research.schema.schemas import TABLE_OPTION_IV_RECONSTRUCTED_DAILY
 
 logger = logging.getLogger(__name__)
-
-SolverStatus = Literal[
-    "ok",
-    "no_convergence",
-    "insufficient_inputs",
-    "vendor_snapshot",
-]
 
 _COLS = (
     "symbol",
@@ -52,10 +52,6 @@ STRIKE_LO = 0.80
 STRIKE_HI = 1.20
 DTE_MIN = 5
 DTE_MAX = 90
-IV_LO = 0.01
-IV_HI = 5.0
-BRENT_TOL = 1e-4
-BRENT_MAXITER = 100
 
 # A snapshot row stands for the session it is stamped with only if it was fetched
 # then (Friday sessions are re-fetched over the weekend: lag 0–2 days on DEV). Before
@@ -102,108 +98,6 @@ def observed_near_session(alias: str) -> str:
         f"DATE(timezone('America/New_York', {alias}.fetched_at))"
         f" - DATE(timezone('America/New_York', {alias}.snapshot_ts)) <= {SNAPSHOT_MAX_FETCH_LAG_DAYS}"
     )
-
-
-def bs_gamma(
-    spot: float,
-    strike: float,
-    t_years: float,
-    iv: float,
-    *,
-    rate: float = 0.0,
-) -> float:
-    if spot <= 0 or strike <= 0 or iv <= 0 or t_years <= 1e-8:
-        return 0.0
-    vol = iv * math.sqrt(t_years)
-    d1 = (math.log(spot / strike) + (rate + 0.5 * iv * iv) * t_years) / vol
-    return math.exp(-0.5 * d1 * d1) / (math.sqrt(2.0 * math.pi) * spot * vol)
-
-
-def solve_iv(
-    spot: float,
-    strike: float,
-    tte_years: float,
-    mid: float,
-    right: Literal["C", "P"],
-    *,
-    rate: float = 0.0,
-) -> tuple[float | None, SolverStatus]:
-    """Invert Black–Scholes mid → IV via Brent. Returns (iv, status)."""
-    if (
-        spot <= 0
-        or strike <= 0
-        or tte_years <= 1e-8
-        or mid is None
-        or mid <= 0
-    ):
-        return None, "insufficient_inputs"
-
-    # Intrinsic floor — mid below intrinsic cannot be priced with r=0 BS.
-    intrinsic = max(0.0, (spot - strike) if right == "C" else (strike - spot))
-    if mid < intrinsic * 0.999:
-        return None, "insufficient_inputs"
-
-    def objective(sigma: float) -> float:
-        return bs_price(spot, strike, tte_years, sigma, right=right, rate=rate) - mid
-
-    a, b = IV_LO, IV_HI
-    fa, fb = objective(a), objective(b)
-    # Expand upper bracket if needed (deep OTM / high premium)
-    expand = 0
-    while fa * fb > 0 and expand < 8:
-        b *= 1.5
-        if b > 10.0:
-            break
-        fb = objective(b)
-        expand += 1
-    if fa * fb > 0:
-        return None, "no_convergence"
-
-    # Brent (simplified: scipy-free)
-    c, fc = a, fa
-    d = e = b - a
-    for _ in range(BRENT_MAXITER):
-        if fb * fc > 0:
-            c, fc = a, fa
-            d = e = b - a
-        if abs(fc) < abs(fb):
-            a, b, c = b, c, b
-            fa, fb, fc = fb, fc, fb
-        tol1 = 2.0 * BRENT_TOL * abs(b) + 0.5 * BRENT_TOL
-        xm = 0.5 * (c - b)
-        if abs(xm) <= tol1 or abs(fb) <= BRENT_TOL * max(1.0, abs(mid)):
-            if IV_LO <= b <= IV_HI * 2:
-                return float(b), "ok"
-            return None, "no_convergence"
-        if abs(e) >= tol1 and abs(fa) > abs(fb):
-            s = fb / fa
-            if a == c:
-                p = 2.0 * xm * s
-                q = 1.0 - s
-            else:
-                q = fa / fc
-                r = fb / fc
-                p = s * (2.0 * xm * q * (q - r) - (b - a) * (r - 1.0))
-                q = (q - 1.0) * (r - 1.0) * (s - 1.0)
-            if p > 0:
-                q = -q
-            p = abs(p)
-            min1 = 3.0 * xm * q - abs(tol1 * q)
-            min2 = abs(e * q)
-            if 2.0 * p < min(min1, min2):
-                e = d
-                d = p / q
-            else:
-                d = e = xm
-        else:
-            d = e = xm
-        a, fa = b, fb
-        if abs(d) > tol1:
-            b += d
-        else:
-            b += math.copysign(tol1, xm)
-        fb = objective(b)
-    return None, "no_convergence"
 
 
 def _mid_from_ohlc(close: Any, high: Any, low: Any) -> float | None:
@@ -320,6 +214,8 @@ def solve_symbol_window(
         raw = cur.fetchall() or []
 
     now = datetime.now(timezone.utc)
+    # The Treasury rate of each session, the same reader the backtester uses (TD-110).
+    rates = load_rate_curve(conn, start_date, end_date)
     out_rows: list[tuple[Any, ...]] = []
     status_counts: dict[str, int] = {}
     samples: list[dict[str, Any]] = []
@@ -344,12 +240,13 @@ def solve_symbol_window(
         if not _passes_filters(spot_f, strike_f, dte):
             continue
         tte = max(dte, 1) / 365.0
-        iv, status = solve_iv(spot_f, strike_f, tte, mid, right)
+        rate = rates.on_or_before(bar_d)
+        iv, status = solve_iv(spot_f, strike_f, tte, mid, right, rate=rate)
         status_counts[status] = status_counts.get(status, 0) + 1
         delta = gamma = None
         if iv is not None:
-            delta = bs_delta(spot_f, strike_f, tte, iv, right=right)
-            gamma = bs_gamma(spot_f, strike_f, tte, iv)
+            delta = bs_delta(spot_f, strike_f, tte, iv, right=right, rate=rate)
+            gamma = bs_gamma(spot_f, strike_f, tte, iv, rate=rate)
         row = (
             str(und).strip().upper(),
             str(ticker),
@@ -493,6 +390,7 @@ def project_vendor_snapshot_window(
         raw = cur.fetchall() or []
 
     now = datetime.now(timezone.utc)
+    rates = load_rate_curve(conn, start_date, end_date)
     out_rows: list[tuple[Any, ...]] = []
     for r in raw:
         ticker, und, trade_d, expiry, strike, right_raw = r[0], r[1], r[2], r[3], r[4], r[5]
@@ -517,8 +415,9 @@ def project_vendor_snapshot_window(
         if not (IV_LO <= iv_f <= IV_HI):
             continue
         tte = max(dte, 1) / 365.0
+        rate = rates.on_or_before(trade_d)
         # Approximate mid from BS for audit trail
-        mid = bs_price(spot_f, strike_f, tte, iv_f, right=right)
+        mid = bs_price(spot_f, strike_f, tte, iv_f, right=right, rate=rate)
         out_rows.append(
             (
                 und,
@@ -531,8 +430,8 @@ def project_vendor_snapshot_window(
                 spot_f,
                 tte,
                 iv_f,
-                float(delta) if delta is not None else bs_delta(spot_f, strike_f, tte, iv_f, right=right),
-                float(gamma) if gamma is not None else bs_gamma(spot_f, strike_f, tte, iv_f),
+                float(delta) if delta is not None else bs_delta(spot_f, strike_f, tte, iv_f, right=right, rate=rate),
+                float(gamma) if gamma is not None else bs_gamma(spot_f, strike_f, tte, iv_f, rate=rate),
                 "vendor_snapshot",
                 now,
             )
