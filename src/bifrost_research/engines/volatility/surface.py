@@ -580,6 +580,17 @@ def compute_iv_surface_for_symbol(
             )
         )
     if rows:
+        # The day is replaced, not merged (TD-112): an expiry a later re-walk no
+        # longer fits must not keep its old smile beside the new ones — measured
+        # 2026-10-06, 122 such rows in 98 (symbol, trade_date) groups. Same
+        # transaction as the write below (batch_upsert commits or rolls back
+        # both). A day with no IV points at all is left alone: that is the
+        # snapshot retention speaking, not a re-walk that dropped an expiry.
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM features.option_surface_iv_daily WHERE symbol = %s AND trade_date = %s",
+                (sym, trade_date),
+            )
         batch_upsert(
             conn,
             "features.option_surface_iv_daily",
