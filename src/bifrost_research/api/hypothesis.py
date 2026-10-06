@@ -20,6 +20,15 @@ Read-only derived fields on list and get rows (0.168.0, plan decision #16):
                    null, ``reason`` (resolved | retired | no_candidate_lineage |
                    candidate_not_found | …); see copilot/agents/hypothesis_settlement.py
 
+Read-only derived trade link on list and get rows (TD-143, 0.193.0):
+    linked_trade_ids   trade ids of the filled Trade plans written from this
+                       hypothesis (source_kind='hypothesis', source_ref = id),
+                       or null when Trade could not be read
+    linked_trades      the same, with strategy_plan_id / symbol / structure_label
+    trade_link_basis   {trade_env, source, plans_read, truncated, error} —
+                       ``?trade_env=dev|stg|prod`` (default prod) names whose plans
+    See repositories/hypothesis_trade_links.py. Nothing is written to make it (D13).
+
 ``origin_ref`` documented keys (soft validation on create/patch — extra keys allowed):
     watchlist_contract_key  Trade watchlist key, e.g. ``STK:NVDA`` (stock) or OPT:…
     trajectory_summary      Written by refresh-trajectory (structure, row counts, final_pnl)
@@ -43,6 +52,7 @@ from bifrost_research.engines.backtest.canonical_pnl import STRUCTURES
 from bifrost_research.engines.canonical_pnl import simulate_entry
 from bifrost_research.engines.canonical_pnl.compute import mark_row_json
 from bifrost_research.repositories import hypothesis as repo
+from bifrost_research.repositories.hypothesis_trade_links import TRADE_ENVS, attach_trade_links
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +179,7 @@ def list_hypotheses(
     include_retired: bool = Query(False),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    trade_env: str = Query("prod", pattern=f"^({'|'.join(TRADE_ENVS)})$"),
 ) -> dict[str, Any]:
     conn = _connect_or_503()
     try:
@@ -189,7 +200,8 @@ def list_hypotheses(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     finally:
         conn.close()
-    return _ok({"rows": rows, "count": len(rows), "limit": limit, "offset": offset})
+    basis = attach_trade_links(rows, trade_env)
+    return _ok({"rows": rows, "count": len(rows), "limit": limit, "offset": offset, "trade_link_basis": basis})
 
 
 @router.post("", dependencies=[Depends(require_owner)])
@@ -232,7 +244,10 @@ def summary_active(top_n: int = Query(5, ge=1, le=50)) -> dict[str, Any]:
 
 
 @router.get("/{hypothesis_id}", dependencies=[Depends(require_owner)])
-def get_hypothesis(hypothesis_id: str) -> dict[str, Any]:
+def get_hypothesis(
+    hypothesis_id: str,
+    trade_env: str = Query("prod", pattern=f"^({'|'.join(TRADE_ENVS)})$"),
+) -> dict[str, Any]:
     conn = _connect_or_503()
     try:
         row = repo.get_hypothesis(conn, hypothesis_id)
@@ -245,6 +260,7 @@ def get_hypothesis(hypothesis_id: str) -> dict[str, Any]:
         conn.close()
     if row is None:
         raise HTTPException(status_code=404, detail=f"hypothesis {hypothesis_id} not found")
+    attach_trade_links([row], trade_env)
     return _ok(row)
 
 

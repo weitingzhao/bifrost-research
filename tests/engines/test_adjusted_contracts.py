@@ -381,3 +381,27 @@ def test_terrain_pairs_are_the_95_measured() -> None:
     pairs = purge.terrain_pairs()
     assert len(pairs) == 95
     assert ("HON", date(2026, 9, 16)) in pairs and ("HONA", date(2026, 9, 16)) in pairs
+
+
+# --- TD-159: per-name standard / adjusted counts by the same predicate -----------------
+
+
+def test_option_listing_counts_by_the_shared_predicate() -> None:
+    from bifrost_research.engines.adjusted_contracts import option_listing
+
+    conn = _Conn(lambda sql: [(TD, 0, 14, ["CUE1"])])
+    got = option_listing(conn, "CUE")
+    assert got == {"as_of": "2026-09-29", "standard_contracts": 0, "adjusted_contracts": 14, "adjusted_roots": ["CUE1"]}
+    sql, params = conn.statements[0]
+    pred = not_adjusted_contract_sql("option_ticker")
+    # Standard is the predicate, adjusted its negation — the rule every reader filters on.
+    assert f"FILTER (WHERE {pred})" in sql
+    assert sql.count(f"NOT ({pred})") == 2
+    assert "raw_market.option_open_interest" in sql and "MAX(trade_date)" in sql
+    assert params == ("CUE", "CUE")
+
+
+def test_option_listing_is_none_for_a_name_with_no_open_interest() -> None:
+    from bifrost_research.engines.adjusted_contracts import option_listing
+
+    assert option_listing(_Conn(), "QQQQ") is None

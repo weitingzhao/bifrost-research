@@ -257,3 +257,28 @@ def test_http_surface_accepts_every_lens_and_rejects_unknown() -> None:
         comp = client.get("/research/exhibit/composite", params={"symbol": "NVDA", "lenses": "skew,terrain,opex_pin"})
         assert comp.status_code == 200
         assert [e["lens"] for e in comp.json()["data"]["exhibits"]] == ["skew", "terrain", "opex_pin"]
+
+
+def test_composite_carries_the_option_listing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TD-159: the Dossier batch says how many standard and adjusted contracts the name lists."""
+    import bifrost_research.api.exhibit as exhibit_api
+
+    listing = {"as_of": "2031-10-05", "standard_contracts": 0, "adjusted_contracts": 14, "adjusted_roots": ["ZZZ1"]}
+    monkeypatch.setattr(exhibit_api, "option_listing", lambda conn, sym: dict(listing) if sym == "ZZZ" else None)
+    client = TestClient(create_app())
+    with patch("bifrost_research.api.exhibit.connect", return_value=_Conn([])):
+        comp = client.get("/research/exhibit/composite", params={"symbol": "zzz", "lenses": "skew"}).json()["data"]
+        assert comp["option_listing"] == listing
+        none = client.get("/research/exhibit/composite", params={"symbol": "QQQQ", "lenses": "skew"}).json()["data"]
+        assert none["option_listing"] is None
+
+    def boom(conn: object, sym: str) -> None:
+        raise RuntimeError("relation does not exist")
+
+    monkeypatch.setattr(exhibit_api, "option_listing", boom)
+    with patch("bifrost_research.api.exhibit.connect", return_value=_Conn([])):
+        failed = client.get("/research/exhibit/composite", params={"symbol": "ZZZ", "lenses": "skew"}).json()["data"]
+    # A failed count is said, not read as a name without options; the exhibits still answer.
+    assert failed["option_listing"]["error"] == "relation does not exist"
+    assert failed["option_listing"]["standard_contracts"] is None
+    assert [e["lens"] for e in failed["exhibits"]] == ["skew"]

@@ -26,7 +26,12 @@ from fastapi import APIRouter, HTTPException, Query
 from bifrost_research.db.calendar import ny_today
 from bifrost_research.db.conn import connect
 from bifrost_research.lenses.narrative import sec_item_tags, vendor_tag
-from bifrost_research.repositories.earnings_filings import expected_next, fetch_item_202, split_releases
+from bifrost_research.repositories.earnings_filings import (
+    expected_next,
+    fetch_item_202,
+    speaks_of_results,
+    split_releases,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +231,26 @@ def narrative(
     )
 
 
+def _earnings_reading(
+    sym: str,
+    n: int,
+    first_filed: Any,
+    last_filed: Any,
+    item_202: list[tuple[Any, bool]],
+) -> dict[str, Any]:
+    """One name's earnings reading — the single route and the batch answer in this shape."""
+    kept, set_aside = split_releases(item_202) if n else ([], [])
+    return {
+        "symbol": sym,
+        "dates": [_iso(d) for d in kept],
+        "set_aside": set_aside,
+        "expected_next": expected_next(kept, as_of=ny_today()) if kept else None,
+        "filings": int(n or 0),
+        "first_filed": _iso(first_filed),
+        "last_filed": _iso(last_filed),
+    }
+
+
 @router.get("/earnings")
 def earnings_dates(symbol: str = Query(..., min_length=1, max_length=16)) -> dict[str, Any]:
     """Dates this name filed an 8-K carrying Item 2.02 (results of operations) —
@@ -254,22 +279,68 @@ def earnings_dates(symbol: str = Query(..., min_length=1, max_length=16)) -> dic
                 (sym,),
             )
             n, first_filed, last_filed = cur.fetchone()
-        kept, set_aside = split_releases(fetch_item_202(conn, sym)) if n else ([], [])
-        dates = [_iso(d) for d in kept]
-        expected = expected_next(kept, as_of=ny_today()) if kept else None
+        reading = _earnings_reading(sym, n, first_filed, last_filed, fetch_item_202(conn, sym) if n else [])
     except Exception as exc:
         logger.exception("narrative/earnings failed")
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     finally:
         conn.close()
-    return _ok(
-        {
-            "symbol": sym,
-            "dates": dates,
-            "set_aside": set_aside,
-            "expected_next": expected,
-            "filings": int(n or 0),
-            "first_filed": _iso(first_filed),
-            "last_filed": _iso(last_filed),
+    return _ok(reading)
+
+
+# A universe-wide page (Stock screen, Scan under All) asks for a few hundred names;
+# 500 of them read in about 40 ms on the replica (10-06), one statement.
+EARNINGS_BATCH_MAX = 500
+
+
+def batch_symbols(raw: str) -> list[str]:
+    """The comma-separated names, trimmed, upper-cased, de-duplicated, in order.
+    Raises 422 on none, on a name longer than 16 characters, or on more than
+    ``EARNINGS_BATCH_MAX``."""
+    names = list(dict.fromkeys(s.strip().upper() for s in raw.split(",") if s.strip()))
+    if not names:
+        raise HTTPException(status_code=422, detail="symbols: at least one name")
+    too_long = [s for s in names if len(s) > 16]
+    if too_long:
+        raise HTTPException(status_code=422, detail=f"symbols: longer than 16 characters: {', '.join(too_long[:5])}")
+    if len(names) > EARNINGS_BATCH_MAX:
+        raise HTTPException(status_code=422, detail=f"symbols: {len(names)} names, at most {EARNINGS_BATCH_MAX}")
+    return names
+
+
+@router.get("/earnings/batch")
+def earnings_dates_batch(symbols: str = Query(..., min_length=1)) -> dict[str, Any]:
+    """``/earnings`` for many names in one statement (TD-158) — the list pages'
+    read. ``data`` maps each asked name to exactly what ``/earnings?symbol=`` would
+    answer for it, a name the feed never carried included (``filings`` 0, no
+    dates, no estimate)."""
+    names = batch_symbols(symbols)
+    conn = _connect_or_503()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT symbol, COUNT(*), MIN(filing_date), MAX(filing_date),
+                       COALESCE(array_agg(filing_date) FILTER (WHERE '2.02' = ANY(items)), '{}'),
+                       COALESCE(array_agg(items_text) FILTER (WHERE '2.02' = ANY(items)), '{}')
+                FROM raw_market.sec_8k_filing
+                WHERE symbol = ANY(%s)
+                GROUP BY symbol
+                """,
+                (names,),
+            )
+            rows = cur.fetchall() or []
+        by_name = {
+            sym: (n, first, last, [(d, speaks_of_results(t)) for d, t in zip(dates or [], texts or [])])
+            for sym, n, first, last, dates, texts in rows
         }
-    )
+        data = {
+            sym: _earnings_reading(sym, *by_name.get(sym, (0, None, None, [])))
+            for sym in names
+        }
+    except Exception as exc:
+        logger.exception("narrative/earnings/batch failed")
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        conn.close()
+    return _ok(data)

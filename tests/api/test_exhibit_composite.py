@@ -58,6 +58,8 @@ def wiring(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     monkeypatch.setattr(mod, "connect", fake_connect)
     monkeypatch.setattr(mod, "build_exhibit", fake_build)
+    # The contract counts (TD-159) read on the probe connection; covered in test_exhibit_lenses.
+    monkeypatch.setattr(mod, "option_listing", lambda conn, symbol: None)
     monkeypatch.setattr(
         mod,
         "exhibit_lens_names",

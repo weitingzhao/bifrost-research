@@ -7,7 +7,8 @@ The builders live in ``bifrost_research.lenses.exhibits`` (one source for the
 pages, Copilot and the Daily Brief); this module only serves them.
 
 ``composite`` is the batch: the Dossier asks it for all twelve registry lenses
-at once. It fans the lenses across a few workers, one connection each, because
+at once. Beside the exhibits it carries ``option_listing`` — the name's standard
+and adjusted contract counts on its latest open-interest session (TD-159). It fans the lenses across a few workers, one connection each, because
 opening a connection costs about as much as reading a lens — twelve separate
 requests spend that twelve times over.
 """
@@ -21,6 +22,7 @@ from typing import Any, Sequence
 from fastapi import APIRouter, HTTPException, Query
 
 from bifrost_research.db.conn import connect
+from bifrost_research.engines.adjusted_contracts import option_listing
 from bifrost_research.lenses.exhibit_model import ExhibitResponse
 from bifrost_research.lenses.exhibits import (  # noqa: F401 — re-exported for callers of the old home
     LEGACY_DEFAULT_LENSES,
@@ -97,6 +99,27 @@ def _build_chunk(
     return out
 
 
+def _option_listing_or_failure(conn: Any, symbol: str) -> dict[str, Any] | None:
+    """The name's standard / adjusted contract counts (TD-159) — why every option
+    lens is empty on a name that lists only adjusted contracts. A failed read says
+    so (``error``) instead of reading as a name with no options."""
+    try:
+        return option_listing(conn, symbol)
+    except Exception as exc:
+        logger.warning("composite option_listing for %s failed: %s", symbol, exc)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {
+            "as_of": None,
+            "standard_contracts": None,
+            "adjusted_contracts": None,
+            "adjusted_roots": [],
+            "error": str(exc),
+        }
+
+
 @router.get("/composite")
 def get_exhibit_composite(
     symbol: str = Query(..., min_length=1, max_length=32),
@@ -119,6 +142,7 @@ def get_exhibit_composite(
     # down is a 503, not twelve exhibits that each say they failed.
     first = _connect_or_503()
     try:
+        listing = _option_listing_or_failure(first, sym)
         if workers == 1:
             pairs = _build_chunk(chunks[0], sym, first)
         else:
@@ -129,7 +153,14 @@ def get_exhibit_composite(
     finally:
         _close_quietly(first)
     by_lens = dict(pairs)
-    return _ok({"symbol": sym, "lenses": ordered, "exhibits": [by_lens[lens] for lens in ordered]})
+    return _ok(
+        {
+            "symbol": sym,
+            "lenses": ordered,
+            "exhibits": [by_lens[lens] for lens in ordered],
+            "option_listing": listing,
+        }
+    )
 
 
 @router.get("/{lens}")

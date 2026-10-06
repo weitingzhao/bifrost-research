@@ -142,3 +142,112 @@ def test_a_202_filing_that_is_not_a_results_release_is_set_aside(monkeypatch) ->
 def test_earnings_for_a_name_the_feed_never_carried_says_so(monkeypatch) -> None:
     body = _client(monkeypatch, _Conn()).get("/research/narrative/earnings?symbol=QQQQ").json()["data"]
     assert body["dates"] == [] and body["filings"] == 0
+
+
+# --- TD-158: the batch answers each name exactly as the single route does -------------
+
+_HEAD = "Item 2.02 Results of Operations and Financial Condition. "
+# Invented filings: (symbol, filing_date, items, items_text).
+_FEED = [
+    # ZZA: five quarterly results releases — enough cadence for an estimate.
+    *[
+        ("ZZA", d, ["2.02", "9.01"], _HEAD + "Zeta A released its results for the quarter.")
+        for d in (date(2030, 2, 25), date(2030, 5, 20), date(2030, 8, 19), date(2030, 11, 18), date(2031, 2, 24))
+    ],
+    ("ZZA", date(2030, 6, 2), ["5.07"], "Item 5.07 Submission of Matters to a Vote of Security Holders."),
+    # ZZB: a delivery report under 2.02 a week before the release — set aside.
+    ("ZZB", date(2031, 2, 18), ["2.02"], _HEAD + "Zeta B published the press release attached as Exhibit 99.1."),
+    ("ZZB", date(2031, 2, 25), ["2.02"], _HEAD + "Zeta B released its results for the quarter ended December 31, 2030."),
+    # ZZC: 8-Ks on file, none of them a 2.02.
+    ("ZZC", date(2031, 1, 5), ["8.01"], "Item 8.01 Other Events."),
+]
+
+
+class _FeedCur:
+    """Answers the single route's two reads and the batch's one from ``_FEED``."""
+
+    def __init__(self, calls: list[tuple[str, tuple[Any, ...]]]) -> None:
+        self.calls = calls
+        self._rows: list[tuple[Any, ...]] = []
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
+        flat = " ".join(sql.split())
+        self.calls.append((flat, tuple(params)))
+        if flat.startswith("SELECT COUNT(*), MIN(filing_date), MAX(filing_date)"):
+            mine = [f for f in _FEED if f[0] == params[0]]
+            days = [f[1] for f in mine]
+            self._rows = [(len(mine), min(days) if days else None, max(days) if days else None)]
+        elif flat.startswith("SELECT filing_date, items_text"):
+            self._rows = [(f[1], f[3]) for f in _FEED if f[0] == params[0] and "2.02" in f[2]]
+        elif flat.startswith("SELECT symbol, COUNT(*)"):
+            self._rows = []
+            for sym in dict.fromkeys(f[0] for f in _FEED if f[0] in params[0]):
+                mine = [f for f in _FEED if f[0] == sym]
+                r202 = [f for f in mine if "2.02" in f[2]]
+                self._rows.append(
+                    (
+                        sym,
+                        len(mine),
+                        min(f[1] for f in mine),
+                        max(f[1] for f in mine),
+                        [f[1] for f in r202],
+                        [f[3] for f in r202],
+                    )
+                )
+        else:
+            self._rows = []
+
+    def fetchone(self) -> tuple[Any, ...]:
+        return self._rows[0]
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        return list(self._rows)
+
+
+class _FeedConn:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    def cursor(self) -> _FeedCur:
+        return _FeedCur(self.calls)
+
+    def close(self) -> None:
+        return None
+
+
+def test_the_batch_reads_each_name_as_the_single_route_does(monkeypatch) -> None:
+    monkeypatch.setattr(narrative_api, "ny_today", lambda: date(2031, 3, 1))
+    names = ["ZZA", "ZZB", "ZZC", "QQQQ"]
+    conn = _FeedConn()
+    client = _client(monkeypatch, conn)  # type: ignore[arg-type]
+    single = {s: client.get(f"/research/narrative/earnings?symbol={s}").json()["data"] for s in names}
+    conn.calls.clear()
+    batch = client.get("/research/narrative/earnings/batch?symbols=zza, ZZB,ZZC,QQQQ,zza").json()["data"]
+    assert list(batch) == names
+    assert batch == single
+    # The fixture exercises every branch: an estimate, a set-aside filing, 8-Ks with no
+    # 2.02, and a name the feed never carried.
+    assert batch["ZZA"]["expected_next"] is not None
+    assert batch["ZZB"]["set_aside"] and batch["ZZB"]["expected_next"] is None
+    assert batch["ZZC"]["filings"] == 1 and batch["ZZC"]["dates"] == []
+    assert batch["QQQQ"]["filings"] == 0 and batch["QQQQ"]["first_filed"] is None
+    # One statement, names passed as a parameter, never normalised on the column.
+    assert len(conn.calls) == 1
+    assert conn.calls[0][1] == (names,)
+    assert "UPPER(" not in conn.calls[0][0]
+
+
+def test_the_batch_refuses_none_too_many_or_a_long_name(monkeypatch) -> None:
+    client = _client(monkeypatch, _FeedConn())  # type: ignore[arg-type]
+    assert client.get("/research/narrative/earnings/batch?symbols=,%20,").status_code == 422
+    too_many = ",".join(f"N{i}" for i in range(narrative_api.EARNINGS_BATCH_MAX + 1))
+    assert client.get(f"/research/narrative/earnings/batch?symbols={too_many}").status_code == 422
+    assert client.get("/research/narrative/earnings/batch?symbols=NVDA," + "X" * 17).status_code == 422
+    at_cap = ",".join(f"N{i}" for i in range(narrative_api.EARNINGS_BATCH_MAX))
+    assert client.get(f"/research/narrative/earnings/batch?symbols={at_cap}").status_code == 200
