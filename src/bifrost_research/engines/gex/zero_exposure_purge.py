@@ -28,19 +28,33 @@ side, 942 put side) on 754 name-sessions and 244 names; terrain read 237 of them
 That wall and its gex become NULL; terrain and scan are recomputed on the
 name-sessions whose terrain read one.
 
+``--zero-gamma`` runs the 0.192.0 pass (TD-166): zero gamma is recomputed for every
+daily levels row from its stored distribution with ``zero_gamma_crossing``, which
+counts only a change of sign as a crossing; without one the row stores NULL (the
+fallback was the strike nearest spot). The old rule reproduces every stored value
+from the distribution (10,718 of 10,718 on three sample days), so the pass is
+exact. Measured 2026-10-06: 26,518 of 69,440 rows had no crossing, and a few a
+real crossing beside a "crossing" out of zero that sat nearer spot. Terrain is
+recomputed on the name-sessions whose GEX input changed, scan on those and on the
+sessions whose 30-day expiry changed.
+
 Usage::
 
     python -m bifrost_research.engines.gex.zero_exposure_purge
     python -m bifrost_research.engines.gex.zero_exposure_purge --apply
     python -m bifrost_research.engines.gex.zero_exposure_purge --one-sided [--apply]
+    python -m bifrost_research.engines.gex.zero_exposure_purge --zero-gamma [--apply]
 """
 
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import logging
 import sys
+from collections import defaultdict
+from datetime import date
 from typing import Any
 
 from bifrost_research.db.conn import connect
@@ -211,10 +225,121 @@ def run_one_sided(conn: Any, *, apply: bool) -> dict[str, Any]:
     return summary
 
 
+Key = tuple[str, date, date]  # (symbol, session, expiry)
+
+
+def _zero_gamma_changes(conn: Any) -> tuple[dict[Key, float | None], dict[Key, float], int]:
+    """New zero gamma for every levels row whose value changes; also each row's spot."""
+    from bifrost_research.engines.gex.exposure_guards import zero_gamma_crossing
+
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT DISTINCT trade_date FROM {LEVELS} ORDER BY 1")
+        days = [r[0] for r in cur.fetchall() or []]
+    changes: dict[Key, float | None] = {}
+    spots: dict[Key, float] = {}
+    rows = 0
+    for td in days:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT symbol, expiry, spot, zero_gamma FROM {LEVELS} WHERE trade_date = %s", (td,))
+            levels = cur.fetchall() or []
+            cur.execute(
+                f"SELECT symbol, expiry, strike, net_gex FROM {DIST} WHERE trade_date = %s ORDER BY symbol, expiry, strike",
+                (td,),
+            )
+            dist_rows = cur.fetchall() or []
+        dist: dict[tuple[str, date], list[dict[str, float]]] = defaultdict(list)
+        for sym, exp, strike, net in dist_rows:
+            dist[(str(sym), exp)].append({"strike": float(strike), "net_gex": float(net or 0)})
+        for sym, exp, spot, zg in levels:
+            rows += 1
+            key = (str(sym), td, exp)
+            spots[key] = float(spot or 0)
+            new = zero_gamma_crossing(dist.get((str(sym), exp), []), float(spot or 0))
+            old = None if zg is None else float(zg)
+            if (new is None) != (old is None) or (new is not None and old is not None and abs(new - old) > 1e-6):
+                changes[key] = new
+    return changes, spots, rows
+
+
+def _readers(conn: Any, changed: set[Key], spots: dict[Key, float]) -> tuple[set[Pair], set[Pair]]:
+    """Terrain rows whose GEX input (newest session at or before, nearest expiry) and
+    scan rows whose 30-day expiry is a changed row; scan also takes terrain's."""
+    by_sym: dict[str, dict[date, list[date]]] = defaultdict(lambda: defaultdict(list))
+    for sym, td, exp in spots:
+        by_sym[sym][td].append(exp)
+    dates = {sym: sorted(v) for sym, v in by_sym.items()}
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT symbol, trade_date FROM {TERRAIN}")
+        terrain_rows = cur.fetchall() or []
+        cur.execute(f"SELECT symbol, trade_date FROM {SCAN}")
+        scan_rows = cur.fetchall() or []
+    terrain: set[Pair] = set()
+    for sym, td in terrain_rows:
+        ds = dates.get(str(sym))
+        i = bisect.bisect_right(ds, td) - 1 if ds else -1
+        if i >= 0:
+            src = ds[i]
+            if (str(sym), src, min(by_sym[str(sym)][src])) in changed:
+                terrain.add((str(sym), td))
+    scan: set[Pair] = set()
+    for sym, td in scan_rows:
+        exps = [e for e in by_sym.get(str(sym), {}).get(td, []) if spots.get((str(sym), td, e), 0) > 0]
+        if exps:
+            near = min(exps, key=lambda e: (abs((e - td).days - 30), e))
+            if (str(sym), td, near) in changed:
+                scan.add((str(sym), td))
+    scan_keys = {(str(s), d) for s, d in scan_rows}
+    return terrain, scan | (terrain & scan_keys)
+
+
+def run_zero_gamma(conn: Any, *, apply: bool) -> dict[str, Any]:
+    """TD-166: zero gamma only at a change of sign; NULL without one."""
+    changes, spots, rows = _zero_gamma_changes(conn)
+    terrain, scan = _readers(conn, set(changes), spots)
+    to_null = sum(1 for v in changes.values() if v is None)
+    summary: dict[str, Any] = {
+        "applied": apply,
+        "gex": {
+            "levels_rows": rows,
+            "changed": len(changes),
+            "to_null": to_null,
+            "moved_crossing": len(changes) - to_null,
+            "symbols": len({k[0] for k in changes}),
+        },
+        "terrain": {"sessions": len(terrain)},
+        "scan": {"sessions": len(scan)},
+    }
+    if not apply:
+        return summary
+
+    keys = sorted(changes)
+    touched = 0
+    with conn.cursor() as cur:
+        for lo in range(0, len(keys), 5000):
+            chunk = keys[lo : lo + 5000]
+            cur.execute(
+                f"""
+                UPDATE {LEVELS} l SET zero_gamma = v.zg
+                FROM unnest(%s::text[], %s::date[], %s::date[], %s::float8[]) AS v(symbol, trade_date, expiry, zg)
+                WHERE l.symbol = v.symbol AND l.trade_date = v.trade_date AND l.expiry = v.expiry
+                """,
+                ([k[0] for k in chunk], [k[1] for k in chunk], [k[2] for k in chunk], [changes[k] for k in chunk]),
+            )
+            touched += int(cur.rowcount or 0)
+    if touched != len(keys):
+        conn.rollback()
+        raise RuntimeError(f"counted {len(keys)} zero-gamma changes, the update touched {touched}")
+    conn.commit()
+    summary["gex"]["updated"] = touched
+    summary["terrain"]["rows_written"], summary["scan"]["rows_written"] = _recompute(conn, terrain, scan)
+    return summary
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="write; without it every step only counts")
     parser.add_argument("--one-sided", action="store_true", help="the 0.191.0 pass: walls on a side without exposure")
+    parser.add_argument("--zero-gamma", action="store_true", help="the 0.192.0 pass: zero gamma only at a change of sign")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     conn = connect()
@@ -224,7 +349,12 @@ def main(argv: list[str] | None = None) -> int:
             if not args.apply:
                 cur.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
         conn.commit()
-        summary = run_one_sided(conn, apply=args.apply) if args.one_sided else run(conn, apply=args.apply)
+        if args.zero_gamma:
+            summary = run_zero_gamma(conn, apply=args.apply)
+        elif args.one_sided:
+            summary = run_one_sided(conn, apply=args.apply)
+        else:
+            summary = run(conn, apply=args.apply)
     finally:
         conn.close()
     print(json.dumps(summary, default=str, indent=2))

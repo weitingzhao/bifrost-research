@@ -1,4 +1,4 @@
-"""Guards on GEX levels: what not to write (TD-136, TD-157).
+"""Guards on GEX levels: what not to write (TD-136, TD-157, TD-166).
 
 ``compute_gex_levels`` picks the call wall as max(call gex) and the put wall as
 min(put gex), and falls back to the strike nearest spot for zero gamma. Where a
@@ -8,7 +8,7 @@ the first strike listed.
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 
 def has_gamma_exposure(levels: Mapping[str, Any]) -> bool:
@@ -40,4 +40,50 @@ def drop_empty_side_walls(levels: Mapping[str, Any]) -> dict[str, Any]:
     if not float(out.get("put_wall_gex") or 0):
         out["major_put_wall"] = None
         out["put_wall_gex"] = None
+    return out
+
+
+def zero_gamma_crossing(sorted_rows: Sequence[Mapping[str, Any]], spot: float) -> float | None:
+    """The zero crossing of cumulative net gex nearest spot, or None without one.
+
+    A crossing is a change of sign between non-zero cumulative values; the level
+    is interpolated between the two strikes, or is the first strike where the
+    cumulative sits at zero in between. Until 0.192.0 leaving zero counted as a
+    crossing too: an expiry whose low strikes carry no gamma "flipped" at the
+    first strike that did (5,408 levels rows on 2026-10-06, TD-166). ``sorted_rows``
+    are the distribution rows in strike order.
+    """
+    cum = 0.0
+    last_strike: float | None = None
+    last_cum = 0.0
+    zero_at: float | None = None
+    best: float | None = None
+    best_dist = float("inf")
+    for r in sorted_rows:
+        sk = float(r["strike"])
+        cum += float(r.get("net_gex") or 0)
+        if cum == 0:
+            if last_strike is not None and zero_at is None:
+                zero_at = sk
+            continue
+        if last_strike is not None and (last_cum > 0) != (cum > 0):
+            zg = zero_at if zero_at is not None else last_strike + (-last_cum / (cum - last_cum)) * (sk - last_strike)
+            if abs(zg - spot) < best_dist:
+                best_dist = abs(zg - spot)
+                best = round(zg, 4)
+        last_strike, last_cum, zero_at = sk, cum, None
+    return best
+
+
+def drop_fallback_zero_gamma(levels: Mapping[str, Any]) -> dict[str, Any]:
+    """The levels without a zero gamma where cumulative gamma never changes sign.
+
+    ``compute_gex_levels`` then falls back to the strike nearest spot, which terrain
+    read as a flip right at spot. 26,518 of 69,440 daily levels rows (38%) had no
+    crossing on 2026-10-06 (TD-166); NULL reads as missing everywhere downstream.
+    Daily levels only, as for the walls.
+    """
+    out = dict(levels)
+    if out.get("zero_gamma_source") != "flip":
+        out["zero_gamma"] = None
     return out

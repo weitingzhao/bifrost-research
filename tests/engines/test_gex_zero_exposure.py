@@ -1,5 +1,5 @@
-"""GEX writes no levels for an expiry without gamma exposure (TD-136), and no wall
-for a side without it (TD-157)."""
+"""GEX writes no levels for an expiry without gamma exposure (TD-136), no wall for a
+side without it (TD-157), and no zero gamma without a change of sign (TD-166)."""
 
 from __future__ import annotations
 
@@ -244,3 +244,109 @@ def test_the_one_sided_pass_refuses_an_update_that_does_not_match_its_count() ->
     else:
         raise AssertionError("expected the pass to stop")
     assert conn.log[-1] == "rollback" and "commit" not in conn.log
+
+
+# ─── TD-166: zero gamma only at a change of sign ───
+
+from bifrost_research.engines.gex.exposure_guards import zero_gamma_crossing  # noqa: E402
+
+
+def _rows(*pairs: tuple[float, float]) -> list[dict[str, float]]:
+    return [{"strike": k, "net_gex": g} for k, g in pairs]
+
+
+def test_a_change_of_sign_is_interpolated() -> None:
+    # cumulative: -2, -1, +1 → crossing between 11 and 12, halfway
+    assert zero_gamma_crossing(_rows((10, -2), (11, 1), (12, 2)), 11.0) == 11.5
+
+
+def test_leaving_zero_is_not_a_crossing() -> None:
+    # low strikes carry no gamma; the old rule "flipped" at 11, the first that did
+    assert zero_gamma_crossing(_rows((10, 0), (11, 5), (12, 3)), 11.0) is None
+
+
+def test_touching_zero_without_a_change_of_sign_is_not_a_crossing() -> None:
+    assert zero_gamma_crossing(_rows((10, 2), (11, -2), (12, 3)), 11.0) is None
+
+
+def test_a_crossing_through_zero_sits_at_the_zero() -> None:
+    assert zero_gamma_crossing(_rows((10, 2), (11, -2), (12, 0), (13, -1)), 11.0) == 11.0
+
+
+def test_the_crossing_nearest_spot_wins() -> None:
+    rows = _rows((10, -1), (11, 2), (12, -2), (13, 2), (14, -2))  # cum: -1, 1, -1, 1, -1
+    assert zero_gamma_crossing(rows, 13.2) == 13.5
+
+
+def test_levels_say_where_zero_gamma_came_from() -> None:
+    flip = exposure.compute_gex_levels(
+        [
+            {"strike": 10, "call_gex": 0, "put_gex": -2, "net_gex": -2},
+            {"strike": 12, "call_gex": 4, "put_gex": 0, "net_gex": 4},
+        ],
+        11.0,
+    )
+    assert flip["zero_gamma_source"] == "flip" and flip["zero_gamma"] == 11.0
+    none = exposure.compute_gex_levels(
+        [
+            {"strike": 10, "call_gex": 1, "put_gex": 0, "net_gex": 1},
+            {"strike": 12, "call_gex": 4, "put_gex": 0, "net_gex": 4},
+        ],
+        11.4,
+    )
+    # the shared levels keep the fallback (the intraday snapshot stores it) ...
+    assert none["zero_gamma_source"] == "nearest_strike" and none["zero_gamma"] == 12.0
+    # ... and the daily guard removes it
+    assert exposure.drop_fallback_zero_gamma(none)["zero_gamma"] is None
+    assert exposure.drop_fallback_zero_gamma(flip)["zero_gamma"] == 11.0
+
+
+def test_daily_levels_store_no_zero_gamma_without_a_crossing() -> None:
+    calls_only = [(NEAR, 12.5, "C", 120, 0.2, 30), (NEAR, 15.0, "C", 80, 0.1, 10)]
+    conn = _Conn(_answer(calls_only))
+    exposure.compute_gex_for_symbol(conn, symbol="KO", trade_date=TD)
+    (row,) = _written(conn, "option_metric_gex_levels_daily")
+    assert row[5] is None  # zero_gamma
+
+
+def _zg_answer(update_rowcount: int | None = None) -> Callable[[str], list[Any]]:
+    d = date(2026, 10, 5)
+
+    def answer(sql: str) -> list[Any]:
+        if "SELECT DISTINCT trade_date" in sql:
+            return [(d,)]
+        if "SELECT symbol, expiry, spot, zero_gamma" in sql:
+            # KO: no crossing, stored the nearest strike; NVDA: a real crossing, unchanged
+            return [("KO", NEAR, 11.4, 12.0), ("NVDA", NEAR, 11.0, 11.0)]
+        if "SELECT symbol, expiry, strike, net_gex" in sql:
+            return [("KO", NEAR, 10.0, 1.0), ("KO", NEAR, 12.0, 4.0), ("NVDA", NEAR, 10.0, -2.0), ("NVDA", NEAR, 12.0, 4.0)]
+        if "FROM features.stock_forecast_terrain_daily" in sql:
+            return [("KO", d), ("NVDA", d)]
+        if "FROM features.stock_signal_scan_daily" in sql:
+            return [("KO", d), ("NVDA", d)]
+        if sql.lstrip().startswith("UPDATE"):
+            return [(1 if update_rowcount is None else update_rowcount,)]
+        return []
+
+    return answer
+
+
+def test_the_zero_gamma_pass_counts_without_writing() -> None:
+    conn = _Conn(_zg_answer())
+    summary = purge.run_zero_gamma(conn, apply=False)
+    assert summary["gex"] == {"levels_rows": 2, "changed": 1, "to_null": 1, "moved_crossing": 0, "symbols": 1}
+    assert summary["terrain"] == {"sessions": 1} and summary["scan"] == {"sessions": 1}
+    assert not any(sql.lstrip().startswith(("UPDATE", "DELETE")) for sql, _ in conn.statements)
+
+
+def test_the_zero_gamma_pass_refuses_an_update_that_does_not_match() -> None:
+    conn = _Conn(_zg_answer(update_rowcount=2))
+    try:
+        purge.run_zero_gamma(conn, apply=True)
+    except RuntimeError as exc:
+        assert "counted 1" in str(exc) and "touched 2" in str(exc)
+    else:
+        raise AssertionError("expected the pass to stop")
+    assert conn.log[-1] == "rollback"
+    (sql, params) = next((s, p) for s, p in conn.statements if s.lstrip().startswith("UPDATE"))
+    assert params == (["KO"], [date(2026, 10, 5)], [NEAR], [None])

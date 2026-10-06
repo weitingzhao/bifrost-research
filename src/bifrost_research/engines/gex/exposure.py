@@ -25,7 +25,12 @@ from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from bifrost_research.db.upsert import batch_upsert
-from bifrost_research.engines.gex.exposure_guards import drop_empty_side_walls, has_gamma_exposure
+from bifrost_research.engines.gex.exposure_guards import (
+    drop_empty_side_walls,
+    drop_fallback_zero_gamma,
+    has_gamma_exposure,
+    zero_gamma_crossing,
+)
 from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 from bifrost_research.pricing import bs_gamma
 
@@ -189,39 +194,21 @@ def compute_gex_levels(distribution: Sequence[Mapping[str, Any]], spot: float) -
     call_wall = max(distribution, key=lambda r: float(r.get("call_gex") or 0))
     put_wall = min(distribution, key=lambda r: float(r.get("put_gex") or 0))
 
-    # Cumulative from low strike; find sign flip nearest spot
+    # Cumulative from low strike; the sign flip nearest spot, else the nearest strike
+    # (the source says which: daily levels store no zero gamma without a flip).
     sorted_rows = sorted(distribution, key=lambda r: float(r["strike"]))
-    cum = 0.0
-    zero_gamma: float | None = None
-    prev_strike: float | None = None
-    prev_cum = 0.0
-    best_dist = float("inf")
-    for r in sorted_rows:
-        sk = float(r["strike"])
-        cum += float(r.get("net_gex") or 0)
-        if prev_strike is not None and prev_cum * cum <= 0 and (prev_cum != 0 or cum != 0):
-            # Linear interpolate zero crossing
-            if cum != prev_cum:
-                t = -prev_cum / (cum - prev_cum)
-                zg = prev_strike + t * (sk - prev_strike)
-            else:
-                zg = sk
-            dist = abs(zg - spot)
-            if dist < best_dist:
-                best_dist = dist
-                zero_gamma = round(zg, 4)
-        prev_strike = sk
-        prev_cum = cum
-
+    zero_gamma = zero_gamma_crossing(sorted_rows, spot)
+    source = "flip"
     if zero_gamma is None:
-        # Fallback: strike with net_gex closest to zero near spot
         nearest = min(sorted_rows, key=lambda r: abs(float(r["strike"]) - spot))
         zero_gamma = float(nearest["strike"])
+        source = "nearest_strike"
 
     return {
         "spot": float(spot),
         "total_net_gex": round(total, 4),
         "zero_gamma": zero_gamma,
+        "zero_gamma_source": source,
         "major_call_wall": float(call_wall["strike"]),
         "major_put_wall": float(put_wall["strike"]),
         "call_wall_gex": round(float(call_wall.get("call_gex") or 0), 4),
@@ -562,7 +549,7 @@ def compute_gex_for_symbol(
             # put them on an arbitrary strike that terrain and scan then read.
             no_exposure += 1
             continue
-        levels = drop_empty_side_walls(levels)
+        levels = drop_fallback_zero_gamma(drop_empty_side_walls(levels))
         for r in dist:
             dist_rows.append(
                 (
