@@ -31,6 +31,7 @@ from bifrost_research.engines.backtest.sim.walk import (
     legs_from_json,
     load_leg_store,
     walk_legs,
+    with_snapshot_fill,
 )
 from bifrost_research.engines.suggestion import store
 from bifrost_research.engines.suggestion.config import (
@@ -199,7 +200,9 @@ def run_settle(conn: Any, *, today: date | None = None) -> dict[str, Any]:
         dte = (min(expiries) - as_of).days
         key = (as_of, dte)
         if key not in spy_chains:
-            spy_chains[key] = ChainStore.load(conn, BASELINE_SYMBOL, as_of, as_of, max_dte=dte)
+            spy_chains[key] = with_snapshot_fill(
+                conn, ChainStore.load(conn, BASELINE_SYMBOL, as_of, as_of, max_dte=dte), as_of, as_of
+            )
         spy = spy_chains[key]
         legs_or_reason = _paired_legs(s, spy)
         basis = "baseline_paired"
@@ -209,7 +212,9 @@ def run_settle(conn: Any, *, today: date | None = None) -> dict[str, Any]:
                 continue
             out, entry, rules = WalkOutcome("void", legs_or_reason), None, rules_for(s, basis)
         else:
-            out, entry, rules = _walk(spy, legs_or_reason, s, basis)
+            exp = max(lg.expiry for lg in legs_or_reason) + timedelta(days=3)
+            spy_legs = load_leg_store(conn, BASELINE_SYMBOL, [lg.ticker for lg in legs_or_reason], as_of, min(exp, now))
+            out, entry, rules = _walk(spy_legs, legs_or_reason, s, basis)
         if out.status == "open":
             still_open += 1
             continue

@@ -10,22 +10,25 @@ settlement enters at the next session.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import date
 from typing import Any, Sequence
 
 from bifrost_research.engines.backtest.sim.chain import ChainStore
 from bifrost_research.engines.backtest.sim.engine import _open
 from bifrost_research.engines.backtest.sim.rules import SimConfig, fill_basis
+from bifrost_research.engines.backtest.sim.walk import with_snapshot_fill
 from bifrost_research.engines.suggestion import store
 from bifrost_research.engines.suggestion.config import (
     BASELINE,
     BASELINE_SYMBOL,
     CATCH_UP_SESSIONS,
     DAILY_CAP,
+    DELTA_TOLERANCE,
     MAX_STALE_SESSIONS,
     SIMULATOR_LIVE,
 )
-from bifrost_research.engines.suggestion.contract import IncompleteSuggestion, Suggestion
+from bifrost_research.engines.suggestion.contract import IncompleteSuggestion, Suggestion, issue_key
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +75,11 @@ def build_suggestion(
     pos = _open(chain, d, cfg)
     if isinstance(pos, str):
         return pos
+    picked = [abs(lg.entry_delta) for lg in pos.legs if lg.entry_delta is not None]
+    if not picked or abs(picked[0] - cfg.short_delta) > DELTA_TOLERANCE:
+        # The nearest strike the data has is not the delta the rule names — a
+        # 35-delta put issued under a 30-delta rule is a different suggestion.
+        return "delta_out_of_band"
     legs = []
     snap_legs = []
     for lg in pos.legs:
@@ -157,11 +165,11 @@ def run_issue(conn: Any, *, today: date | None = None) -> dict[str, Any]:
     for source, spec, sym in _specs():
         due = set(cadence_sessions(calendar, spec["cadence"]))
         plan.extend((source, spec, sym, d) for d in window if d in due)
-    keys = {f"{src}:{spec['source_ref']}:{d.isoformat()}:{sym}" for src, spec, sym, d in plan}
+    keys = {issue_key(src, spec["source_ref"], str(spec["source_version"]), d, sym) for src, spec, sym, d in plan}
     have = store.existing_issue_keys(conn, keys)
 
     for source, spec, sym, d in plan:
-        key = f"{source}:{spec['source_ref']}:{d.isoformat()}:{sym}"
+        key = issue_key(source, spec["source_ref"], str(spec["source_version"]), d, sym)
         if key in have:
             continue
         if per_session.get((source, d), 0) >= DAILY_CAP.get(source, 10):
@@ -169,7 +177,9 @@ def run_issue(conn: Any, *, today: date | None = None) -> dict[str, Any]:
             continue
         ck = (sym, d, int(spec["target_dte"]))
         if ck not in chains:
-            chains[ck] = ChainStore.load(conn, sym, d, d, max_dte=int(spec["target_dte"]))
+            chains[ck] = with_snapshot_fill(
+                conn, ChainStore.load(conn, sym, d, d, max_dte=int(spec["target_dte"])), d, d
+            )
         chain = chains[ck]
         if d not in chain.spot or not chain.chain_on(d, "P"):
             # Not landed yet: a later run inside the catch-up window issues it.
@@ -185,6 +195,9 @@ def run_issue(conn: Any, *, today: date | None = None) -> dict[str, Any]:
         if isinstance(got, str):
             skipped[got] = skipped.get(got, 0) + 1
             continue
+        earlier = store.earlier_version(conn, source, spec["source_ref"], d, sym, str(spec["source_version"]))
+        if earlier:
+            got = replace(got, supersedes_id=earlier)
         try:
             if store.insert_suggestion(conn, got):
                 written.append(got.suggestion_id)

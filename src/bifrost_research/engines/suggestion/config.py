@@ -11,7 +11,9 @@ from typing import Any
 
 # Owner 2026-10-05 23:32 UTC: §7 as recommended.
 THRESHOLDS: dict[str, Any] = {
-    "version": "2026-10-05.1",
+    # .2 (2026-10-06): the delta rule below, added after the first night's
+    # suggestions picked 35/39/27-delta puts under 30/20-delta rules.
+    "version": "2026-10-06.2",
     "counts_from": "first counted suggestion issued after the ledger went live; forward samples only",
     "min_months": 6,
     "regimes": {
@@ -35,6 +37,7 @@ THRESHOLDS: dict[str, Any] = {
     "tail": {"max_drawdown_vs_baseline": 1.2, "worst_trade": "within the suggestion's stated max_loss"},
     "adoption": {"actual_minus_model_max_share_of_edge": 0.5},
     "per_source": True,
+    "delta_rule": "a mechanical suggestion counts only when its picked short delta is within DELTA_TOLERANCE of its rule's",
     "stand_aside": "reported only; not counted toward P&L thresholds",
 }
 
@@ -50,7 +53,8 @@ BASELINE_SYMBOL = "SPY"
 # DTE, take profit at 50%, close at 21 DTE. No stop (none was specified).
 BASELINE: dict[str, Any] = {
     "source_ref": "spy_weekly_30d_put",
-    "source_version": "1",
+    # 2: delta guard + 16:00 snapshot bars (0.174.1); v1 picked a 35-delta put.
+    "source_version": "2",
     "symbol": BASELINE_SYMBOL,
     "structure": "short_put",
     "short_delta": 0.30,
@@ -69,7 +73,7 @@ BASELINE: dict[str, Any] = {
 SIMULATOR_LIVE: tuple[dict[str, Any], ...] = (
     {
         "source_ref": "sim_default_short_put_20d",
-        "source_version": "1",
+        "source_version": "2",
         "symbols": ("SPY", "QQQ", "IWM"),
         "structure": "short_put",
         "short_delta": 0.20,
@@ -82,6 +86,10 @@ SIMULATOR_LIVE: tuple[dict[str, Any], ...] = (
         "cadence": "weekly",
     },
 )
+
+# A mechanical source refuses to issue when the nearest strike's delta is
+# further than this from its rule's target (the suggestion would not be the rule).
+DELTA_TOLERANCE = 0.05
 
 # A missed run may still issue for a session this many sessions back — the
 # mechanical sources have no discretion, so a late issue sees nothing the rule
@@ -96,6 +104,7 @@ __all__ = [
     "BASIS_SLIPPAGE",
     "CATCH_UP_SESSIONS",
     "DAILY_CAP",
+    "DELTA_TOLERANCE",
     "MAX_STALE_SESSIONS",
     "SETTLEMENT_METHOD_VERSION",
     "SIMULATOR_LIVE",

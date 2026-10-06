@@ -18,6 +18,10 @@ from bifrost_research.schema.suggestion_ledger_ddl import SUGGESTION_KINDS, SUGG
 LEG_KEYS = ("contract_key", "right", "side", "strike", "expiry", "ratio")
 
 
+def issue_key(source: str, source_ref: str, source_version: str, as_of: date, symbol: str) -> str:
+    return f"{source}:{source_ref}@{source_version}:{as_of.isoformat()}:{symbol.upper()}"
+
+
 class IncompleteSuggestion(ValueError):
     """The suggestion cannot be settled as given; it is not written."""
 
@@ -52,8 +56,12 @@ class Suggestion:
 
     @property
     def issue_key(self) -> str:
-        """One suggestion per (source, its config, session, symbol): reruns are no-ops."""
-        return f"{self.source}:{self.source_ref}:{self.as_of_session.isoformat()}:{self.symbol.upper()}"
+        """One suggestion per (source, its config and version, session, symbol): reruns are no-ops.
+
+        The version is in the key so a corrected rule can issue for a session the
+        old rule already did — the new row names the old one in ``supersedes_id``.
+        """
+        return issue_key(self.source, self.source_ref, self.source_version, self.as_of_session, self.symbol)
 
     @property
     def suggestion_id(self) -> str:
@@ -115,4 +123,4 @@ class Suggestion:
         }
 
 
-__all__ = ["LEG_KEYS", "IncompleteSuggestion", "Suggestion"]
+__all__ = ["LEG_KEYS", "IncompleteSuggestion", "Suggestion", "issue_key"]

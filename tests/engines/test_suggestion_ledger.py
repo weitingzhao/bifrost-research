@@ -86,7 +86,8 @@ def _suggestion(**kw: object) -> Suggestion:
 
 def test_identity_is_stable_and_keyed_on_source_session_symbol() -> None:
     a, b = _suggestion(), _suggestion(rationale="different words")
-    assert a.issue_key == "baseline:spy_weekly_30d_put:2026-10-05:SPY"
+    assert a.issue_key == "baseline:spy_weekly_30d_put@1:2026-10-05:SPY"
+    assert _suggestion(source_version="2").issue_key != a.issue_key
     assert a.suggestion_id == b.suggestion_id and a.suggestion_id.startswith("sg_")
     assert a.inputs_hash == b.inputs_hash
     assert _suggestion(take_profit_pct=0.6).inputs_hash != a.inputs_hash
@@ -254,3 +255,26 @@ def test_settlement_row_uses_max_loss_or_margin_as_risk() -> None:
     assert row["return_on_risk"] == pytest.approx(row["net_pnl"] / row["risk_basis"], rel=1e-5)
     void = settlement_row(s.suggestion_id, "model", walk_legs(store, [], entry, rules), entry=entry, rules=rules)
     assert void["status"] == "void" and void["void_reason"] == "no_legs" and "net_pnl" not in void
+
+
+# -- 0.174.1: delta guard, snapshot day bars ---------------------------------------------
+
+
+def test_a_rule_whose_delta_the_chain_lacks_is_not_issued() -> None:
+    days = _sessions(60)
+    exp = next(d for d in days if d.weekday() == 4 and (d - START).days >= 40)
+    # Only near-the-money strikes, like option_daily since mid-August 2026.
+    bars = [
+        OptBar(f"O:X{exp:%y%m%d}P{k:08d}", exp, float(k), "P", START, round(bs_price(100.0, float(k), (exp - START).days / 365, 0.3, right="P"), 4), None, 10)
+        for k in (98, 99, 100, 101, 102)
+    ]
+    store = ChainStore("X", {d: 100.0 for d in days}, bars)
+    assert build_suggestion(store, START, source="baseline", spec=_baseline_spec(), regime={}) == "delta_out_of_band"
+
+
+def test_occ_tickers_parse() -> None:
+    from bifrost_research.engines.backtest.sim.walk import _parse_occ
+
+    assert _parse_occ("O:SPY261120P00765000") == (date(2026, 11, 20), "P", 765.0)
+    assert _parse_occ("O:BRK.B261120C00412500") == (date(2026, 11, 20), "C", 412.5)
+    assert _parse_occ("O:SPY1261120P00765000") is None

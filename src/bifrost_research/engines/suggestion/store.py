@@ -98,6 +98,22 @@ def existing_issue_keys(conn: Any, keys: Iterable[str]) -> set[str]:
         return {str(r[0]) for r in cur.fetchall() or []}
 
 
+def earlier_version(conn: Any, source: str, source_ref: str, as_of: date, symbol: str, version: str) -> str | None:
+    """The latest suggestion an older version of the same rule issued for this session and symbol."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT suggestion_id FROM {T_SUGGESTION}
+            WHERE source = %s AND source_ref = %s AND as_of_session = %s AND symbol = %s
+              AND source_version <> %s
+            ORDER BY issued_at DESC LIMIT 1
+            """,
+            (source, source_ref, as_of, symbol.upper(), version),
+        )
+        r = cur.fetchone()
+    return str(r[0]) if r else None
+
+
 def iv_regime(conn: Any, symbol: str, d: date) -> dict[str, Any] | None:
     """The symbol's IV percentile row on ``d`` (the regime label of threshold 2)."""
     with conn.cursor() as cur:
@@ -188,6 +204,7 @@ def insert_settlement(conn: Any, row: dict[str, Any]) -> bool:
 
 __all__ = [
     "SETTLEMENT_COLS",
+    "earlier_version",
     "existing_issue_keys",
     "insert_settlement",
     "insert_suggestion",

@@ -19,8 +19,9 @@ D10 BLOCKED — historical replay only; nothing here can reach an order.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Literal, Mapping
 
 from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
@@ -102,7 +103,8 @@ def _d(v: Any) -> date | None:
 
 
 def load_leg_store(conn: Any, symbol: str, tickers: Iterable[str], start: date, end: date) -> ChainStore:
-    """The underlying's sessions and the given contracts' bars only.
+    """The underlying's sessions and the given contracts' bars only (option_daily,
+    then the 16:00 snapshot for sessions it lacks).
 
     Settling a suggestion needs its own legs, not the whole chain — SPY's chain
     is thousands of contracts a session. Rates are left out: nothing on a walk
@@ -159,7 +161,93 @@ def load_leg_store(conn: Any, symbol: str, tickers: Iterable[str], start: date, 
                         volume=int(r[7]) if r[7] is not None else None,
                     )
                 )
+    have = {(b.ticker, b.bar_date) for b in bars}
+    bars += snapshot_day_bars(conn, sym, start, end, tickers=wanted, have=have)
     return ChainStore(sym, spot, bars)
+
+
+# O:SPY261120P00765000 → expiry 2026-11-20, right P, strike 765.000
+_OCC = re.compile(r"^O:[A-Z.]+(\d{6})([CP])(\d{8})$")
+
+
+def _parse_occ(ticker: str) -> tuple[date, str, float] | None:
+    m = _OCC.match(ticker)
+    if not m:
+        return None
+    ymd, right, strike = m.groups()
+    return date(2000 + int(ymd[:2]), int(ymd[2:4]), int(ymd[4:6])), right, int(strike) / 1000.0
+
+
+def snapshot_day_bars(
+    conn: Any,
+    underlying: str,
+    start: date,
+    end: date,
+    *,
+    tickers: Iterable[str] | None = None,
+    have: set[tuple[str, date]] | None = None,
+) -> list[OptBar]:
+    """Day bars from the 16:00 ET option snapshot, for (contract, session) pairs
+    ``option_daily`` does not have.
+
+    Since mid-August 2026 ``option_daily`` keeps about ten strikes either side of
+    spot per expiry (SPY 2026-10-05: 765–785 against a 775 spot), so a 30-delta
+    put 45 days out is not in it. The resident names' 16:00 snapshot carries the
+    whole chain, and its day close / vwap / volume equal ``option_daily``'s row
+    wherever both exist (checked on SPY 2026-10-02 and 10-05). Earlier snapshots
+    of the day are partial sessions and are not used.
+    """
+    wanted = sorted({str(t) for t in tickers}) if tickers is not None else None
+    if wanted is not None and not wanted:
+        return []
+    have = have or set()
+    sql = """
+        SELECT option_ticker, (snapshot_ts AT TIME ZONE 'America/New_York')::date AS d,
+               day_close, day_vwap, day_volume
+        FROM raw_market.option_snapshot
+        WHERE underlying = %s
+          AND snapshot_ts >= %s AND snapshot_ts < %s
+          AND (snapshot_ts AT TIME ZONE 'America/New_York')::time >= '16:00'
+          AND day_close > 0
+    """
+    params: list[Any] = [underlying, start, end + timedelta(days=2)]
+    if wanted is not None:
+        sql += " AND option_ticker = ANY(%s)"
+        params.append(wanted)
+    out: dict[tuple[str, date], OptBar] = {}
+    with conn.cursor() as cur:
+        cur.execute(sql, tuple(params))
+        for r in cur.fetchall() or []:
+            ticker, d = str(r[0]), _d(r[1])
+            if d is None or not (start <= d <= end) or (ticker, d) in have:
+                continue
+            parsed = _parse_occ(ticker)
+            if parsed is None:
+                continue
+            expiry, right, strike = parsed
+            out[(ticker, d)] = OptBar(
+                ticker=ticker,
+                expiry=expiry,
+                strike=strike,
+                right=right,  # type: ignore[arg-type]
+                bar_date=d,
+                close=float(r[2]),
+                vwap=float(r[3]) if r[3] is not None else None,
+                volume=int(r[4]) if r[4] is not None else None,
+            )
+    return list(out.values())
+
+
+def with_snapshot_fill(conn: Any, store: ChainStore, start: date, end: date) -> ChainStore:
+    """``store`` plus snapshot day bars for [start, end] where option_daily has none."""
+    bars = [b for by_day in store._by_ticker.values() for b in by_day.values()]
+    have = {(b.ticker, b.bar_date) for b in bars}
+    extra = snapshot_day_bars(conn, store.symbol, start, end, have=have)
+    if not extra:
+        return store
+    out = ChainStore(store.symbol, store.spot, bars + extra, store._rates)
+    out.delisted_on = store.delisted_on
+    return out
 
 
 def _slip_cost(px: float, side: Literal["buy", "sell"], scale: float) -> float:
@@ -276,4 +364,13 @@ def legs_from_json(rows: Iterable[Mapping[str, Any]]) -> list[LegSpec]:
     return out
 
 
-__all__ = ["LegSpec", "WalkOutcome", "WalkRules", "legs_from_json", "load_leg_store", "walk_legs"]
+__all__ = [
+    "LegSpec",
+    "WalkOutcome",
+    "WalkRules",
+    "legs_from_json",
+    "load_leg_store",
+    "snapshot_day_bars",
+    "walk_legs",
+    "with_snapshot_fill",
+]
