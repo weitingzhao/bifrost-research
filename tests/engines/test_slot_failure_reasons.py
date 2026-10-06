@@ -138,7 +138,7 @@ def test_guarded_emission_logs_and_counts(caplog: Any) -> None:
 
 
 def test_terrain_intraday_reports_trigger_failures() -> None:
-    with patch.object(sched, "_today_ny", return_value=date(2026, 10, 5)), \
+    with patch.object(sched, "ny_today", return_value=date(2026, 10, 5)), \
          patch.object(sched, "_intraday_chain_symbols", return_value=[]), \
          patch.object(sched, "load_upstream_signals", return_value=(192.59, {}, {}, {})), \
          patch("bifrost_research.engines.forecast.terrain.upsert_terrain_intraday", return_value=1), \

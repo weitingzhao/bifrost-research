@@ -25,8 +25,6 @@ _APPEND_ONLY = {
         "trigger events: one row per firing (trigger_at), never re-derived",
     ("engines/forecast/terrain.py", "'features.stock_forecast_terrain_intraday'"):
         "intraday snapshots keyed by asof_ts: an append log by design",
-    ("engines/alert_scan/entry.py", "TABLE_STOCK_SIGNAL_ALERT_DAILY"):
-        "KNOWN GAP (reported 2026-10-06 with TD-112): a re-run keeps alerts that no longer fire",
 }
 
 
