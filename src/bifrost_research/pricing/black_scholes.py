@@ -2,7 +2,7 @@
 
 European, no dividends. Every function takes rate (continuously compounded,
 decimal) as a required keyword, so a silent r = 0 default cannot come back:
-until 0.183.0 the stored IV features solved at r = 0 while the backtester used
+until 0.189.0 the stored IV features solved at r = 0 while the backtester used
 the 1-month Treasury, and the same contract had two IVs and two deltas.
 
 The convention is the Treasury curve from pricing.rates everywhere a rate

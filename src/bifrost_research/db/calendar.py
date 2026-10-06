@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class CalendarUnavailable(RuntimeError):
     """The holiday feed or the index bars could not be read.
 
-    Raised instead of answering "no holidays": until 0.183.0 a failed read came
+    Raised instead of answering "no holidays": until 0.189.0 a failed read came
     back as an empty set, so every holiday counted as a session (TD-93).
     """
 

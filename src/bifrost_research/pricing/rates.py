@@ -1,6 +1,6 @@
 """The risk-free rate for research pricing — one Treasury reader (TD-110).
 
-Until 0.183.0 the backtester read ``raw_market.treasury_yield`` twice, in
+Until 0.189.0 the backtester read ``raw_market.treasury_yield`` twice, in
 ``backtest/event_query._risk_free_rate`` and ``backtest/sim/chain``, and the IV
 features read it not at all (r = 0). Both now come from here: the 1-month
 constant-maturity yield (3-month when the 1-month is missing) on or before the

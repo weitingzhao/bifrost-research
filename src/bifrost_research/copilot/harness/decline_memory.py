@@ -316,7 +316,7 @@ def decline_stage(
             statuses=("dismissed", "promoted"),
             objective_id=objective_id,
             # Must match how `create_candidate` stamps `trade_date`: both use
-            # New York's date (db/calendar.ny_today). Until 0.183.0 both used
+            # New York's date (db/calendar.ny_today). Until 0.189.0 both used
             # `ny_today()`, which on the UTC pods is New York's tomorrow from
             # 20:00 on (TD-98).
             trade_date=ny_today(),
