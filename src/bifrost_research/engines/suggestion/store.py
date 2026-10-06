@@ -7,7 +7,7 @@ from datetime import date, datetime
 from typing import Any, Iterable
 
 from bifrost_research.engines.suggestion.contract import Suggestion
-from bifrost_research.schema.schemas import SCHEMA_RESEARCH
+from bifrost_research.schema.schemas import SCHEMA_RESEARCH, TABLE_STOCK_SIGNAL_PINE_DAILY
 
 T_SUGGESTION = f"{SCHEMA_RESEARCH}.suggestion"
 T_SETTLEMENT = f"{SCHEMA_RESEARCH}.suggestion_settlement"
@@ -131,6 +131,62 @@ def iv_regime(conn: Any, symbol: str, d: date) -> dict[str, Any] | None:
     return {"iv_current": r[0], "iv_percentile_1y": r[1], "iv_rank_1y": r[2], "lookback_days": r[3]}
 
 
+def pine_signals(conn: Any, script_ids: Iterable[str], sessions: Iterable[date]) -> list[dict[str, Any]]:
+    """Pine buy / sell rows for ``script_ids`` on ``sessions`` (``features.stock_signal_pine_daily``)."""
+    ids = sorted(set(script_ids))
+    days = sorted(set(sessions))
+    if not ids or not days:
+        return []
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT script_id, symbol, trade_date, side, script_version, close
+            FROM {TABLE_STOCK_SIGNAL_PINE_DAILY}
+            WHERE script_id = ANY(%s) AND trade_date = ANY(%s)
+            ORDER BY trade_date, script_id, symbol, side
+            """,
+            (ids, days),
+        )
+        rows = cur.fetchall() or []
+    return [
+        {
+            "script_id": str(r[0]),
+            "symbol": str(r[1]).upper(),
+            "trade_date": _d(r[2]),
+            "side": str(r[3]),
+            "script_version": int(r[4]),
+            "close": None if r[5] is None else float(r[5]),
+        }
+        for r in rows
+    ]
+
+
+def pine_issued(conn: Any, script_ids: Iterable[str], since: date) -> list[dict[str, Any]]:
+    """The Pine suggestions already written for ``script_ids`` since ``since``, one per (script, symbol, session).
+
+    A superseded suggestion and the one that replaced it are the same issue here:
+    the caps count sessions a script spoke on a symbol, not rows.
+    """
+    ids = sorted(set(script_ids))
+    if not ids:
+        return []
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT DISTINCT ON (source_ref, symbol, as_of_session) source_ref, symbol, as_of_session, structure
+            FROM {T_SUGGESTION}
+            WHERE source = 'pine' AND source_ref = ANY(%s) AND as_of_session >= %s
+            ORDER BY source_ref, symbol, as_of_session, issued_at DESC
+            """,
+            (ids, since),
+        )
+        rows = cur.fetchall() or []
+    return [
+        {"script_id": str(r[0]), "symbol": str(r[1]).upper(), "as_of": _d(r[2]), "structure": r[3]}
+        for r in rows
+    ]
+
+
 def insert_suggestion(conn: Any, s: Suggestion) -> bool:
     """Append one suggestion; False when its ``issue_key`` is already written."""
     row = s.validate().to_row()
@@ -210,5 +266,7 @@ __all__ = [
     "insert_suggestion",
     "iv_regime",
     "pending_settlements",
+    "pine_issued",
+    "pine_signals",
     "recent_sessions",
 ]

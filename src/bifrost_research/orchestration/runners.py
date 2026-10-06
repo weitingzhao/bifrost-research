@@ -291,7 +291,7 @@ def run_candidate_outcome(*, lookback_days: int | None = None) -> dict[str, Any]
 
 
 def run_suggestion_ledger() -> dict[str, Any]:
-    """Issue the mechanical suggestions (SPY baseline, live simulator configs), then settle."""
+    """Issue the mechanical suggestions (SPY baseline, live simulator configs) and Pine's, then settle."""
     from bifrost_research.engines.suggestion.entry import run
 
     result = run()

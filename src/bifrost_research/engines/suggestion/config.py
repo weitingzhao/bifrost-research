@@ -7,6 +7,7 @@ the version is what a scoreboard reads, so a quiet edit cannot slip through.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 # Owner 2026-10-05 23:32 UTC: §7 as recommended.
@@ -87,6 +88,55 @@ SIMULATOR_LIVE: tuple[dict[str, Any], ...] = (
     },
 )
 
+# Pine scripts as a suggestion source (S4, Owner 2026-10-06): Pine says when,
+# Bifrost says what. A buy signal sells the 20-delta put, a sell signal sells the
+# 20-delta call credit spread; everything else is the live simulator config's
+# (~45 DTE, take 50%, stop at 2x credit, close at 21 DTE). ``source_ref`` is the
+# script id and ``source_version`` the script's library version (Owner).
+#
+# Forward samples only: signals before ``live_from`` are history, never issued;
+# a signal from a script version other than the one pinned here is not issued
+# either -- a new version is a script written after seeing the sessions its full
+# rebuild re-signals, so it starts counting only when it is pinned here with a
+# new ``live_from``.
+#
+# Issuance rules (per script; ``rule_version`` moves when any of them does):
+# - one suggestion per (script, symbol, session): ``issue_key``; a session where
+#   the script fired both sides on a symbol issues neither;
+# - one per (script, symbol, ISO week) -- the threshold's counting unit;
+# - no same-direction repeat within ``cooldown_days`` (target DTE - exit DTE:
+#   the previous one would still be open);
+# - a symbol stays within ``max_share_per_symbol`` of the script's suggestions
+#   since ``live_from`` (its first one is always allowed);
+# - at most ``daily_cap_per_side`` per script, side and session, taken in a
+#   hash order of (session, script, side, symbol) -- unbiased, reproducible;
+# - the universe is whatever the snapshot can pick a 20-delta for: a name with
+#   no chain, or whose nearest strike misses the delta by more than
+#   DELTA_TOLERANCE, is skipped (and does not use up the cap).
+_SIM = SIMULATOR_LIVE[0]
+PINE_LIVE: dict[str, Any] = {
+    "rule_version": "1",
+    "live_from": date(2026, 10, 6),
+    "scripts": (
+        {"script_id": "supertrend", "script_version": 1},
+        {"script_id": "donchian_breakout", "script_version": 1},
+    ),
+    "sides": {
+        "buy": {"structure": "short_put", "short_delta": 0.20},
+        "sell": {"structure": "call_credit_spread", "short_delta": 0.20},
+    },
+    "target_dte": _SIM["target_dte"],
+    "min_dte": _SIM["min_dte"],
+    "wing_width_pct": _SIM["wing_width_pct"],
+    "take_profit_pct": _SIM["take_profit_pct"],
+    "stop_loss_mult": _SIM["stop_loss_mult"],
+    "exit_dte": _SIM["exit_dte"],
+    "cooldown_days": int(_SIM["target_dte"]) - int(_SIM["exit_dte"]),
+    "per_symbol_per_iso_week": 1,
+    "max_share_per_symbol": THRESHOLDS["sample"]["max_share_per_symbol"],
+    "daily_cap_per_side": 5,
+}
+
 # A mechanical source refuses to issue when the nearest strike's delta is
 # further than this from its rule's target (the suggestion would not be the rule).
 DELTA_TOLERANCE = 0.05
@@ -106,6 +156,7 @@ __all__ = [
     "DAILY_CAP",
     "DELTA_TOLERANCE",
     "MAX_STALE_SESSIONS",
+    "PINE_LIVE",
     "SETTLEMENT_METHOD_VERSION",
     "SIMULATOR_LIVE",
     "THRESHOLDS",

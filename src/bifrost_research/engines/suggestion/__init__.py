@@ -9,6 +9,7 @@ with the option simulator and appends ``research.suggestion_settlement`` rows.
 - ``contract``: the suggestion record, its validation and its identity.
 - ``config``: the frozen threshold set and the mechanical sources' rules.
 - ``issue``: the mechanical sources (``baseline``, ``simulator``).
+- ``pine``: Pine script signals as a source (S4).
 - ``settle``: the ``model`` / ``model_stress`` / ``baseline_paired`` settlement.
 - ``store``: reads and appends.
 
