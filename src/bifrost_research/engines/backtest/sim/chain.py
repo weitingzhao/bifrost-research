@@ -6,6 +6,14 @@ Implied vol and delta are solved from a bar's own price with the same Brent
 solver the vol engines use, and cached per (contract, session) — not stored:
 the IV solver stopped persisting option_daily inversions in 0.111.0 so there is
 one path to the number, and this keeps to it.
+
+``ChainStore.load`` keeps every bar of the window resident. The simulator uses
+``ChainStore.load_windowed`` instead: sessions and rates up front, option bars
+one span of sessions at a time, dropped when the walk moves past them. Every
+read the session loop makes is for the session it is on, so the result is the
+same; the memory is one span's bars, not the window's. SPY over a year is
+744k bars, which ``load`` held at a 620 MB peak and OOM-killed research-api's
+512Mi container with (2026-10-06).
 """
 
 from __future__ import annotations
@@ -24,7 +32,7 @@ from bifrost_research.repositories.listing_lineage import live_label, stock_clau
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class OptBar:
     ticker: str
     expiry: date
@@ -83,6 +91,122 @@ class _SnapshotFill:
     bars_added: int = 0
 
 
+# Calendar days of option bars a windowed store holds at once: about a month
+# of sessions, SPY's largest month (2026-03) being 82k bars.
+SPAN_DAYS = 31
+
+
+def _sessions_and_rates(
+    conn: Any, symbol: str, start: date, end: date, *, max_dte: int
+) -> tuple[str, dict[date, float], dict[date, float], date]:
+    """(live label, as-traded closes, 1-month yields, tail) for a window.
+
+    Positions opened near ``end`` run on toward their expiry; the tail keeps the
+    sessions and the bars that far so they can be marked and settled.
+    """
+    # Options sit under the ticker the company trades as now (Plugin 0.51.0);
+    # the stock closes splice in the old ticker's bars across a rename (B7).
+    sym = live_label(symbol)
+    clause, sym_params = stock_clause(conn, sym)
+    tail = end + timedelta(days=int(max_dte) * 2 + 14)
+    spot: dict[date, float] = {}
+    rates: dict[date, float] = {}
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT bar_date, COALESCE(close_unadjusted, close) AS close_as_traded
+            FROM raw_market.stock_daily
+            WHERE {clause}
+              AND bar_date BETWEEN %s AND %s
+              AND close > 0
+            ORDER BY bar_date
+            """,
+            (*sym_params, start, tail),
+        )
+        for r in cur.fetchall() or []:
+            d, px = _d(_col(r, 0, "bar_date")), _col(r, 1, "close_as_traded")
+            if d is not None and px is not None and float(px) > 0:
+                spot[d] = float(px)
+        try:
+            cur.execute(
+                """
+                SELECT yield_date, COALESCE(yield_1_month, yield_3_month)
+                FROM raw_market.treasury_yield
+                WHERE yield_date BETWEEN %s AND %s
+                """,
+                (start - timedelta(days=14), tail),
+            )
+            for r in cur.fetchall() or []:
+                d, v = _d(_col(r, 0, "yield_date")), _col(r, 1, "coalesce")
+                if d is not None and v is not None:
+                    x = float(v)
+                    x = x / 100.0 if x > 1.0 else x
+                    if 0.0 <= x < 0.25:
+                        rates[d] = x
+        except Exception as exc:  # noqa: BLE001 — rates are optional
+            logger.info("treasury yields unavailable: %s", str(exc)[:120])
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+    return sym, spot, rates, tail
+
+
+def _option_bars(conn: Any, sym: str, lo: date, hi: date) -> list[OptBar]:
+    """Every standard contract's ``option_daily`` bar for ``sym`` with ``lo <= bar_date <= hi``."""
+    bars: list[OptBar] = []
+    # One object per distinct ticker / date: a month of SPY repeats each ~20 times.
+    same: dict[Any, Any] = {}
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT option_ticker, expiry, strike, option_right, bar_date, close, vwap, volume
+            FROM raw_market.option_daily
+            WHERE underlying = %s
+              AND bar_date BETWEEN %s AND %s
+              AND close > 0
+              AND {not_adjusted_contract_sql("option_ticker")}
+            """,
+            (sym, lo, hi),
+        )
+        rows = cur.fetchall() or []
+    for r in rows:
+        right = str(_col(r, 3, "option_right") or "").strip().upper()[:1]
+        exp, bd = _d(_col(r, 1, "expiry")), _d(_col(r, 4, "bar_date"))
+        if right not in ("C", "P") or exp is None or bd is None:
+            continue
+        ticker = str(_col(r, 0, "option_ticker"))
+        vwap = _col(r, 6, "vwap")
+        vol = _col(r, 7, "volume")
+        bars.append(
+            OptBar(
+                ticker=same.setdefault(ticker, ticker),
+                expiry=same.setdefault(exp, exp),
+                strike=float(_col(r, 2, "strike")),
+                right="C" if right == "C" else "P",
+                bar_date=same.setdefault(bd, bd),
+                close=float(_col(r, 5, "close")),
+                vwap=float(vwap) if vwap is not None else None,
+                volume=int(vol) if vol is not None else None,
+            )
+        )
+    return bars
+
+
+@dataclass
+class _Span:
+    """The bars a windowed store has resident: ``option_daily`` for ``lo``..``hi``."""
+
+    conn: Any
+    first: date
+    last: date
+    days: int
+    lo: date | None = None
+    hi: date | None = None
+    loads: int = 0
+    peak_bars: int = 0
+
+
 class ChainStore:
     def __init__(
         self,
@@ -100,102 +224,82 @@ class ChainStore:
         self._by_day: dict[tuple[date, str], list[OptBar]] = {}
         self._by_ticker: dict[str, dict[date, OptBar]] = {}
         for b in bars:
-            self._by_day.setdefault((b.bar_date, b.right), []).append(b)
-            self._by_ticker.setdefault(b.ticker, {})[b.bar_date] = b
+            self._index(b)
         self._rate_days = sorted(rates or {})
         self._rates = dict(rates or {})
         self._greeks: dict[tuple[str, date, str], tuple[float, float] | None] = {}
         self._fill: _SnapshotFill | None = None
+        self._span: _Span | None = None
 
     # -- loading ----------------------------------------------------------------
 
     @classmethod
     def load(cls, conn: Any, symbol: str, start: date, end: date, *, max_dte: int) -> "ChainStore":
-        # Options sit under the ticker the company trades as now (Plugin 0.51.0);
-        # the stock closes splice in the old ticker's bars across a rename (B7).
-        sym = live_label(symbol)
-        clause, sym_params = stock_clause(conn, sym)
-        # Positions opened near ``end`` run on toward their expiry; keep the
-        # sessions and the bars that far so they can be marked and settled.
-        tail = end + timedelta(days=int(max_dte) * 2 + 14)
-        spot: dict[date, float] = {}
-        bars: list[OptBar] = []
-        rates: dict[date, float] = {}
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT bar_date, COALESCE(close_unadjusted, close) AS close_as_traded
-                FROM raw_market.stock_daily
-                WHERE {clause}
-                  AND bar_date BETWEEN %s AND %s
-                  AND close > 0
-                ORDER BY bar_date
-                """,
-                (*sym_params, start, tail),
-            )
-            for r in cur.fetchall() or []:
-                d, px = _d(_col(r, 0, "bar_date")), _col(r, 1, "close_as_traded")
-                if d is not None and px is not None and float(px) > 0:
-                    spot[d] = float(px)
-            cur.execute(
-                f"""
-                SELECT option_ticker, expiry, strike, option_right, bar_date, close, vwap, volume
-                FROM raw_market.option_daily
-                WHERE underlying = %s
-                  AND bar_date BETWEEN %s AND %s
-                  AND close > 0
-                  AND {not_adjusted_contract_sql("option_ticker")}
-                """,
-                (sym, start, tail),
-            )
-            for r in cur.fetchall() or []:
-                right = str(_col(r, 3, "option_right") or "").strip().upper()[:1]
-                exp, bd = _d(_col(r, 1, "expiry")), _d(_col(r, 4, "bar_date"))
-                if right not in ("C", "P") or exp is None or bd is None:
-                    continue
-                vwap = _col(r, 6, "vwap")
-                vol = _col(r, 7, "volume")
-                bars.append(
-                    OptBar(
-                        ticker=str(_col(r, 0, "option_ticker")),
-                        expiry=exp,
-                        strike=float(_col(r, 2, "strike")),
-                        right=right,  # type: ignore[arg-type]
-                        bar_date=bd,
-                        close=float(_col(r, 5, "close")),
-                        vwap=float(vwap) if vwap is not None else None,
-                        volume=int(vol) if vol is not None else None,
-                    )
-                )
-            try:
-                cur.execute(
-                    """
-                    SELECT yield_date, COALESCE(yield_1_month, yield_3_month)
-                    FROM raw_market.treasury_yield
-                    WHERE yield_date BETWEEN %s AND %s
-                    """,
-                    (start - timedelta(days=14), tail),
-                )
-                for r in cur.fetchall() or []:
-                    d, v = _d(_col(r, 0, "yield_date")), _col(r, 1, "coalesce")
-                    if d is not None and v is not None:
-                        x = float(v)
-                        x = x / 100.0 if x > 1.0 else x
-                        if 0.0 <= x < 0.25:
-                            rates[d] = x
-            except Exception as exc:  # noqa: BLE001 — rates are optional
-                logger.info("treasury yields unavailable: %s", str(exc)[:120])
-                try:
-                    conn.rollback()
-                except Exception:  # noqa: BLE001
-                    pass
-        return cls(sym, spot, bars, rates)
+        sym, spot, rates, tail = _sessions_and_rates(conn, symbol, start, end, max_dte=max_dte)
+        return cls(sym, spot, _option_bars(conn, sym, start, tail), rates)
+
+    @classmethod
+    def load_windowed(
+        cls, conn: Any, symbol: str, start: date, end: date, *, max_dte: int, span_days: int = SPAN_DAYS
+    ) -> "ChainStore":
+        """Like ``load``, with option bars read ``span_days`` at a time as the walk reaches them."""
+        sym, spot, rates, tail = _sessions_and_rates(conn, symbol, start, end, max_dte=max_dte)
+        store = cls(sym, spot, [], rates)
+        store._span = _Span(conn, start, tail, max(1, int(span_days)))
+        return store
 
     # -- reads ------------------------------------------------------------------
 
     def chain_on(self, d: date, right: str) -> list[OptBar]:
+        self._reach(d)
         self._fill_chain(d)
         return self._by_day.get((d, right), [])
+
+    # -- windowed bars ----------------------------------------------------------
+
+    def _reach(self, d: date) -> None:
+        """Make the span holding ``d`` resident, dropping the one before it."""
+        sp = self._span
+        if sp is None or (sp.lo is not None and sp.hi is not None and sp.lo <= d <= sp.hi):
+            return
+        self._drop()
+        sp.lo, sp.hi = d, min(d + timedelta(days=sp.days - 1), sp.last)
+        if d < sp.first or d > sp.last:
+            sp.hi = d  # outside the window: nothing to read, as with ``load``
+            return
+        for b in _option_bars(sp.conn, self.symbol, sp.lo, sp.hi):
+            self._index(b)
+        sp.loads += 1
+        sp.peak_bars = max(sp.peak_bars, self.resident_bars())
+
+    def _drop(self) -> None:
+        self._by_day.clear()
+        self._by_ticker.clear()
+        # Greeks and the snapshot fill's memo are per session; a later walk
+        # over the same sessions (the Pine comparison) reads them again.
+        self._greeks.clear()
+        if self._fill is not None:
+            self._fill.chain_days.clear()
+            self._fill.tried.clear()
+
+    def _index(self, b: OptBar) -> None:
+        self._by_day.setdefault((b.bar_date, b.right), []).append(b)
+        self._by_ticker.setdefault(b.ticker, {})[b.bar_date] = b
+
+    def release(self) -> None:
+        """Drop a windowed store's resident bars; the next read loads its span again."""
+        sp = self._span
+        if sp is None:
+            return
+        self._drop()
+        sp.lo = sp.hi = None
+
+    def resident_bars(self) -> int:
+        return sum(len(v) for v in self._by_ticker.values())
+
+    def span_stats(self) -> dict[str, Any] | None:
+        sp = self._span
+        return None if sp is None else {"span_days": sp.days, "loads": sp.loads, "peak_bars": sp.peak_bars}
 
     # -- 16:00 snapshot fill ----------------------------------------------------
 
@@ -248,6 +352,7 @@ class ChainStore:
 
     def prefetch(self, d: date, tickers: list[str]) -> None:
         """Make ``bar(t, d)`` see the snapshot's bar for each held ``t`` option_daily lacks."""
+        self._reach(d)
         f = self._fill
         if f is None or d < f.since or d in f.chain_days:
             return
@@ -321,11 +426,11 @@ class ChainStore:
                 volume=int(vol) if vol is not None else None,
                 source="snapshot",
             )
-            self._by_day.setdefault((d, b.right), []).append(b)
-            self._by_ticker.setdefault(ticker, {})[d] = b
+            self._index(b)
             f.bars_added += 1
 
     def bar(self, ticker: str, d: date) -> OptBar | None:
+        self._reach(d)
         return self._by_ticker.get(ticker, {}).get(d)
 
     def spot_on_or_before(self, d: date) -> float | None:

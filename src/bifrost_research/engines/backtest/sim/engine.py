@@ -580,7 +580,7 @@ def _entry_rule(
 
 
 def _load_store(conn: Any, sym: str, start: date, end: date, cfg: SimConfig) -> ChainStore:
-    store = ChainStore.load(conn, sym, start, end, max_dte=cfg.target_dte)
+    store = ChainStore.load_windowed(conn, sym, start, end, max_dte=cfg.target_dte)
     if conn is not None:
         store.attach_snapshot_fill(conn, min_dte=cfg.min_dte, max_dte=cfg.target_dte * 2 + 14)
     return store
@@ -656,6 +656,9 @@ def run_sim(
             store.delisted_on = listing_end(conn, sym, as_of=date.today())
         events = None if events_by_symbol is None else events_by_symbol.get(live_label(sym), [])
         trades, curve, sk = _run_symbol(store, start, end, cfg, events=events, overlay=overlay)
+        # One symbol's bars resident at a time, also when the Pine comparison
+        # keeps every store for its second walk.
+        store.release()
         st = store.fill_stats()
         if st["active"]:
             fill["symbols_filled"] += 1

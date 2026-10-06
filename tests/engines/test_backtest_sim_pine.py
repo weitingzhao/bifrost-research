@@ -10,6 +10,7 @@ import pytest
 from bifrost_research.engines.backtest.sim import SimConfig, run_sim
 from bifrost_research.engines.backtest.sim import engine as sim_engine
 from bifrost_research.engines.backtest.sim import pine as sim_pine
+from bifrost_research.engines.backtest.sim.chain import ChainStore
 from bifrost_research.engines.backtest.sim.engine import _run_symbol
 from bifrost_research.engines.backtest.sim.pine import (
     PineOverlay,
@@ -20,7 +21,7 @@ from bifrost_research.engines.backtest.sim.pine import (
     strategy_exits,
 )
 from bifrost_research.engines.pine import client
-from tests.engines.test_backtest_sim import _sessions, _store
+from tests.engines.test_backtest_sim import _ChainConn, _sessions, _store
 
 DAYS = _sessions(120)
 
@@ -187,6 +188,20 @@ def test_a_pine_exit_run_reports_the_premium_only_run_beside_it(monkeypatch: pyt
     assert "pine_exit_comparison" not in base.summary
     assert res.params["pine_exit"] == "auto"
 
+
+
+def test_the_pine_comparison_walks_a_windowed_store_twice_and_reads_it_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    full = _store(lambda i: 100.0 - 0.15 * i)
+    days = full.sessions
+    _patch_entries(monkeypatch, {"X": [days[5], days[25]]})
+    ov = PineOverlay(exits={"long": [days[15], days[40]], "short": []})
+    cfg = _cfg(pine_exit="auto", profit_take_pct=0.5, stop_loss_mult=2.0, dte_exit=21)
+    eager = run_sim(None, ["X"], days[0], days[60], cfg, stores={"X": full}, overlays={"X": ov})
+    windowed = ChainStore.load_windowed(_ChainConn(full), "X", days[0], days[60], max_dte=45, span_days=10)
+    got = run_sim(None, ["X"], days[0], days[60], cfg, stores={"X": windowed}, overlays={"X": ov})
+    assert got.trades == eager.trades
+    assert got.summary["pine_exit_comparison"] == eager.summary["pine_exit_comparison"]
+    assert windowed.resident_bars() == 0
 
 def test_a_name_the_runner_failed_on_is_skipped_not_run_without_its_exits(monkeypatch: pytest.MonkeyPatch) -> None:
     store = _store(lambda i: 100.0)

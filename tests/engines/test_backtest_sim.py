@@ -258,7 +258,7 @@ def test_chain_store_load_reads_as_traded_spot_standard_contracts_and_rates() ->
     store = ChainStore.load(conn, " x ", START, START + timedelta(days=5), max_dte=45)
     stock_sql, stock_params = conn.sql[0]
     assert "COALESCE(close_unadjusted, close)" in stock_sql and stock_params[0] == "X"
-    opt_sql, _ = conn.sql[1]
+    opt_sql = next(q for q, _ in conn.sql if "raw_market.option_daily" in q)
     assert "- 17) !~ '[0-9]$'" in opt_sql  # adjusted contracts stay out
     assert store.sessions == [START, START + timedelta(days=1)]
     assert [b.right for b in store.chain_on(START, "P")] == ["P", "P"]
@@ -335,6 +335,115 @@ def test_an_entry_the_chain_has_no_strike_for_is_skipped_not_opened_off_target()
     assert res.trades == [] and res.summary["skipped_entries"] == {"delta_off_target": 1}
     loose = _run(ChainStore("X", full.spot, bars), delta_tolerance=None)
     assert len(loose.trades) == 1
+
+
+class _ChainConn:
+    """Serves ``full``'s sessions and bars the way Golden Source does, recording each option read."""
+
+    def __init__(self, full: ChainStore) -> None:
+        self.full = full
+        self.option_reads: list[tuple[date, date]] = []
+        self._rows: list[tuple] = []
+
+    def cursor(self) -> "_ChainConn":
+        return self
+
+    def __enter__(self) -> "_ChainConn":
+        return self
+
+    def __exit__(self, *a: object) -> None:
+        return None
+
+    def rollback(self) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple) -> None:
+        if "raw_market.stock_daily" in sql:
+            lo, hi = params[-2], params[-1]
+            self._rows = [(d, px) for d, px in self.full.spot.items() if lo <= d <= hi]
+        elif "raw_market.option_daily" in sql:
+            _sym, lo, hi = params
+            self.option_reads.append((lo, hi))
+            self._rows = [
+                (b.ticker, b.expiry, b.strike, b.right, b.bar_date, b.close, b.vwap, b.volume)
+                for by in self.full._by_ticker.values()
+                for b in by.values()
+                if lo <= b.bar_date <= hi
+            ]
+        else:
+            self._rows = []
+
+    def fetchall(self) -> list[tuple]:
+        return self._rows
+
+    def fetchone(self) -> tuple | None:
+        return self._rows[0] if self._rows else None
+
+
+def _most_bars_in_any(full: ChainStore, span_days: int) -> int:
+    per_day: dict[date, int] = {}
+    for by in full._by_ticker.values():
+        for d in by:
+            per_day[d] = per_day.get(d, 0) + 1
+    return max(
+        sum(n for d, n in per_day.items() if lo <= d < lo + timedelta(days=span_days)) for lo in full.sessions
+    )
+
+
+def test_a_windowed_store_walks_the_same_trades_holding_one_span_of_bars() -> None:
+    # SPY over a year was 744k bars held at once: 620 MB, and research-api's
+    # 512Mi container OOM-killed (2026-10-06). The walk now holds one span.
+    full = _store(lambda i: 100.0 - 0.15 * i, n=160)
+    days = full.sessions
+    cfg = SimConfig(structure="put_credit_spread", target_dte=45, entry_every_sessions=3, dte_exit=None)
+    eager = run_sim(None, ["X"], days[0], days[100], cfg, stores={"X": full})
+    conn = _ChainConn(full)
+    windowed = ChainStore.load_windowed(conn, "X", days[0], days[100], max_dte=45, span_days=10)
+    got = run_sim(None, ["X"], days[0], days[100], cfg, stores={"X": windowed})
+    assert eager.summary["n_trades"] >= 10
+    assert got.trades == eager.trades and got.equity == eager.equity
+    stats = windowed.span_stats()
+    assert stats is not None and stats["loads"] == len(conn.option_reads) >= 10
+    assert stats["peak_bars"] <= _most_bars_in_any(full, 10)
+    assert stats["peak_bars"] * 5 < full.resident_bars()
+    # the walk moved forward only: each span read once, none overlapping
+    assert all(a[1] < b[0] for a, b in zip(conn.option_reads, conn.option_reads[1:]))
+    # dropped once the symbol is done, so ten symbols never sit in memory together
+    assert windowed.resident_bars() == 0
+    # and the API's path loads this way
+    from bifrost_research.engines.backtest.sim.engine import _load_store
+
+    assert _load_store(conn, "X", days[0], days[100], cfg).span_stats() is not None
+
+
+def test_a_longer_window_does_not_cost_the_simulator_more_memory() -> None:
+    import tracemalloc
+
+    full = _store(lambda i: 100.0 - 0.05 * i, n=240)
+    days = full.sessions
+    cfg = SimConfig(structure="short_put", target_dte=45, entry_every_sessions=3, dte_exit=None)
+
+    def peak(n: int, *, windowed: bool) -> int:
+        tracemalloc.start()
+        try:
+            if windowed:
+                store = ChainStore.load_windowed(_ChainConn(full), "X", days[0], days[n], max_dte=45)
+                run_sim(None, ["X"], days[0], days[n], cfg, stores={"X": store})
+            else:
+                ChainStore.load(_ChainConn(full), "X", days[0], days[n], max_dte=45)
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    short, long_ = peak(40, windowed=True), peak(160, windowed=True)
+    # four times the window, the same span resident (eager: 27 MB → 52 MB here)
+    assert long_ < short * 1.25
+    assert long_ * 4 < peak(160, windowed=False)
+
+
+def test_option_bars_carry_no_instance_dict() -> None:
+    bar = OptBar("O:X250221P00095000", date(2025, 2, 21), 95.0, "P", START, 1.2, None, 10)
+    assert not hasattr(bar, "__dict__")
 
 
 class _SnapConn:

@@ -4,8 +4,10 @@ Routes:
     POST /research/backtest/sim               run (and by default store) a simulation
     GET  /research/backtest/sim/{run_id}/detail   stored trades + equity curve
 
-Synchronous: a run loads each symbol's chain over the window into memory, so
-keep it to a handful of symbols; a parameter sweep belongs in a Dagster job.
+Synchronous: a run walks one symbol at a time and holds about a month of that
+symbol's chain in memory (``ChainStore.load_windowed``), so the window length
+does not set the memory; the symbols set the time. A parameter sweep belongs
+in a Dagster job.
 
 D10 BLOCKED — historical replay only. No execution path is touched.
 """
