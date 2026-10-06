@@ -40,6 +40,43 @@ _ALLOWED_KINDS: frozenset[EventKind] = frozenset(
 )
 
 
+#: Kinds whose event is computed from the session's own close: the signal
+#: exists only once that session has closed, so nothing can be filled on it.
+SIGNAL_KINDS: frozenset[str] = frozenset(("indicator_signal", "pine_signal"))
+
+#: Version of the entry-timing rule written into every run's summary
+#: (``entry_timing``) and the simulator's params (``entry_timing_version``).
+#: 1 (before 0.175.0, never written): offset 0 was the event session for every
+#: kind, so a signal opened on the close it was computed from. 2: for
+#: ``SIGNAL_KINDS`` offset 0 is the first session after the signal session.
+ENTRY_TIMING_VERSION = 2
+
+
+def entry_after_event(kind: str | None) -> bool:
+    """True when offsets count from the session after the event (signals)."""
+    return kind in SIGNAL_KINDS
+
+
+def entry_timing(kind: str | None, fill: str) -> dict[str, Any]:
+    """The entry rule a run used, as written into its summary.
+
+    ``fill`` names the price the entry session is filled at (``vwap`` /
+    ``close`` in the simulator, ``close`` in the event backtest).
+    """
+    if kind is None:
+        anchor, note = "schedule", "opens on the schedule's sessions; no event to look ahead of"
+    elif entry_after_event(kind):
+        anchor = "session_after_signal"
+        note = (
+            "a signal is known only at its session's close: offset 0 is the next session, "
+            f"filled at that session's {fill}"
+        )
+    else:
+        anchor = "event_session"
+        note = f"offset 0 is the first session on or after the event, filled at that session's {fill}"
+    return {"version": ENTRY_TIMING_VERSION, "anchor": anchor, "fill": fill, "note": note}
+
+
 @dataclass(frozen=True)
 class EventDef:
     """Named event that anchors a backtest run.
@@ -76,4 +113,11 @@ class EventDef:
         return cls(kind=kind, params=dict(params))
 
 
-__all__ = ["EventDef", "EventKind"]
+__all__ = [
+    "ENTRY_TIMING_VERSION",
+    "SIGNAL_KINDS",
+    "EventDef",
+    "EventKind",
+    "entry_after_event",
+    "entry_timing",
+]

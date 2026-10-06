@@ -119,10 +119,3 @@ def test_pine_signal_needs_a_script_and_a_side() -> None:
             _Conn([]), EventDef.from_dict({"kind": "pine_signal", "params": {"script": "x", "side": "up"}}), date(2024, 1, 1), date(2024, 2, 1)
         )
 
-
-def test_stats_sql_is_built_for_each_horizon() -> None:
-    from bifrost_research.api.pine import _stats_sql
-
-    sql = _stats_sql([5, 20], with_symbols=True)
-    assert "LEAD(close, 5)" in sql and "LEAD(close, 20)" in sql and "%(symbols)s" in sql
-    assert "sw20" in sql and "bh5" in sql

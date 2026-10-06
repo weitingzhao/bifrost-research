@@ -145,6 +145,9 @@ def _paired_legs(s: dict[str, Any], spy: ChainStore) -> list[LegSpec] | str:
         target_dte=dte,
         min_dte=1,
         wing_width_pct=float(sel.get("wing_width_pct", 0.05)),
+        # The paired SPY leg matches the suggestion's own delta; the ledger
+        # judges delta itself, not the simulator's guard.
+        delta_tolerance=None,
     )
     pos = _open(spy, as_of, cfg)
     if isinstance(pos, str):

@@ -103,7 +103,10 @@ def event_query(body: EventQueryBody) -> dict[str, Any]:
         if not isinstance(off, (int, float)) or off < 0:
             raise HTTPException(
                 status_code=400,
-                detail="an indicator or Pine signal fires on a session's close: entry_offset_days must be 0 or later",
+                detail=(
+                    "an indicator or Pine signal fires on a session's close: entry_offset_days counts from "
+                    "the next session (0 = the session after the signal) and must be 0 or later"
+                ),
             )
     event_def = EventDef(kind=body.event_def.kind, params=body.event_def.params or {})
     fill_cfg = (

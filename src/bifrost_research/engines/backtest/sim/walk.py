@@ -19,13 +19,12 @@ D10 BLOCKED — historical replay only; nothing here can reach an order.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Literal, Mapping
 
 from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
-from bifrost_research.engines.backtest.sim.chain import ChainStore, OptBar
+from bifrost_research.engines.backtest.sim.chain import ChainStore, OptBar, _parse_occ
 from bifrost_research.engines.backtest.sim.engine import _close, _Leg, _manage, _margin, _Position
 from bifrost_research.engines.backtest.sim.rules import PriceField, SimConfig, fill_price
 from bifrost_research.repositories.listing_lineage import live_label, stock_clause
@@ -166,18 +165,6 @@ def load_leg_store(conn: Any, symbol: str, tickers: Iterable[str], start: date, 
     return ChainStore(sym, spot, bars)
 
 
-# O:SPY261120P00765000 → expiry 2026-11-20, right P, strike 765.000
-_OCC = re.compile(r"^O:[A-Z.]+(\d{6})([CP])(\d{8})$")
-
-
-def _parse_occ(ticker: str) -> tuple[date, str, float] | None:
-    m = _OCC.match(ticker)
-    if not m:
-        return None
-    ymd, right, strike = m.groups()
-    return date(2000 + int(ymd[:2]), int(ymd[2:4]), int(ymd[4:6])), right, int(strike) / 1000.0
-
-
 def snapshot_day_bars(
     conn: Any,
     underlying: str,
@@ -234,6 +221,7 @@ def snapshot_day_bars(
                 close=float(r[2]),
                 vwap=float(r[3]) if r[3] is not None else None,
                 volume=int(r[4]) if r[4] is not None else None,
+                source="snapshot",
             )
     return list(out.values())
 

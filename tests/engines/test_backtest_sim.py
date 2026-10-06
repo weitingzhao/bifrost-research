@@ -42,9 +42,11 @@ def _store(
             if dte < 0 or dte > 90:
                 continue
             t = max(dte, 0.5) / 365.0
-            for k in range(60, 145, 5):
+            # 2.5-wide strikes: close enough that a 20-delta short sits within
+            # the simulator's 0.05 delta tolerance.
+            for k in (x / 2 for x in range(120, 290, 5)):
                 for right in ("C", "P"):
-                    ticker = f"O:X{exp:%y%m%d}{right}{k:08d}"
+                    ticker = f"O:X{exp:%y%m%d}{right}{int(k * 1000):08d}"
                     if drop(ticker, d):
                         continue
                     px = bs_price(s, float(k), t, iv, right=right)
@@ -225,3 +227,129 @@ def test_event_entry_opens_one_session_before_each_event() -> None:
     cfg = SimConfig(structure="short_put", target_dte=45, entry_offset_sessions=-1)
     trades, _curve, _skips = _run_symbol(store, days[0], days[100], cfg, events=events)
     assert sorted(t["entry_date"] for t in trades) == [days[19].isoformat(), days[70].isoformat()]
+
+
+# -- 0.175.0: entry timing, delta guard, snapshot fill -----------------------------
+
+
+def test_a_signal_opens_on_the_session_after_it_other_events_on_the_session_itself() -> None:
+    from bifrost_research.engines.backtest.sim.engine import _event_entries, _run_symbol
+
+    store = _store(lambda i: 100.0, n=120)
+    days = store.sessions
+    # A Friday signal opens on Monday; a signal dated between sessions opens on the next one.
+    assert _event_entries(days, [days[20]], 0, after_event=True) == {days[21]}
+    assert _event_entries(days, [days[20]], 1, after_event=True) == {days[22]}
+    assert days[19].weekday() == 4
+    assert _event_entries(days, [days[19] + timedelta(days=1)], 0, after_event=True) == {days[20]}
+    assert _event_entries(days, [days[20]], 0) == {days[20]}
+    pine = SimConfig(structure="short_put", target_dte=45, entry_event={"kind": "pine_signal"}, entry_offset_sessions=0)
+    trades, _c, _s = _run_symbol(store, days[0], days[100], pine, events=[days[20]])
+    assert [t["entry_date"] for t in trades] == [days[21].isoformat()]
+    leg = trades[0]["legs"][0]
+    # Filled at the next session's own print, not the signal session's.
+    assert leg["entry_mark"] == store.bar(leg["ticker"], days[21]).price("vwap")
+    earn = SimConfig(structure="short_put", target_dte=45, entry_event={"kind": "earnings"}, entry_offset_sessions=0)
+    trades, _c, _s = _run_symbol(store, days[0], days[100], earn, events=[days[20]])
+    assert [t["entry_date"] for t in trades] == [days[20].isoformat()]
+
+
+def test_a_run_says_which_entry_timing_it_used() -> None:
+    res = _run(_store(lambda i: 100.0))
+    assert res.summary["entry_timing"]["version"] == 2
+    assert res.summary["entry_timing"]["anchor"] == "schedule"
+    assert res.params["entry_timing_version"] == 2
+    assert res.summary["snapshot_fill"]["bars_added"] == 0  # injected store, no conn
+
+
+def test_an_entry_the_chain_has_no_strike_for_is_skipped_not_opened_off_target() -> None:
+    # Only 85 and 100 strikes: the nearest to a 20-delta put is far off it.
+    full = _store(lambda i: 100.0)
+    bars = [b for by in full._by_ticker.values() for b in by.values() if b.strike in (85.0, 100.0)]
+    store = ChainStore("X", full.spot, bars)
+    res = _run(store)
+    assert res.trades == [] and res.summary["skipped_entries"] == {"delta_off_target": 1}
+    loose = _run(ChainStore("X", full.spot, bars), delta_tolerance=None)
+    assert len(loose.trades) == 1
+
+
+class _SnapConn:
+    """option_snapshot rows for a store whose option_daily kept only near-ATM strikes."""
+
+    def __init__(self, bars: list[OptBar]) -> None:
+        from datetime import datetime, timezone
+
+        self._ts = lambda d: datetime(d.year, d.month, d.day, 20, 0, tzinfo=timezone.utc)  # 16:00 ET
+        self.bars = bars
+        self.fill_queries: list[tuple] = []
+        self._rows: list[tuple] = []
+
+    def cursor(self) -> "_SnapConn":
+        return self
+
+    def __enter__(self) -> "_SnapConn":
+        return self
+
+    def __exit__(self, *a: object) -> None:
+        return None
+
+    def rollback(self) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple) -> None:
+        if "min(snapshot_ts)" in sql:
+            self._rows = [(self._ts(min(b.bar_date for b in self.bars)),)]
+            return
+        self.fill_queries.append(params)
+        lo, hi = params[1], params[2]
+        wanted = set(params[3]) if len(params) > 3 else None
+        self._rows = [
+            (b.ticker, self._ts(b.bar_date), b.close, b.vwap, b.volume)
+            for b in self.bars
+            if lo <= self._ts(b.bar_date) < hi and (wanted is None or b.ticker in wanted)
+        ]
+
+    def fetchone(self) -> tuple:
+        return self._rows[0]
+
+    def fetchall(self) -> list[tuple]:
+        return self._rows
+
+
+def test_the_snapshot_fills_the_strikes_option_daily_dropped_and_marks_the_held_leg() -> None:
+    from bifrost_research.engines.backtest.sim.engine import _run_symbol
+
+    full = _store(lambda i: 100.0, n=80)
+    occ = lambda b: f"O:X{b.expiry:%y%m%d}{b.right}{int(b.strike * 1000):08d}"  # noqa: E731
+    every = [
+        OptBar(occ(b), b.expiry, b.strike, b.right, b.bar_date, b.close, b.vwap, b.volume)
+        for by in full._by_ticker.values()
+        for b in by.values()
+    ]
+    near_atm = [b for b in every if 95.0 <= b.strike <= 105.0]
+    store = ChainStore("X", full.spot, near_atm)
+    conn = _SnapConn(every)
+    store.attach_snapshot_fill(conn, min_dte=7, max_dte=104)
+    cfg = SimConfig(structure="short_put", target_dte=45, entry_every_sessions=200, profit_take_pct=None, stop_loss_mult=None, dte_exit=None)
+    days = store.sessions
+    trades, _c, skips = _run_symbol(store, days[0], days[10], cfg)
+    assert skips == {}
+    leg = trades[0]["legs"][0]
+    assert leg["source"] == "snapshot" and leg["strike"] < 95.0
+    assert abs(abs(leg["entry_delta"]) - 0.20) <= 0.05
+    assert leg["stale_sessions"] == 0  # marked every session from the snapshot, not carried
+    assert trades[0]["exit_reason"] in ("expiry", "expiry_itm")
+    stats = store.fill_stats()
+    assert stats["active"] and stats["bars_added"] > 0
+    # One whole-chain read for the entry session, then held-contract reads only.
+    assert sum(1 for p in conn.fill_queries if len(p) == 3) == 1
+
+
+def test_no_snapshot_history_means_no_fill() -> None:
+    class _Empty(_SnapConn):
+        def execute(self, sql: str, params: tuple) -> None:
+            self._rows = [(None,)]
+
+    store = _store(lambda i: 100.0, n=20)
+    store.attach_snapshot_fill(_Empty([]), min_dte=7, max_dte=104)
+    assert store.fill_stats()["active"] is False

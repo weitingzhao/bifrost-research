@@ -26,7 +26,13 @@ class SimConfig:
     Entry: every ``entry_every_sessions`` by default. With ``entry_event`` (an
     ``EventDef`` dict such as ``{"kind": "earnings"}``) a position opens
     ``entry_offset_sessions`` from each event instead — the event backtest's
-    trigger with the simulator managing the position (W2, 0.171.0).
+    trigger with the simulator managing the position (W2, 0.171.0). For an
+    indicator or Pine signal, offset 0 is the session after the signal (0.175.0).
+
+    ``delta_tolerance``: an entry whose nearest short strike is further than
+    this from ``short_delta`` (absolute delta) is skipped as
+    ``delta_off_target``. 0.05 is the suggestion ledger's DELTA_TOLERANCE.
+    None accepts whatever strike is nearest.
     """
 
     structure: str = "short_put"
@@ -43,6 +49,7 @@ class SimConfig:
     stop_loss_mult: float | None = 2.0
     dte_exit: int | None = 21
     max_stale_sessions: int | None = 3
+    delta_tolerance: float | None = 0.05
     price_field: PriceField = "vwap"
     slippage_scale: float = 1.0
     commission_per_contract: float = 0.65

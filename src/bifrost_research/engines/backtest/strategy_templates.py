@@ -406,17 +406,19 @@ def build_legs(name: str, **kwargs: object) -> list[LegSpec]:
 
 
 def resolve_trading_window(
-    leg: LegSpec, event_date: date, sessions: Sequence[date]
+    leg: LegSpec, event_date: date, sessions: Sequence[date], *, after_event: bool = False
 ) -> tuple[date, date] | None:
     """(entry_date, exit_date) for ``leg``, counting sessions from the event.
 
     ``sessions`` are the underlying's trading days, ascending, around the
-    event. Offset 0 is the first session on or after ``event_date``. Returns
-    None when the window runs off either end of ``sessions`` — an event too
-    recent to have an exit yet must be skipped, not priced on the last bar.
+    event. Offset 0 is the first session on or after ``event_date`` — or, with
+    ``after_event`` (a signal computed from that session's close, 0.175.0),
+    the first session strictly after it. Returns None when the window runs off
+    either end of ``sessions`` — an event too recent to have an exit yet must
+    be skipped, not priced on the last bar.
     """
     days = sorted(set(sessions))
-    anchor = next((i for i, d in enumerate(days) if d >= event_date), None)
+    anchor = next((i for i, d in enumerate(days) if (d > event_date if after_event else d >= event_date)), None)
     if anchor is None:
         return None
     lo, hi = sorted((int(leg.entry_offset_days), int(leg.exit_offset_days)))

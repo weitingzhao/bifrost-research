@@ -143,6 +143,98 @@ def listing_end(conn: Any, symbol: str, *, as_of: date) -> date | None:
     return last_bar
 
 
+def in_lineage(conn: Any, symbol: str, d: date) -> bool:
+    """Whether a row under ``symbol`` on ``d`` belongs to the company ``live_label(symbol)``.
+
+    A dead label's rows count up to the handover; a live label that was
+    reused (ECHO) counts only from it. Every other row counts.
+    """
+    sym = str(symbol or "").strip().upper()
+    alive = live_label(sym)
+    dead = _PREDECESSOR.get(alive)
+    if dead is None or sym not in (dead, alive):
+        return True
+    cut = _handover(conn, dead, alive)
+    if cut is None:
+        return sym == alive
+    return d < cut if sym == dead else d >= cut
+
+
+def listing_ends(conn: Any, symbols: list[str], *, as_of: date) -> dict[str, date]:
+    """``listing_end`` for many symbols in one read: live label → last close of each retired one."""
+    syms = sorted({live_label(s) for s in symbols if str(s or "").strip()})
+    if not syms:
+        return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT t.symbol,
+                       (SELECT max(d.bar_date) FROM raw_market.stock_daily AS d
+                         WHERE d.symbol = t.symbol AND d.close > 0) AS last_bar
+                FROM (SELECT DISTINCT ON (symbol) symbol, active
+                        FROM raw_market.ticker
+                       WHERE symbol = ANY(%s::text[])
+                       ORDER BY symbol) AS t
+                WHERE t.active IS FALSE
+                """,
+                (syms,),
+            )
+            rows = cur.fetchall() or []
+    except Exception as exc:  # noqa: BLE001 — unknown reads as still trading
+        logger.debug("listing_ends lookup failed: %s", exc)
+        _rollback(conn)
+        return {}
+    floor = liveness_floor(as_of)
+    out: dict[str, date] = {}
+    for r in rows:
+        sym, last_bar = (r.get("symbol"), r.get("last_bar")) if isinstance(r, Mapping) else (r[0], r[1])
+        if isinstance(last_bar, datetime):
+            last_bar = last_bar.date()
+        if isinstance(last_bar, date) and last_bar <= floor:
+            out[str(sym)] = last_bar
+    return out
+
+
+def spliced_bars_sql(
+    conn: Any, symbols: list[str], *, symbol_col: str = "symbol", date_col: str = "bar_date"
+) -> tuple[str, str, dict[str, Any], list[str]]:
+    """``stock_clause`` for many companies at once, with named placeholders.
+
+    Returns ``(label_expr, keep_clause, params, tickers)``: select from
+    ``raw_market.stock_daily`` where ``symbol = ANY(tickers)`` and
+    ``keep_clause``, and read ``label_expr`` as the company's live label. A
+    renamed company's dead-label bars before the handover count as its own;
+    its live label's bars before the handover (a reused ticker) do not.
+    ``params`` (keys ``lin_*``) go into the caller's ``%(name)s`` query.
+    ``symbol_col`` / ``date_col`` are column references, not input.
+    """
+    live = sorted({live_label(s) for s in symbols if str(s or "").strip()})
+    tickers = sorted({t for sym in live for t in labels(sym)})
+    cases: list[str] = []
+    drops: list[str] = []
+    params: dict[str, Any] = {}
+    for i, sym in enumerate(live):
+        dead = _PREDECESSOR.get(sym)
+        if dead is None:
+            continue
+        cut = _handover(conn, dead, sym)
+        params[f"lin_dead_{i}"], params[f"lin_live_{i}"] = dead, sym
+        if cut is None:
+            # No handover found: the live label alone, as stock_clause reads it.
+            drops.append(f"{symbol_col} = %(lin_dead_{i})s")
+            continue
+        params[f"lin_cut_{i}"] = cut
+        cases.append(f"WHEN {symbol_col} = %(lin_dead_{i})s THEN %(lin_live_{i})s")
+        drops.append(
+            f"({symbol_col} = %(lin_dead_{i})s AND {date_col} >= %(lin_cut_{i})s)"
+            f" OR ({symbol_col} = %(lin_live_{i})s AND {date_col} < %(lin_cut_{i})s)"
+        )
+    label_expr = f"CASE {' '.join(cases)} ELSE {symbol_col} END" if cases else symbol_col
+    keep_clause = f"NOT ({' OR '.join(drops)})" if drops else "TRUE"
+    return label_expr, keep_clause, params, tickers
+
+
 @dataclass(frozen=True)
 class ForwardLeg:
     """Entry and exit closes of a forward window, in sessions.
@@ -198,8 +290,11 @@ def forward_leg(conn: Any, symbol: str, as_of: date, horizon: int, *, today: dat
 __all__ = [
     "ForwardLeg",
     "forward_leg",
+    "in_lineage",
     "labels",
     "listing_end",
+    "listing_ends",
     "live_label",
+    "spliced_bars_sql",
     "stock_clause",
 ]

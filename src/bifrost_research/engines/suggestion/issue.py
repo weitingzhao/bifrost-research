@@ -59,6 +59,9 @@ def _sim_config(spec: dict[str, Any]) -> SimConfig:
         stop_loss_mult=spec.get("stop_loss_mult"),
         dte_exit=spec.get("exit_dte"),
         max_stale_sessions=MAX_STALE_SESSIONS,
+        # The ledger applies its own DELTA_TOLERANCE below and reports
+        # ``delta_out_of_band``; the simulator's guard stays out of its way.
+        delta_tolerance=None,
     )
 
 

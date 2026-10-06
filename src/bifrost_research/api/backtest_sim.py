@@ -50,7 +50,8 @@ class SimBody(BaseModel):
     quantity: int = Field(1, ge=1, le=100)
     entry_every_sessions: int = Field(5, ge=1, le=60)
     # An event in place of the schedule: open ``entry_offset_sessions`` from each
-    # one and let the simulator manage it (W2, 0.171.0).
+    # one and let the simulator manage it (W2, 0.171.0). For an indicator or Pine
+    # signal, 0 is the session after the signal (0.175.0, entry_timing v2).
     entry_event: SimEntryEvent | None = None
     entry_offset_sessions: int = Field(-1, ge=-10, le=10)
     max_open_per_symbol: int = Field(3, ge=1, le=20)
@@ -58,6 +59,9 @@ class SimBody(BaseModel):
     stop_loss_mult: float | None = Field(2.0, gt=0.0, le=20.0)
     dte_exit: int | None = Field(21, ge=0, le=80)
     max_stale_sessions: int | None = Field(3, ge=1, le=20)
+    # An entry whose picked short delta is further than this from short_delta is
+    # skipped (``delta_off_target``), not opened at the wrong strike. None turns it off.
+    delta_tolerance: float | None = Field(0.05, gt=0.0, le=0.5)
     price_field: Literal["vwap", "close"] = "vwap"
     slippage_scale: float = Field(1.0, ge=0.0, le=10.0)
     commission_per_contract: float = Field(0.65, ge=0.0, le=10.0)
@@ -76,7 +80,10 @@ class SimBody(BaseModel):
             raise ValueError("window longer than five years")
         self.start, self.end = start, end
         if self.entry_event and self.entry_event.kind in ("indicator_signal", "pine_signal") and self.entry_offset_sessions < 0:
-            raise ValueError("an indicator or Pine signal fires on a session's close: entry_offset_sessions must be 0 or later")
+            raise ValueError(
+                "an indicator or Pine signal fires on a session's close: entry_offset_sessions counts from "
+                "the next session (0 = the session after the signal) and must be 0 or later"
+            )
         return self
 
 
@@ -104,6 +111,7 @@ def simulate(body: SimBody) -> dict[str, Any]:
         stop_loss_mult=body.stop_loss_mult,
         dte_exit=body.dte_exit,
         max_stale_sessions=body.max_stale_sessions,
+        delta_tolerance=body.delta_tolerance,
         price_field=body.price_field,
         slippage_scale=body.slippage_scale,
         commission_per_contract=body.commission_per_contract,

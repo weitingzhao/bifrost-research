@@ -748,3 +748,27 @@ def test_short_strangle_30d_is_registered() -> None:
         ("sell", "P", 0.16),
     ]
 
+
+
+def test_signal_windows_count_from_the_session_after_the_signal() -> None:
+    from bifrost_research.engines.backtest.event_defs import entry_after_event, entry_timing
+    from bifrost_research.engines.backtest.event_query import _clip_to_listing_end
+    from bifrost_research.engines.backtest.strategy_templates import LegSpec, resolve_trading_window
+
+    days = [date(2026, 3, 2) + timedelta(days=i) for i in range(5)]  # Mon..Fri
+    leg = LegSpec(kind="stock", side="buy", entry_offset_days=0, exit_offset_days=2)
+    assert resolve_trading_window(leg, days[1], days) == (days[1], days[3])
+    assert resolve_trading_window(leg, days[1], days, after_event=True) == (days[2], days[4])
+    # A Friday signal with no later session in view has nothing to enter on.
+    assert resolve_trading_window(leg, days[4], days, after_event=True) is None
+    assert _clip_to_listing_end(leg, days[2], days, after_event=True) == (days[3], days[4])
+    assert entry_after_event("pine_signal") and entry_after_event("indicator_signal")
+    assert not entry_after_event("earnings") and not entry_after_event("opex")
+    assert entry_timing("pine_signal", "close")["anchor"] == "session_after_signal"
+    assert entry_timing("earnings", "close")["anchor"] == "event_session"
+    assert entry_timing(None, "vwap") == {
+        "version": 2,
+        "anchor": "schedule",
+        "fill": "vwap",
+        "note": "opens on the schedule's sessions; no event to look ahead of",
+    }

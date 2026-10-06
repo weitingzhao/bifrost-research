@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import bisect
 import logging
+import re
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Literal, Mapping
 
 from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
@@ -32,6 +34,9 @@ class OptBar:
     close: float
     vwap: float | None
     volume: int | None
+    # ``daily`` (raw_market.option_daily) or ``snapshot`` (the 16:00 ET
+    # option_snapshot's day bar, filled in where option_daily has none).
+    source: str = "daily"
 
     def price(self, field: str = "vwap") -> float:
         if field == "vwap" and self.vwap is not None and self.vwap > 0:
@@ -49,6 +54,33 @@ def _d(v: Any) -> date | None:
 
 def _col(row: Any, i: int, key: str) -> Any:
     return row.get(key) if isinstance(row, Mapping) else row[i]
+
+
+# O:SPY261120P00765000 → expiry 2026-11-20, right P, strike 765.000
+_OCC = re.compile(r"^O:[A-Z.]+(\d{6})([CP])(\d{8})$")
+_ET = ZoneInfo("America/New_York")
+
+
+def _parse_occ(ticker: str) -> tuple[date, str, float] | None:
+    m = _OCC.match(ticker)
+    if not m:
+        return None
+    ymd, right, strike = m.groups()
+    return date(2000 + int(ymd[:2]), int(ymd[2:4]), int(ymd[4:6])), right, int(strike) / 1000.0
+
+
+@dataclass
+class _SnapshotFill:
+    """Where and how far the lazy 16:00 snapshot fill reaches (see ``attach_snapshot_fill``)."""
+
+    conn: Any
+    since: date
+    min_dte: int
+    max_dte: int
+    chain_days: set[date]
+    tried: set[tuple[str, date]]
+    sessions_queried: int = 0
+    bars_added: int = 0
 
 
 class ChainStore:
@@ -73,6 +105,7 @@ class ChainStore:
         self._rate_days = sorted(rates or {})
         self._rates = dict(rates or {})
         self._greeks: dict[tuple[str, date, str], tuple[float, float] | None] = {}
+        self._fill: _SnapshotFill | None = None
 
     # -- loading ----------------------------------------------------------------
 
@@ -161,7 +194,136 @@ class ChainStore:
     # -- reads ------------------------------------------------------------------
 
     def chain_on(self, d: date, right: str) -> list[OptBar]:
+        self._fill_chain(d)
         return self._by_day.get((d, right), [])
+
+    # -- 16:00 snapshot fill ----------------------------------------------------
+
+    def attach_snapshot_fill(self, conn: Any, *, min_dte: int, max_dte: int) -> None:
+        """Fill sessions ``option_daily`` thinned out from the 16:00 ET option snapshot.
+
+        Since mid-August 2026 ``option_daily`` keeps about ten strikes either
+        side of spot per expiry, so a 20-delta put 45 days out is often not in
+        it and the delta pick drifts to the nearest strike that is. The
+        resident names' 16:00 snapshot carries the whole chain, and its day
+        close / vwap / volume equal ``option_daily``'s row wherever both exist
+        (the suggestion ledger's fill, 0.174.1). Lazy, so a year-long run reads
+        only what it uses: the whole chain (expiries ``min_dte``..``max_dte``
+        out) on a session the run opens on, and the held contracts' bars on a
+        session it marks them. ``option_daily`` wins wherever it has the bar.
+        No-op before the symbol's first snapshot.
+        """
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT min(snapshot_ts) FROM raw_market.option_snapshot WHERE underlying = %s",
+                    (self.symbol,),
+                )
+                row = cur.fetchone()
+        except Exception as exc:  # noqa: BLE001 — no snapshot table reads as no fill
+            logger.info("option_snapshot unavailable for %s: %s", self.symbol, str(exc)[:120])
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        first = _col(row, 0, "min") if row else None
+        if first is None:
+            return
+        since = first.astimezone(_ET).date() if isinstance(first, datetime) else _d(first)
+        if since is None:
+            return
+        self._fill = _SnapshotFill(conn, since, int(min_dte), int(max_dte), set(), set())
+
+    def fill_stats(self) -> dict[str, Any]:
+        f = self._fill
+        if f is None:
+            return {"active": False, "since": None, "sessions_queried": 0, "bars_added": 0}
+        return {
+            "active": True,
+            "since": f.since.isoformat(),
+            "sessions_queried": f.sessions_queried,
+            "bars_added": f.bars_added,
+        }
+
+    def prefetch(self, d: date, tickers: list[str]) -> None:
+        """Make ``bar(t, d)`` see the snapshot's bar for each held ``t`` option_daily lacks."""
+        f = self._fill
+        if f is None or d < f.since or d in f.chain_days:
+            return
+        missing = [t for t in tickers if self.bar(t, d) is None and (t, d) not in f.tried]
+        if not missing:
+            return
+        f.tried.update((t, d) for t in missing)
+        self._add_snapshot(d, missing)
+
+    def _fill_chain(self, d: date) -> None:
+        f = self._fill
+        if f is None or d < f.since or d in f.chain_days:
+            return
+        f.chain_days.add(d)
+        self._add_snapshot(d, None)
+
+    def _add_snapshot(self, d: date, tickers: list[str] | None) -> None:
+        f = self._fill
+        assert f is not None
+        lo = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+        sql = """
+            SELECT option_ticker, snapshot_ts, day_close, day_vwap, day_volume
+            FROM raw_market.option_snapshot
+            WHERE underlying = %s
+              AND snapshot_ts >= %s AND snapshot_ts < %s
+              AND (snapshot_ts AT TIME ZONE 'America/New_York')::time >= '16:00'
+              AND day_close > 0
+        """
+        # 16:00–23:59 ET on ``d`` is 20:00 UTC on ``d`` to 05:00 UTC the next day.
+        params: list[Any] = [self.symbol, lo, lo + timedelta(hours=36)]
+        if tickers is not None:
+            sql += " AND option_ticker = ANY(%s)"
+            params.append(list(tickers))
+        try:
+            with f.conn.cursor() as cur:
+                cur.execute(sql, tuple(params))
+                rows = cur.fetchall() or []
+        except Exception as exc:  # noqa: BLE001 — a failed fill leaves option_daily's chain
+            logger.info("snapshot fill failed for %s %s: %s", self.symbol, d, str(exc)[:120])
+            try:
+                f.conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        f.sessions_queried += 1
+        spot = self.spot.get(d)
+        for r in rows:
+            ticker, ts = str(_col(r, 0, "option_ticker")), _col(r, 1, "snapshot_ts")
+            day = ts.astimezone(_ET).date() if isinstance(ts, datetime) else _d(ts)
+            if day != d or self.bar(ticker, d) is not None:
+                continue
+            parsed = _parse_occ(ticker)
+            if parsed is None:
+                continue
+            expiry, right, strike = parsed
+            if tickers is None:
+                dte = (expiry - d).days
+                if dte < f.min_dte or dte > f.max_dte:
+                    continue
+                if spot and abs(strike / spot - 1.0) > 0.5:
+                    continue
+            vwap, vol = _col(r, 3, "day_vwap"), _col(r, 4, "day_volume")
+            b = OptBar(
+                ticker=ticker,
+                expiry=expiry,
+                strike=strike,
+                right=right,  # type: ignore[arg-type]
+                bar_date=d,
+                close=float(_col(r, 2, "day_close")),
+                vwap=float(vwap) if vwap is not None else None,
+                volume=int(vol) if vol is not None else None,
+                source="snapshot",
+            )
+            self._by_day.setdefault((d, b.right), []).append(b)
+            self._by_ticker.setdefault(ticker, {})[d] = b
+            f.bars_added += 1
 
     def bar(self, ticker: str, d: date) -> OptBar | None:
         return self._by_ticker.get(ticker, {}).get(d)

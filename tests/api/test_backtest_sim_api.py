@@ -164,3 +164,17 @@ def test_detail_404_for_unknown_run(client: TestClient, monkeypatch: pytest.Monk
     monkeypatch.setattr(f"{_MOD}.repo.get_run", lambda conn, rid: None)
     resp = client.get("/research/backtest/sim/bt_nope/detail")
     assert resp.status_code == 404, resp.text
+
+
+def test_delta_tolerance_reaches_the_simulator_and_a_signal_offset_below_zero_is_refused(client: TestClient, env: _Env) -> None:
+    resp = client.post(_PATH, json={**_BODY, "delta_tolerance": 0.03})
+    assert resp.status_code == 200, resp.text
+    assert env.sims[0][3].delta_tolerance == 0.03
+    assert env.sims[0][3].to_dict()["delta_tolerance"] == 0.03
+    resp = client.post(_PATH, json={**_BODY, "delta_tolerance": None})
+    assert resp.status_code == 200 and env.sims[1][3].delta_tolerance is None
+    pine = {"kind": "pine_signal", "params": {"script": "supertrend", "side": "buy"}}
+    resp = client.post(_PATH, json={**_BODY, "entry_event": pine, "entry_offset_sessions": -1})
+    assert resp.status_code == 422 and "0 = the session after the signal" in resp.text
+    resp = client.post(_PATH, json={**_BODY, "entry_event": pine, "entry_offset_sessions": 0})
+    assert resp.status_code == 200, resp.text

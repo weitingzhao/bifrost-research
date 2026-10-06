@@ -35,6 +35,12 @@ Notes on data source gaps (Wave RS-C1):
 - Offsets count trading sessions (0.169.0); an option leg is opened on one
   contract and closed on that same contract, or settled at intrinsic if the
   exit reaches its expiry.
+- Entry timing (0.175.0, ``summary.entry_timing`` version 2): for a signal
+  event (``indicator_signal`` / ``pine_signal``) offset 0 is the session
+  *after* the signal, because the signal only exists once its session has
+  closed; every leg is priced at the entry session's close. Other kinds keep
+  offset 0 = the first session on or after the event. Runs stored before
+  0.175.0 carry no ``entry_timing`` and read offset 0 as the signal session.
 """
 
 from __future__ import annotations
@@ -48,7 +54,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 from bifrost_research.engines.backtest.catalog import evaluation
-from bifrost_research.engines.backtest.event_defs import EventDef
+from bifrost_research.engines.backtest.event_defs import EventDef, entry_after_event, entry_timing
 from bifrost_research.engines.backtest.strategy_templates import (
     LegSpec,
     build_legs,
@@ -1205,14 +1211,18 @@ def _summarize(runs: Sequence[EventRun]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _clip_to_listing_end(leg: LegSpec, event_date: date, sessions: Sequence[date]) -> tuple[date, date] | None:
+def _clip_to_listing_end(
+    leg: LegSpec, event_date: date, sessions: Sequence[date], *, after_event: bool = False
+) -> tuple[date, date] | None:
     """The leg's window with its exit pulled back to the last session.
 
     Only for a delisted underlying (B7): there is no later price, so the last
     close is the exit. The entry still has to fall inside the listing's life.
+    ``after_event`` anchors on the session after the event, as in
+    ``resolve_trading_window``.
     """
     days = sorted(set(sessions))
-    anchor = next((i for i, d in enumerate(days) if d >= event_date), None)
+    anchor = next((i for i, d in enumerate(days) if (d > event_date if after_event else d >= event_date)), None)
     if anchor is None:
         return None
     lo, hi = sorted((int(leg.entry_offset_days), int(leg.exit_offset_days)))
@@ -1255,6 +1265,9 @@ def run_event_query(
         resolved = resolve_events(conn, event_def, lookback_years, today=today)
         legs = iter_legs(build_legs(template_name, **template_kwargs))
         direction_sign = _direction_sign(legs)
+        # A signal is computed from its session's close: offsets count from the
+        # next session, so offset 0 cannot fill on the close that made it (0.175.0).
+        after_event = entry_after_event(event_def.kind)
 
         runs: list[EventRun] = []
         skipped = 0
@@ -1267,7 +1280,7 @@ def run_event_query(
         lo_off = min(min(int(lg.entry_offset_days), int(lg.exit_offset_days)) for lg in legs)
         hi_off = max(max(int(lg.entry_offset_days), int(lg.exit_offset_days)) for lg in legs)
         pad_before = int(abs(min(lo_off, 0)) * 1.5) + 10
-        pad_after = int(max(hi_off, 0) * 1.5) + 10
+        pad_after = int((max(hi_off, 0) + (1 if after_event else 0)) * 1.5) + 10
         as_of = today or date.today()
         delisted_exits = 0
         for raw_symbol, event_date in resolved.events[: max(1, int(max_events))]:
@@ -1291,14 +1304,14 @@ def run_event_query(
             delisted_on: date | None = None
             ended_checked = False
             for leg in legs:
-                window = resolve_trading_window(leg, event_date, sessions)
+                window = resolve_trading_window(leg, event_date, sessions, after_event=after_event)
                 if window is None and not ended_checked:
                     ended_checked = True
                     end = listing_end(conn, symbol, as_of=as_of)
                     if end is not None and sessions and sessions[-1] == end:
                         delisted_on = end
                 if window is None and delisted_on is not None:
-                    window = _clip_to_listing_end(leg, event_date, sessions)
+                    window = _clip_to_listing_end(leg, event_date, sessions, after_event=after_event)
                 if window is None:
                     # The exit has not happened yet (or the history starts after
                     # the entry): there is nothing honest to price it at.
@@ -1372,6 +1385,7 @@ def run_event_query(
     summary["skipped_incomplete_window"] = skipped_incomplete_window
     summary["delisted_exits"] = delisted_exits
     summary["offset_unit"] = "trading_sessions"
+    summary["entry_timing"] = entry_timing(event_def.kind, "close")
     summary["event_source"] = resolved.source
     summary["event_source_errors"] = list(resolved.errors)
     summary["evaluation"] = evaluation("event_backtest")

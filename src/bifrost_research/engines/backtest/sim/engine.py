@@ -10,6 +10,19 @@ tiered slippage; expiry settles at intrinsic with no slippage or commission.
 Ordering note: a rule is checked on the session's close and filled at that
 same close. Real fills come later than the signal, so read the stop and profit
 figures as optimistic by up to a session's move.
+
+Entry timing (0.175.0, ``summary.entry_timing`` version 2): a scheduled entry
+opens on its session at that session's ``price_field``. An event entry opens
+``entry_offset_sessions`` from the event; for an indicator or Pine signal,
+which exists only once its session has closed, offset 0 is the *next* session
+(before 0.175.0 it was the signal session itself, filled at that session's
+vwap — a price from before the signal existed).
+
+Strike pick (0.175.0): the short leg is the contract nearest ``short_delta``
+on the chosen expiry, from ``option_daily`` plus the 16:00 option snapshot
+where ``option_daily`` has thinned out (``ChainStore.attach_snapshot_fill``).
+If even the nearest is further than ``delta_tolerance`` from the target, the
+entry is skipped as ``delta_off_target`` rather than opened at the wrong strike.
 """
 
 from __future__ import annotations
@@ -24,6 +37,7 @@ from datetime import date, timedelta
 from typing import Any, Sequence
 
 from bifrost_research.engines.backtest.catalog import evaluation
+from bifrost_research.engines.backtest.event_defs import ENTRY_TIMING_VERSION, entry_after_event, entry_timing
 from bifrost_research.engines.backtest.sim.chain import ChainStore, OptBar
 from bifrost_research.engines.backtest.sim.rules import (
     SimConfig,
@@ -56,6 +70,7 @@ class _Leg:
     entry_iv: float | None = None
     entry_delta: float | None = None
     stale: int = 0
+    source: str = "daily"
 
     @property
     def sign(self) -> int:
@@ -120,6 +135,10 @@ def _pick_by_delta(
             best = (score, b, g)
     if best is None:
         return "no_iv"
+    if cfg.delta_tolerance is not None and best[0] > cfg.delta_tolerance:
+        # The chain has no strike near the target: opening the nearest one would
+        # run a different trade under this config's name.
+        return "delta_off_target"
     return best[1], best[2]
 
 
@@ -192,6 +211,7 @@ def _open(store: ChainStore, d: date, cfg: SimConfig) -> _Position | str:
                 mark=mark,
                 entry_iv=iv,
                 entry_delta=delta,
+                source=bar.source,
             )
         )
     assert expiry is not None
@@ -243,6 +263,7 @@ def _close(pos: _Position, d: date, reason: str, cfg: SimConfig, *, settle_spot:
                 "entry_iv": round(lg.entry_iv, 4) if lg.entry_iv is not None else None,
                 "entry_delta": round(lg.entry_delta, 4) if lg.entry_delta is not None else None,
                 "stale_sessions": lg.stale,
+                "source": lg.source,
             }
         )
     pnl = exit_value - pos.entry_value() - commission
@@ -282,6 +303,7 @@ def _manage(pos: _Position, store: ChainStore, d: date, cfg: SimConfig) -> dict[
             return None
         return _close(pos, pos.expiry, "expiry", cfg, settle_spot=spot)
     spot = store.spot.get(d)
+    store.prefetch(d, [lg.ticker for lg in pos.legs])
     for lg in pos.legs:
         b = store.bar(lg.ticker, d)
         if b is not None:
@@ -313,11 +335,18 @@ def _manage(pos: _Position, store: ChainStore, d: date, cfg: SimConfig) -> dict[
 # -- one symbol -------------------------------------------------------------------
 
 
-def _event_entries(sessions: Sequence[date], events: Sequence[date], offset: int) -> set[date]:
-    """The session ``offset`` from each event; offset 0 is the first session on or after it."""
+def _event_entries(
+    sessions: Sequence[date], events: Sequence[date], offset: int, *, after_event: bool = False
+) -> set[date]:
+    """The session ``offset`` from each event.
+
+    Offset 0 is the first session on or after the event — or, with
+    ``after_event`` (a signal computed from that session's close), the first
+    session strictly after it.
+    """
     out: set[date] = set()
     for ev in events:
-        i = bisect.bisect_left(sessions, ev)
+        i = bisect.bisect_right(sessions, ev) if after_event else bisect.bisect_left(sessions, ev)
         j = i + int(offset)
         if i < len(sessions) and 0 <= j < len(sessions):
             out.add(sessions[j])
@@ -341,7 +370,9 @@ def _run_symbol(
     if events is None:
         entry_set = {d for i, d in enumerate(entry_sessions) if i % max(1, cfg.entry_every_sessions) == 0}
     else:
-        entry_set = {d for d in _event_entries(store.sessions, events, cfg.entry_offset_sessions) if start <= d <= end}
+        kind = (cfg.entry_event or {}).get("kind")
+        hits = _event_entries(store.sessions, events, cfg.entry_offset_sessions, after_event=entry_after_event(kind))
+        entry_set = {d for d in hits if start <= d <= end}
     for d in store.sessions:
         if d < start:
             continue
@@ -443,7 +474,7 @@ def _entry_rule(
     would be a trade nobody could have made.
     """
     if not cfg.entry_event:
-        return None, {"kind": "schedule", "every_sessions": cfg.entry_every_sessions}
+        return None, {"kind": "schedule", "every_sessions": cfg.entry_every_sessions, "anchor": "schedule"}
     from bifrost_research.engines.backtest.event_defs import EventDef
     from bifrost_research.engines.backtest.event_query import resolve_events_between
 
@@ -459,6 +490,7 @@ def _entry_rule(
         "kind": "event",
         "event_def": event_def.to_dict(),
         "offset_sessions": cfg.entry_offset_sessions,
+        "anchor": "session_after_signal" if entry_after_event(event_def.kind) else "event_session",
         "source": resolved.source,
         "events": sum(len(v) for v in by_symbol.values()),
         "notes": resolved.notes or ("stub calendar refused: no real event dates" if resolved.source == "stub" else ""),
@@ -490,11 +522,16 @@ def run_sim(
     skips: dict[str, int] = {}
     per_symbol: dict[str, dict[str, Any]] = {}
     events_by_symbol, entry_rule = _entry_rule(conn, symbols, start, end, cfg)
+    fill = {"sessions_queried": 0, "bars_added": 0, "symbols_filled": 0}
     for raw in symbols:
         sym = str(raw).strip().upper()
         if not sym:
             continue
-        store = (stores or {}).get(sym) or ChainStore.load(conn, sym, start, end, max_dte=cfg.target_dte)
+        store = (stores or {}).get(sym)
+        if store is None:
+            store = ChainStore.load(conn, sym, start, end, max_dte=cfg.target_dte)
+            if conn is not None:
+                store.attach_snapshot_fill(conn, min_dte=cfg.min_dte, max_dte=cfg.target_dte * 2 + 14)
         if not store.sessions:
             skips["no_stock"] = skips.get("no_stock", 0) + 1
             per_symbol[sym] = {"n_trades": 0, "skipped": "no_stock"}
@@ -503,6 +540,11 @@ def run_sim(
             store.delisted_on = listing_end(conn, sym, as_of=date.today())
         events = None if events_by_symbol is None else events_by_symbol.get(live_label(sym), [])
         trades, curve, sk = _run_symbol(store, start, end, cfg, events=events)
+        st = store.fill_stats()
+        if st["active"]:
+            fill["symbols_filled"] += 1
+            fill["sessions_queried"] += st["sessions_queried"]
+            fill["bars_added"] += st["bars_added"]
         for k, v in sk.items():
             skips[k] = skips.get(k, 0) + v
         all_trades.extend(trades)
@@ -511,6 +553,7 @@ def run_sim(
             "n_trades": len(trades),
             "total_pnl": round(sum(t["pnl"] for t in trades), 2),
             "skipped_entries": sk,
+            "snapshot_fill": st,
         }
     all_trades.sort(key=lambda t: (t["entry_date"], t["symbol"]))
     for i, t in enumerate(all_trades, start=1):
@@ -537,9 +580,18 @@ def run_sim(
     summary["per_symbol"] = per_symbol
     summary["window"] = {"start": start.isoformat(), "end": end.isoformat()}
     summary["entry_rule"] = entry_rule
+    summary["entry_timing"] = entry_timing((cfg.entry_event or {}).get("kind"), cfg.price_field)
+    summary["snapshot_fill"] = {
+        **fill,
+        "legs_from_snapshot": sum(1 for t in all_trades for lg in t["legs"] if lg.get("source") == "snapshot"),
+        "delta_tolerance": cfg.delta_tolerance,
+    }
     summary["evaluation"] = evaluation("option_simulator")
     summary["advisory"] = "D10 BLOCKED — historical replay only"
-    return SimResult(summary=summary, trades=all_trades, equity=equity, params=cfg.to_dict())
+    # Stored runs before 0.175.0 have no version: their signal entries opened on
+    # the signal session (entry_timing v1). The rows themselves are not rewritten.
+    params = {**cfg.to_dict(), "entry_timing_version": ENTRY_TIMING_VERSION}
+    return SimResult(summary=summary, trades=all_trades, equity=equity, params=params)
 
 
 __all__ = ["SimResult", "run_sim", "summarize"]

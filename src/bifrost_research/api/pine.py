@@ -5,7 +5,7 @@ GET  /research/pine/scripts/{id}            one script with its source
 PUT  /research/pine/scripts/{id}            add or edit a script (owner)
 POST /research/pine/check                   run a source over one symbol without saving (owner)
 GET  /research/pine/signals                 who fired on a session (Screener), or one symbol's marks (chart)
-GET  /research/pine/signal-stats            forward returns after a script's signal vs every session
+GET  /research/pine/signal-stats            net forward returns after a script's signal vs the same names' other sessions
 
 Scripts run in the pine-runner (AGPL, its own process, HTTP only).
 D10 BLOCKED — signals and statistics only.
@@ -24,7 +24,7 @@ from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.engines.indicators.bars import load_bars
-from bifrost_research.engines.pine import client
+from bifrost_research.engines.pine import client, stats
 from bifrost_research.engines.pine.library import PineScript, get_script, list_scripts, upsert_script, validate
 from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_PINE_DAILY
 
@@ -233,41 +233,6 @@ def signals(
     return {"ok": True, "data": {**window, "rows": rows, "count": len(rows)}}
 
 
-def _stats_sql(horizons: list[int], with_symbols: bool) -> str:
-    leads = ",\n".join(f"LEAD(close, {h}) OVER w AS c{h}" for h in horizons)
-    sym_filter = "AND symbol = ANY(%(symbols)s::text[])" if with_symbols else ""
-    def ret(h: int) -> str:
-        return f"(b.c{h} / b.close - 1)"
-
-    sig_cols = ",\n".join(
-        f"""COUNT(b.c{h}) FILTER (WHERE s.symbol IS NOT NULL) AS sn{h},
-            AVG(({ret(h)} * %(sign)s > 0)::int) FILTER (WHERE s.symbol IS NOT NULL AND b.c{h} IS NOT NULL) AS sw{h},
-            AVG(({ret(h)} * %(sign)s >= %(thr)s)::int) FILTER (WHERE s.symbol IS NOT NULL AND b.c{h} IS NOT NULL) AS sh{h},
-            AVG({ret(h)}) FILTER (WHERE s.symbol IS NOT NULL) AS sa{h},
-            COUNT(b.c{h}) AS bn{h},
-            AVG(({ret(h)} * %(sign)s > 0)::int) FILTER (WHERE b.c{h} IS NOT NULL) AS bw{h},
-            AVG(({ret(h)} * %(sign)s >= %(thr)s)::int) FILTER (WHERE b.c{h} IS NOT NULL) AS bh{h},
-            AVG({ret(h)}) AS ba{h}"""
-        for h in horizons
-    )
-    return f"""
-        WITH s AS (
-            SELECT DISTINCT symbol, trade_date FROM {TABLE_STOCK_SIGNAL_PINE_DAILY}
-            WHERE script_id = %(script)s AND side = %(side)s
-              AND trade_date BETWEEN %(start)s AND %(end)s {sym_filter}
-        ),
-        b AS (
-            SELECT symbol, bar_date, close, {leads}
-            FROM raw_market.stock_daily
-            WHERE symbol IN (SELECT DISTINCT symbol FROM s) AND bar_date >= %(start)s AND close > 0
-            WINDOW w AS (PARTITION BY symbol ORDER BY bar_date)
-        )
-        SELECT (SELECT COUNT(*) FROM s) AS n_signals, {sig_cols}
-        FROM b LEFT JOIN s ON s.symbol = b.symbol AND s.trade_date = b.bar_date
-        WHERE b.bar_date <= %(end)s
-    """
-
-
 @router.get("/signal-stats")
 def signal_stats(
     script: str = Query(..., min_length=2, max_length=48),
@@ -277,8 +242,10 @@ def signal_stats(
     end: date | None = None,
     horizons: str = Query("5,10,20"),
     move_threshold: float = Query(0.02, ge=0.0, le=0.5),
+    cost_bps: float = Query(stats.DEFAULT_COST_BPS, ge=0.0, le=200.0, description="one-way cost, charged on entry and exit"),
 ) -> dict[str, Any]:
-    """Win rate and hit rate after a script's signal, next to every session of the same symbols."""
+    """Return after a script's signal, entered the next session, net of cost, next to the
+    same names' other sessions — method in ``engines/pine/stats.py`` (``data.method``)."""
     e = end or date.today()
     s = start or e - timedelta(days=365 * 5)
     try:
@@ -288,38 +255,24 @@ def signal_stats(
     if not hs or any(h < 1 or h > 120 for h in hs) or len(hs) > 6:
         raise HTTPException(status_code=400, detail="horizons: up to six integers in 1..120")
     syms = [x.upper() for x in _csv(symbols)]
-    params = {
-        "script": script,
-        "side": side,
-        "start": s,
-        "end": e,
-        "symbols": syms,
-        "sign": 1 if side == "buy" else -1,
-        "thr": move_threshold,
-    }
     conn = _connect_or_503()
     try:
-        with conn.cursor() as cur:
-            cur.execute(_stats_sql(hs, bool(syms)), params)
-            row = cur.fetchone()
-            cols = [d[0] for d in cur.description]
+        out = stats.signal_stats(
+            conn,
+            script=script,
+            side=side,
+            symbols=syms,
+            start=s,
+            end=e,
+            horizons=hs,
+            move_threshold=move_threshold,
+            cost_bps=cost_bps,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("pine signal stats failed")
         raise HTTPException(status_code=503, detail=str(exc)[:300]) from exc
     finally:
         _close(conn)
-    r = dict(zip(cols, row or []))
-
-    def _f(v: Any, nd: int = 4) -> float | None:
-        return None if v is None else round(float(v), nd)
-
-    by_h: dict[str, Any] = {}
-    for h in hs:
-        sig = {"n": int(r.get(f"sn{h}") or 0), "win_rate": _f(r.get(f"sw{h}")), "hit_rate": _f(r.get(f"sh{h}")), "avg_return": _f(r.get(f"sa{h}"), 5)}
-        base = {"n": int(r.get(f"bn{h}") or 0), "win_rate": _f(r.get(f"bw{h}")), "hit_rate": _f(r.get(f"bh{h}")), "avg_return": _f(r.get(f"ba{h}"), 5)}
-        edge = round(sig["win_rate"] - base["win_rate"], 4) if sig["win_rate"] is not None and base["win_rate"] is not None else None
-        by_h[str(h)] = {"signal": sig, "baseline": base, "win_rate_edge": edge}
-    n = int(r.get("n_signals") or 0)
     return {
         "ok": True,
         "data": {
@@ -328,9 +281,8 @@ def signal_stats(
             "window": {"start": s.isoformat(), "end": e.isoformat()},
             "symbols": syms,
             "move_threshold": move_threshold,
-            "signals": n,
-            "sample_note": "noise" if n < 5 else ("thin" if n < 30 else "ok"),
-            "by_horizon": by_h,
+            "cost_bps": cost_bps,
+            **out,
         },
         "evaluation": evaluation("pine_signal"),
     }
