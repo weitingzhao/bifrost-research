@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
-import { createServer, runScript, securityCalls, validateContext, validateOptions, validateSource } from './server.mjs'
+import { createServer, runScript, ScriptPool, securityCalls, validateContext, validateOptions, validateSource } from './server.mjs'
 
 const bars = []
 let p = 100
@@ -203,7 +203,7 @@ test('/health answers while a large /run is computing', async () => {
     const body = await run
     const total = performance.now() - t0
     assert.equal(body.results.length, 100)
-    assert.equal(body.runner, '0.3.0')
+    assert.equal(body.runner, '0.4.0')
     assert.ok(total > 500, `fixture: the run should be long enough to matter (${total.toFixed(0)} ms)`)
     assert.ok(lat.length >= 3, `/health answered ${lat.length} times during a ${total.toFixed(0)} ms run`)
     assert.ok(Math.max(...lat) < 250, `slowest /health ${Math.max(...lat).toFixed(0)} ms`)
@@ -339,5 +339,89 @@ test('scripts without context give exactly the same results through the provider
         assert.deepEqual(r.warnings, base.warnings, `${f} seed ${seed} warnings`)
       }
     }
+  }
+})
+
+// -- 0.4.0: scripts run in a worker with a deadline per series ------------------
+
+const HEAVY = pine('s = 0.0\nfor i = 0 to 900\n    for j = 0 to 900\n        s += math.sin(i * j)\nplotshape(s > 0, "buy")')
+const post = (base, payload) =>
+  fetch(base + '/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) }).then((r) => r.json())
+
+async function serve(scripts) {
+  const server = createServer({ scripts }).listen(0)
+  await new Promise((r) => server.once('listening', r))
+  return { server, base: `http://127.0.0.1:${server.address().port}` }
+}
+
+test('a heavy script is stopped at the deadline, the rest of the request is skipped, the runner lives on', async () => {
+  const scripts = new ScriptPool({ timeoutMs: 1500 })
+  const { server, base } = await serve(scripts)
+  try {
+    const t0 = performance.now()
+    const run = post(base, { source: HEAVY, series: ['A', 'B', 'C'].map((symbol) => ({ symbol, bars: walk(600) })) })
+    await new Promise((r) => setTimeout(r, 300))
+    const h0 = performance.now()
+    const health = await fetch(base + '/health').then((r) => r.json())
+    assert.ok(performance.now() - h0 < 250, '/health answers while the script runs')
+    assert.equal(health.series_timeout_ms, 1500)
+    const body = await run
+    const took = performance.now() - t0
+    assert.ok(took < 4000, `one deadline for the request, not three (${took.toFixed(0)} ms)`)
+    assert.match(body.results[0].error, /ran longer than 1.5 s and was stopped/)
+    assert.deepEqual(body.results.slice(1).map((r) => r.error), [
+      'not run: the script ran out of time on A',
+      'not run: the script ran out of time on A',
+    ])
+    // the next request runs on a fresh worker
+    const ok = await post(base, { source: pine(`plotshape(${A}, "buy")`), series: [{ symbol: 'A', bars: W }] })
+    assert.ok(ok.results[0].buy.length > 0 && !ok.results[0].error)
+    assert.equal((await fetch(base + '/health').then((r) => r.json())).worker_restarts, 1)
+  } finally {
+    server.close()
+  }
+})
+
+test('a runaway loop is PineTS\'s own error for that series; the next series runs', async () => {
+  // PineTS caps a loop's iterations itself. A single allocation past the
+  // worker's heap is not caught this way: V8 aborts the whole process (measured
+  // on Node 25, 2026-10-06), and Kubernetes restarts the pod, as before 0.4.0.
+  const scripts = new ScriptPool({ timeoutMs: 20000 })
+  const runaway = pine('var a = array.new_float(0)\nif barstate.isfirst\n    for i = 0 to 9999999\n        array.push(a, i)\nplotshape(close > open, "buy")')
+  await assert.rejects(scripts.run(runaway, walk(50), {}), /Loop exceeded maximum iterations/)
+  const r = await scripts.run(pine(`plotshape(${A}, "buy")`), W, {})
+  assert.ok(r.buy.length > 0)
+  assert.equal(scripts.restarts, 0, 'an error inside the script keeps the worker')
+})
+
+test('requests that arrive together all finish, one series at a time', async () => {
+  const { server, base } = await serve(new ScriptPool({ timeoutMs: 10000 }))
+  try {
+    const src = pine(`plotshape(${A}, "buy")`)
+    const single = (await post(base, { source: src, series: [{ symbol: 'A', bars: W }] })).results[0].buy
+    const all = await Promise.all([1, 2, 3].map((i) => post(base, { source: src, series: [{ symbol: 'S' + i, bars: W }] })))
+    for (const b of all) assert.deepEqual(b.results[0].buy, single)
+  } finally {
+    server.close()
+  }
+})
+
+test('a worker that cannot start fails each series with the reason, and the queue keeps moving', async () => {
+  const scripts = new ScriptPool({ timeoutMs: 5000 })
+  let calls = 0
+  // stand-in for the permission model refusing worker_threads
+  const orig = globalThis.__pineWorkerFactory
+  globalThis.__pineWorkerFactory = () => {
+    calls += 1
+    throw new Error('Access to this API has been restricted')
+  }
+  try {
+    const src = pine(`plotshape(${A}, "buy")`)
+    const all = await Promise.allSettled([scripts.run(src, W, {}), scripts.run(src, W, {})])
+    assert.deepEqual(all.map((r) => r.status), ['rejected', 'rejected'])
+    assert.match(all[0].reason.message, /could not start a worker: Access to this API has been restricted/)
+    assert.equal(calls, 2)
+  } finally {
+    globalThis.__pineWorkerFactory = orig
   }
 })
