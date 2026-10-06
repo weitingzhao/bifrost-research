@@ -45,7 +45,7 @@ THRESHOLDS: dict[str, Any] = {
 # How each settlement basis prices the walk. ``model_stress`` is the 1.5x
 # slippage of threshold 4; ``baseline_paired`` uses ``model`` pricing on SPY.
 SETTLEMENT_METHOD_VERSION = "walk-1"
-BASIS_SLIPPAGE: dict[str, float] = {"model": 1.0, "model_stress": 1.5, "baseline_paired": 1.0}
+BASIS_SLIPPAGE: dict[str, float] = {"model": 1.0, "model_stress": 1.5, "baseline_paired": 1.0, "symbol_paired": 1.0}
 MAX_STALE_SESSIONS = 3
 
 BASELINE_SYMBOL = "SPY"
@@ -137,6 +137,16 @@ PINE_LIVE: dict[str, Any] = {
     "daily_cap_per_side": 5,
 }
 
+# The ``symbol_paired`` basis (S4 control, Owner 2026-10-06, option A): for a
+# suggestion timed by a signal, the same structure under the same rule on the
+# same name, entered on a session in the ``window_days`` calendar days after the
+# signal on which that source did not fire (picked by hash of the suggestion id,
+# so it is reproducible). After only: a control before the signal rides the move
+# that made it (replay 2024-11..2026-10: +4% on risk vs ~0% for the signal). The difference to the suggestion's own ``model``
+# settlement is what the timing added; ``baseline_paired`` (SPY) also carries
+# the single name's own premium. Settled once the window has passed.
+SYMBOL_PAIRED: dict[str, Any] = {"sources": ("pine",), "window_days": 7}
+
 # A mechanical source refuses to issue when the nearest strike's delta is
 # further than this from its rule's target (the suggestion would not be the rule).
 DELTA_TOLERANCE = 0.05
@@ -159,5 +169,6 @@ __all__ = [
     "PINE_LIVE",
     "SETTLEMENT_METHOD_VERSION",
     "SIMULATOR_LIVE",
+    "SYMBOL_PAIRED",
     "THRESHOLDS",
 ]

@@ -28,7 +28,11 @@ LEDGER_TABLES = ("suggestion", "suggestion_settlement", "suggestion_adoption")
 
 SUGGESTION_SOURCES = ("baseline", "simulator", "copilot", "lens", "pine", "manual")
 SUGGESTION_KINDS = ("option_structure", "stock_position", "stand_aside")
-SETTLEMENT_BASES = ("model", "model_stress", "baseline_paired", "actual")
+# symbol_paired (S4 control, Owner 2026-10-06): the same structure on the same
+# name, entered on a session near the signal when the source did not fire. A
+# table created before it is widened once by schema/migrate_symbol_paired.py;
+# this module stays DROP-free.
+SETTLEMENT_BASES = ("model", "model_stress", "baseline_paired", "actual", "symbol_paired")
 SETTLEMENT_STATUSES = ("settled", "void")
 ADOPTION_EVENTS = ("adopted", "declined", "implicit_match")
 

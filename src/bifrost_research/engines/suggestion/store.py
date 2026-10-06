@@ -201,16 +201,26 @@ def insert_suggestion(conn: Any, s: Suggestion) -> bool:
 
 
 def pending_settlements(
-    conn: Any, bases: tuple[str, ...], method_version: str, *, unpaired_source: str = "baseline"
+    conn: Any,
+    bases: tuple[str, ...],
+    method_version: str,
+    *,
+    unpaired_source: str = "baseline",
+    symbol_paired_sources: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
-    """Option suggestions still missing a row for any of ``bases`` at ``method_version``.
+    """Option suggestions still missing a row for any basis they owe at ``method_version``.
 
-    ``unpaired_source`` owes every basis but ``baseline_paired`` (it is the pair).
+    ``unpaired_source`` owes every basis in ``bases`` but ``baseline_paired`` (it
+    is the pair); ``symbol_paired_sources`` also owe ``symbol_paired``; the rest
+    owe ``bases``.
     """
+    own = [b for b in bases if b != "baseline_paired"]
+    counted = [*bases, "symbol_paired"] if symbol_paired_sources else list(bases)
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT s.suggestion_id, s.as_of_session, s.source, s.symbol, s.structure, s.legs_json,
+            SELECT s.suggestion_id, s.as_of_session, s.source, s.source_ref, s.source_version, s.symbol,
+                   s.structure, s.legs_json,
                    s.take_profit_pct, s.stop_loss_mult, s.exit_dte, s.max_hold_days, s.snapshot_json,
                    ARRAY(SELECT st.basis FROM {T_SETTLEMENT} st
                          WHERE st.suggestion_id = s.suggestion_id AND st.method_version = %s) AS done
@@ -220,15 +230,17 @@ def pending_settlements(
                    WHERE st.suggestion_id = s.suggestion_id
                      AND st.method_version = %s
                      AND st.basis = ANY(%s))
-                  < CASE WHEN s.source = %s THEN %s ELSE %s END
+                  < CASE WHEN s.source = %s THEN %s WHEN s.source = ANY(%s) THEN %s ELSE %s END
             ORDER BY s.as_of_session, s.suggestion_id
             """,
             (
                 method_version,
                 method_version,
-                list(bases),
+                counted,
                 unpaired_source,
-                len([b for b in bases if b != "baseline_paired"]),
+                len(own),
+                list(symbol_paired_sources),
+                len(bases) + 1,
                 len(bases),
             ),
         )
@@ -241,6 +253,19 @@ def pending_settlements(
         r["as_of_session"] = _d(r["as_of_session"])
         r["done"] = set(r["done"] or [])
     return rows
+
+
+def fired_sessions(conn: Any, script_id: str, symbol: str, start: date, end: date) -> set[date]:
+    """Sessions in [start, end] on which a Pine script fired on ``symbol`` (either side)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT DISTINCT trade_date FROM {TABLE_STOCK_SIGNAL_PINE_DAILY}
+            WHERE script_id = %s AND symbol = %s AND trade_date BETWEEN %s AND %s
+            """,
+            (script_id, symbol.upper(), start, end),
+        )
+        return {d for d in (_d(r[0]) for r in cur.fetchall() or []) if d is not None}
 
 
 def insert_settlement(conn: Any, row: dict[str, Any]) -> bool:
@@ -262,6 +287,7 @@ __all__ = [
     "SETTLEMENT_COLS",
     "earlier_version",
     "existing_issue_keys",
+    "fired_sessions",
     "insert_settlement",
     "insert_suggestion",
     "iv_regime",

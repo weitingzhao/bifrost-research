@@ -8,6 +8,11 @@ For each option suggestion still missing a basis at the current method version:
 - ``baseline_paired``: SPY, same session, same structure, the same short delta
   and days to expiry, the same rules — the pair threshold 5 compares against.
   The baseline source itself has no pair.
+- ``symbol_paired`` (sources timed by a signal, ``config.SYMBOL_PAIRED``): the
+  same structure under the same rule on the same name, entered on a session
+  in the window after the signal on which the source did not fire. Its
+  difference to ``model`` is what the timing added. Written once the window
+  has passed.
 
 A position still open when the data ends writes nothing and is walked again on
 the next run. One that could not have been opened writes ``void`` with the
@@ -16,6 +21,7 @@ reason, once the data has moved past its entry session.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import date, timedelta
 from typing import Any
@@ -39,13 +45,16 @@ from bifrost_research.engines.suggestion.config import (
     BASIS_SLIPPAGE,
     MAX_STALE_SESSIONS,
     SETTLEMENT_METHOD_VERSION,
+    SYMBOL_PAIRED,
 )
+from bifrost_research.engines.suggestion.issue import build_suggestion
 from bifrost_research.repositories.listing_lineage import listing_end
 
 logger = logging.getLogger(__name__)
 
 OWN_BASES = ("model", "model_stress")
 ALL_BASES = ("model", "model_stress", "baseline_paired")
+SYMBOL_BASIS = "symbol_paired"
 
 
 def _num(v: Any) -> float | None:
@@ -158,9 +167,76 @@ def _paired_legs(s: dict[str, Any], spy: ChainStore) -> list[LegSpec] | str:
     ]
 
 
+def control_day(sessions: list[date], d: date, fired: set[date], key: str, window_days: int) -> date | None:
+    """A session in the ``window_days`` calendar days after ``d`` the source did not fire on, by hash.
+
+    After the signal only: a session before it carries the move that made the
+    signal (a short put opened before a breakout rides the breakout). In the
+    2024-11..2026-10 replay such controls returned +4% on risk against ~0% for
+    the signal entries; controls after the signal matched them.
+    """
+    pool = [x for x in sessions if d < x <= d + timedelta(days=window_days) and x not in fired]
+    if not pool:
+        return None
+    return min(pool, key=lambda x: hashlib.sha256(f"{key}:{x.isoformat()}".encode()).hexdigest())
+
+
+def control_spec(s: dict[str, Any]) -> dict[str, Any]:
+    """The suggestion's own rule (not its picked strikes), to rebuild on the control session."""
+    sel = (s.get("snapshot_json") or {}).get("selection") or {}
+    return {
+        "source_ref": s["source_ref"],
+        "source_version": str(s["source_version"]),
+        "structure": s["structure"],
+        "short_delta": float(sel["short_delta"]),
+        "target_dte": int(sel["target_dte"]),
+        "min_dte": int(sel.get("min_dte", 7)),
+        "wing_width_pct": float(sel.get("wing_width_pct", 0.05)),
+        "take_profit_pct": _num(s.get("take_profit_pct")),
+        "stop_loss_mult": _num(s.get("stop_loss_mult")),
+        "exit_dte": None if s.get("exit_dte") is None else int(s["exit_dte"]),
+        "cadence": "symbol_paired control",
+    }
+
+
+def _symbol_paired(conn: Any, s: dict[str, Any], now: date, last_session: date) -> tuple[WalkOutcome, date | None, dict[str, Any]]:
+    window = int(SYMBOL_PAIRED["window_days"])
+    d, sym = s["as_of_session"], str(s["symbol"])
+    if last_session < d + timedelta(days=window):
+        return WalkOutcome("open", "control_window_open"), None, {}
+    cal = store.recent_sessions(conn, sym, d + timedelta(days=window), days=window)
+    fired = store.fired_sessions(conn, str(s["source_ref"]), sym, d, d + timedelta(days=window))
+    c = control_day(cal, d, fired, str(s["suggestion_id"]), window)
+    if c is None:
+        return WalkOutcome("void", "no_control_day"), None, {}
+    try:
+        spec = control_spec(s)
+    except (KeyError, TypeError, ValueError):
+        return WalkOutcome("void", "no_rule_in_snapshot"), None, {"control_day": c.isoformat()}
+    chain = with_snapshot_fill(conn, ChainStore.load(conn, sym, c, c, max_dte=spec["target_dte"]), c, c)
+    got = build_suggestion(chain, c, source=str(s["source"]), spec=spec, regime={})
+    extra: dict[str, Any] = {"control_day": c.isoformat(), "window_days": window}
+    if isinstance(got, str):
+        return WalkOutcome("void", f"control_{got}"), None, extra
+    extra.update(control_legs=list(got.legs), control_delta=got.snapshot["legs"][0].get("delta"))
+    legs = legs_from_json(got.legs)
+    exp = max(lg.expiry for lg in legs) + timedelta(days=3)
+    st = load_leg_store(conn, sym, [lg.ticker for lg in legs], c, min(exp, now))
+    st.delisted_on = listing_end(conn, sym, as_of=now)
+    entry = entry_session(st.sessions, c)
+    if entry is None:
+        return WalkOutcome("open", "no_entry_session_yet"), None, extra
+    out = walk_legs(st, legs, entry, rules_for(s, SYMBOL_BASIS), structure=str(s.get("structure") or "custom"))
+    if out.status == "void" and st.sessions[-1] <= entry:
+        return WalkOutcome("open", "entry_session_is_latest"), entry, extra
+    return out, entry, extra
+
+
 def run_settle(conn: Any, *, today: date | None = None) -> dict[str, Any]:
     now = today or date.today()
-    pending = store.pending_settlements(conn, ALL_BASES, SETTLEMENT_METHOD_VERSION)
+    pending = store.pending_settlements(
+        conn, ALL_BASES, SETTLEMENT_METHOD_VERSION, symbol_paired_sources=tuple(SYMBOL_PAIRED["sources"])
+    )
     written: dict[str, int] = {}
     still_open = 0
     by_symbol: dict[str, list[dict[str, Any]]] = {}
@@ -224,6 +300,19 @@ def run_settle(conn: Any, *, today: date | None = None) -> dict[str, Any]:
         extra = {"paired_symbol": BASELINE_SYMBOL}
         if store.insert_settlement(conn, settlement_row(s["suggestion_id"], basis, out, entry=entry, rules=rules, extra=extra)):
             written[basis] = written.get(basis, 0) + 1
+
+    owe_control = [s for s in pending if s["source"] in SYMBOL_PAIRED["sources"] and SYMBOL_BASIS not in s["done"]]
+    if owe_control:
+        spy_days = store.recent_sessions(conn, BASELINE_SYMBOL, now, days=10)
+        last_session = spy_days[-1] if spy_days else now - timedelta(days=30)
+        for s in owe_control:
+            out, entry, extra = _symbol_paired(conn, s, now, last_session)
+            if out.status == "open":
+                still_open += 1
+                continue
+            row = settlement_row(s["suggestion_id"], SYMBOL_BASIS, out, entry=entry, rules=rules_for(s, SYMBOL_BASIS), extra=extra)
+            if store.insert_settlement(conn, row):
+                written[SYMBOL_BASIS] = written.get(SYMBOL_BASIS, 0) + 1
     conn.commit()
     return {
         "method_version": SETTLEMENT_METHOD_VERSION,
@@ -233,4 +322,13 @@ def run_settle(conn: Any, *, today: date | None = None) -> dict[str, Any]:
     }
 
 
-__all__ = ["ALL_BASES", "entry_session", "rules_for", "run_settle", "settlement_row"]
+__all__ = [
+    "ALL_BASES",
+    "SYMBOL_BASIS",
+    "control_day",
+    "control_spec",
+    "entry_session",
+    "rules_for",
+    "run_settle",
+    "settlement_row",
+]
