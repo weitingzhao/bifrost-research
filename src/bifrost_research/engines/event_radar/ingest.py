@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 from uuid import uuid4
 
+from bifrost_research.engines.event_radar.event_calendar import is_superseded_macro_source
 from bifrost_research.engines.event_radar.pipeline import (
     PipelineResult,
     run_pipeline,
@@ -229,6 +230,29 @@ def process_file(
 ) -> FileIngestResult:
     source = _source_from_path(path)
     bid = batch_id or f"file-{uuid4().hex[:10]}"
+    if is_superseded_macro_source(source):
+        # TD-181: macro releases live in features.macro_event_daily now. Radar ids
+        # hash the collection date, so a re-dropped macro file would duplicate
+        # every release; archive it unread.
+        archived = False
+        if archive and archive_dir is not None:
+            try:
+                _archive_file(path, archive_dir)
+                archived = True
+            except OSError as exc:
+                logger.warning("archive failed for %s: %s", path, exc)
+        return FileIngestResult(
+            path=str(path),
+            source=source,
+            batch_id=bid,
+            raw_count=0,
+            kept=0,
+            dropped=0,
+            rows_written=0,
+            archived=archived,
+            skipped=True,
+            skip_reason="macro_calendar_superseded: macro events are read from features.macro_event_daily",
+        )
     try:
         payload = read_file_payload(path)
     except OSError as exc:

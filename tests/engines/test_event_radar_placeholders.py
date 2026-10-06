@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import inspect
 
-from bifrost_research.api.wave4 import event_calendar, list_event_radar
+from bifrost_research.api.wave4 import list_event_radar
+from bifrost_research.engines.event_radar.event_calendar import read_event_calendar
 from bifrost_research.engines.event_radar.placeholders import (
     PLACEHOLDER_SOURCES,
     PLACEHOLDER_SQL,
@@ -41,5 +42,5 @@ def test_the_sql_and_the_function_judge_the_same_sources() -> None:
 def test_read_endpoints_exclude_placeholders() -> None:
     assert "excluded_placeholder_rows" in inspect.getsource(list_event_radar)
     assert "PLACEHOLDER_SQL" in inspect.getsource(list_event_radar)
-    assert "excluded_placeholder_rows" in inspect.getsource(event_calendar)
-    assert "PLACEHOLDER_SQL" in inspect.getsource(event_calendar)
+    assert "excluded_placeholder_rows" in inspect.getsource(read_event_calendar)
+    assert "PLACEHOLDER_SQL" in inspect.getsource(read_event_calendar)

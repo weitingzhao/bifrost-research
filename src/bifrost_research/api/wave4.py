@@ -22,6 +22,7 @@ from bifrost_research.engines.backtest.settlement import (
     input_fault_count_sql,
     settle_forecast,
 )
+from bifrost_research.engines.event_radar.event_calendar import read_event_calendar
 from bifrost_research.engines.event_radar.placeholders import PLACEHOLDER_SQL
 from bifrost_research.engines.event_radar.pipeline import run_pipeline
 from bifrost_research.engines.forecast.llm import get_default_provider
@@ -913,46 +914,17 @@ def macro_forward(
 def event_calendar(
     limit: int = Query(100, ge=1, le=500),
 ) -> dict[str, Any]:
+    """Dated events: radar rows (``time_code = 2``) plus the macro calendar.
+
+    Macro rows come from ``features.macro_event_daily`` (TD-181); radar rows from
+    superseded ``ws:macro*`` files and placeholder sources (``PLACEHOLDER_SQL``)
+    are left out — ``excluded_placeholder_rows`` / ``superseded_macro_rows`` count them.
+    """
     conn = _connect_or_503()
-    cols = (
-        "event_id", "batch_id", "collected_at", "source", "subject",
-        "event_summary", "affected_symbols", "direction", "certainty",
-        "sentiment", "theme", "importance", "event_date", "date_basis",
-        "computed_at",
-    )
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT {', '.join(cols)}
-                FROM features.event_signal_radar_daily
-                WHERE dropped IS DISTINCT FROM true
-                  AND time_code = 2
-                  AND NOT {PLACEHOLDER_SQL}
-                ORDER BY event_date ASC NULLS LAST, importance DESC NULLS LAST
-                LIMIT %s
-                """,
-                (limit,),
-            )
-            raw = cur.fetchall() or []
-            cur.execute(
-                f"""
-                SELECT COUNT(*)
-                FROM features.event_signal_radar_daily
-                WHERE dropped IS DISTINCT FROM true
-                  AND time_code = 2
-                  AND {PLACEHOLDER_SQL}
-                """
-            )
-            excluded = int((cur.fetchone() or [0])[0] or 0)
-        rows = [_row_dict(r, cols) for r in raw]
+        return read_event_calendar(conn, limit=limit, today=ny_today())
     finally:
         conn.close()
-    return {
-        "rows": rows,
-        "count": len(rows),
-        "excluded_placeholder_rows": excluded,
-    }
 
 
 # ---------------------------------------------------------------------------
