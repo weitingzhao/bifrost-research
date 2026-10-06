@@ -316,3 +316,20 @@ def test_get_run_ok(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None
     assert resp.status_code == 200
     body = resp.json()
     assert body["data"]["row"]["id"] == "bt-42"
+
+
+
+@pytest.mark.parametrize("kind", ["sepa_hit", "iv_percentile_threshold", "pine_signal"])
+def test_a_signal_kind_refuses_a_negative_entry_offset_and_runs_without_one(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(backtest_api, "run_event_query", lambda *a, **kw: calls.append(kw) or _default_engine_result())
+    monkeypatch.setattr(backtest_api.repo, "create_run", lambda conn, **kw: {"id": "bt-1", **kw})
+    body = {"event_def": {"kind": kind, "params": {}}, "strategy_template": "long_stock_event"}
+    resp = client.post("/research/backtest/event-query", json={**body, "template_kwargs": {"entry_offset_days": -1}})
+    assert resp.status_code == 400 and "0 = the session after the signal" in resp.text
+    assert calls == []
+    resp = client.post("/research/backtest/event-query", json=body)
+    assert resp.status_code == 200, resp.text
+    assert "entry_offset_days" not in calls[0]  # the engine supplies 0

@@ -26,8 +26,9 @@ class SimConfig:
     Entry: every ``entry_every_sessions`` by default. With ``entry_event`` (an
     ``EventDef`` dict such as ``{"kind": "earnings"}``) a position opens
     ``entry_offset_sessions`` from each event instead — the event backtest's
-    trigger with the simulator managing the position (W2, 0.171.0). For an
-    indicator or Pine signal, offset 0 is the session after the signal (0.175.0).
+    trigger with the simulator managing the position (W2, 0.171.0). For a
+    signal kind (``event_defs.SIGNAL_KINDS``) offset 0 is the session after the
+    signal and must not be negative (0.175.0; SEPA and IV percentile 0.176.0).
 
     ``delta_tolerance``: an entry whose nearest short strike is further than
     this from ``short_delta`` (absolute delta) is skipped as

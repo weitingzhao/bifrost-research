@@ -178,3 +178,16 @@ def test_delta_tolerance_reaches_the_simulator_and_a_signal_offset_below_zero_is
     assert resp.status_code == 422 and "0 = the session after the signal" in resp.text
     resp = client.post(_PATH, json={**_BODY, "entry_event": pine, "entry_offset_sessions": 0})
     assert resp.status_code == 200, resp.text
+
+
+
+def test_a_signal_kind_defaults_to_the_next_session_and_a_dated_event_to_the_one_before(client: TestClient, env: _Env) -> None:
+    for kind, want in (("sepa_hit", 0), ("iv_percentile_threshold", 0), ("pine_signal", 0), ("earnings", -1), ("opex", -1)):
+        resp = client.post(_PATH, json={**_BODY, "entry_event": {"kind": kind}})
+        assert resp.status_code == 200, resp.text
+        assert env.sims[-1][3].entry_offset_sessions == want, kind
+    assert client.post(_PATH, json=_BODY).status_code == 200
+    assert env.sims[-1][3].entry_offset_sessions == -1  # no event: unused, unchanged
+    for kind in ("sepa_hit", "iv_percentile_threshold"):
+        resp = client.post(_PATH, json={**_BODY, "entry_event": {"kind": kind}, "entry_offset_sessions": -1})
+        assert resp.status_code == 422 and "0 = the session after the signal" in resp.text

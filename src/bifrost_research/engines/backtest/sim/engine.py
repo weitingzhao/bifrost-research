@@ -11,12 +11,14 @@ Ordering note: a rule is checked on the session's close and filled at that
 same close. Real fills come later than the signal, so read the stop and profit
 figures as optimistic by up to a session's move.
 
-Entry timing (0.175.0, ``summary.entry_timing`` version 2): a scheduled entry
-opens on its session at that session's ``price_field``. An event entry opens
-``entry_offset_sessions`` from the event; for an indicator or Pine signal,
-which exists only once its session has closed, offset 0 is the *next* session
-(before 0.175.0 it was the signal session itself, filled at that session's
-vwap — a price from before the signal existed).
+Entry timing (``summary.entry_timing``; version 2 from 0.175.0, 3 from
+0.176.0): a scheduled entry opens on its session at that session's
+``price_field``. An event entry opens ``entry_offset_sessions`` from the event;
+for a signal kind (``event_defs.SIGNAL_KINDS``: indicator, Pine, SEPA hit, IV
+percentile), which exists only once its session has closed, offset 0 is the
+*next* session and a negative offset is refused (before 0.175.0 it was the
+signal session itself, filled at that session's vwap — a price from before the
+signal existed; SEPA and IV percentile until 0.176.0).
 
 Strike pick (0.175.0): the short leg is the contract nearest ``short_delta``
 on the chosen expiry, from ``option_daily`` plus the 16:00 option snapshot
@@ -37,7 +39,12 @@ from datetime import date, timedelta
 from typing import Any, Sequence
 
 from bifrost_research.engines.backtest.catalog import evaluation
-from bifrost_research.engines.backtest.event_defs import ENTRY_TIMING_VERSION, entry_after_event, entry_timing
+from bifrost_research.engines.backtest.event_defs import (
+    ENTRY_TIMING_VERSION,
+    check_entry_offset,
+    entry_after_event,
+    entry_timing,
+)
 from bifrost_research.engines.backtest.sim.chain import ChainStore, OptBar
 from bifrost_research.engines.backtest.sim.rules import (
     SimConfig,
@@ -517,6 +524,7 @@ def run_sim(
         raise ValueError(f"unknown structure {cfg.structure!r}; available: {sorted(STRUCTURES)}")
     if end < start:
         raise ValueError("end must not be before start")
+    check_entry_offset((cfg.entry_event or {}).get("kind"), cfg.entry_offset_sessions)
     all_trades: list[dict[str, Any]] = []
     curves: list[dict[date, tuple[float, float, int]]] = []
     skips: dict[str, int] = {}

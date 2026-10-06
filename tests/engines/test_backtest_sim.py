@@ -256,9 +256,9 @@ def test_a_signal_opens_on_the_session_after_it_other_events_on_the_session_itse
 
 def test_a_run_says_which_entry_timing_it_used() -> None:
     res = _run(_store(lambda i: 100.0))
-    assert res.summary["entry_timing"]["version"] == 2
+    assert res.summary["entry_timing"]["version"] == 3
     assert res.summary["entry_timing"]["anchor"] == "schedule"
-    assert res.params["entry_timing_version"] == 2
+    assert res.params["entry_timing_version"] == 3
     assert res.summary["snapshot_fill"]["bars_added"] == 0  # injected store, no conn
 
 
@@ -353,3 +353,20 @@ def test_no_snapshot_history_means_no_fill() -> None:
     store = _store(lambda i: 100.0, n=20)
     store.attach_snapshot_fill(_Empty([]), min_dte=7, max_dte=104)
     assert store.fill_stats()["active"] is False
+
+
+@pytest.mark.parametrize("kind", ["sepa_hit", "iv_percentile_threshold", "pine_signal", "indicator_signal"])
+def test_a_signal_kind_with_a_negative_offset_is_refused_before_any_read(kind: str) -> None:
+    cfg = SimConfig(structure="short_put", entry_event={"kind": kind}, entry_offset_sessions=-1)
+    with pytest.raises(ValueError, match="0 = the session after the signal"):
+        run_sim(None, ["X"], START, START + timedelta(days=30), cfg, stores={})
+
+
+def test_a_sepa_hit_opens_on_the_session_after_it() -> None:
+    from bifrost_research.engines.backtest.sim.engine import _run_symbol
+
+    store = _store(lambda i: 100.0, n=120)
+    days = store.sessions
+    cfg = SimConfig(structure="short_put", target_dte=45, entry_event={"kind": "sepa_hit"}, entry_offset_sessions=0)
+    trades, _c, _s = _run_symbol(store, days[0], days[100], cfg, events=[days[20]])
+    assert [t["entry_date"] for t in trades] == [days[21].isoformat()]

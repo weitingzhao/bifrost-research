@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
+from bifrost_research.engines.backtest.event_defs import check_entry_offset, default_entry_offset
 from bifrost_research.engines.backtest.sim import STRUCTURES, SimConfig, run_sim
 from bifrost_research.repositories import backtest_run as repo
 
@@ -50,10 +51,11 @@ class SimBody(BaseModel):
     quantity: int = Field(1, ge=1, le=100)
     entry_every_sessions: int = Field(5, ge=1, le=60)
     # An event in place of the schedule: open ``entry_offset_sessions`` from each
-    # one and let the simulator manage it (W2, 0.171.0). For an indicator or Pine
-    # signal, 0 is the session after the signal (0.175.0, entry_timing v2).
+    # one and let the simulator manage it (W2, 0.171.0). For a signal kind
+    # (event_defs.SIGNAL_KINDS) 0 is the session after the signal and the
+    # default; for earnings and OpEx the default stays -1, the session before.
     entry_event: SimEntryEvent | None = None
-    entry_offset_sessions: int = Field(-1, ge=-10, le=10)
+    entry_offset_sessions: int | None = Field(None, ge=-10, le=10)
     max_open_per_symbol: int = Field(3, ge=1, le=20)
     profit_take_pct: float | None = Field(0.5, gt=0.0, le=1.0)
     stop_loss_mult: float | None = Field(2.0, gt=0.0, le=20.0)
@@ -79,11 +81,10 @@ class SimBody(BaseModel):
         if (end - start).days > 366 * 5:
             raise ValueError("window longer than five years")
         self.start, self.end = start, end
-        if self.entry_event and self.entry_event.kind in ("indicator_signal", "pine_signal") and self.entry_offset_sessions < 0:
-            raise ValueError(
-                "an indicator or Pine signal fires on a session's close: entry_offset_sessions counts from "
-                "the next session (0 = the session after the signal) and must be 0 or later"
-            )
+        kind = self.entry_event.kind if self.entry_event else None
+        if self.entry_offset_sessions is None:
+            self.entry_offset_sessions = default_entry_offset(kind)
+        check_entry_offset(kind, self.entry_offset_sessions)
         return self
 
 
@@ -105,7 +106,7 @@ def simulate(body: SimBody) -> dict[str, Any]:
         quantity=body.quantity,
         entry_every_sessions=body.entry_every_sessions,
         entry_event=body.entry_event.model_dump() if body.entry_event else None,
-        entry_offset_sessions=body.entry_offset_sessions,
+        entry_offset_sessions=int(body.entry_offset_sessions if body.entry_offset_sessions is not None else -1),
         max_open_per_symbol=body.max_open_per_symbol,
         profit_take_pct=body.profit_take_pct,
         stop_loss_mult=body.stop_loss_mult,

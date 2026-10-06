@@ -26,7 +26,7 @@ from bifrost_research.engines.backtest.benchmark import (
     zero_signal_control,
 )
 from bifrost_research.engines.backtest.catalog import EVALUATIONS
-from bifrost_research.engines.backtest.event_defs import EventDef
+from bifrost_research.engines.backtest.event_defs import EventDef, check_entry_offset, entry_after_event
 from bifrost_research.engines.backtest.event_query import run_event_query
 from bifrost_research.engines.backtest.fills import FillConfig
 from bifrost_research.engines.backtest.strategy_templates import TEMPLATES
@@ -98,16 +98,15 @@ def evaluation_catalog() -> dict[str, Any]:
 @router.post("/event-query", dependencies=[Depends(require_owner)])
 def event_query(body: EventQueryBody) -> dict[str, Any]:
     _validate_template(body.strategy_template)
-    if body.event_def.kind in ("indicator_signal", "pine_signal"):
-        off = (body.template_kwargs or {}).get("entry_offset_days", -1)
-        if not isinstance(off, (int, float)) or off < 0:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "an indicator or Pine signal fires on a session's close: entry_offset_days counts from "
-                    "the next session (0 = the session after the signal) and must be 0 or later"
-                ),
-            )
+    if entry_after_event(body.event_def.kind) and "entry_offset_days" in (body.template_kwargs or {}):
+        # Absent, the engine enters a signal on offset 0 (the next session).
+        off = body.template_kwargs["entry_offset_days"]
+        if not isinstance(off, (int, float)):
+            raise HTTPException(status_code=400, detail="entry_offset_days must be a number")
+        try:
+            check_entry_offset(body.event_def.kind, off)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     event_def = EventDef(kind=body.event_def.kind, params=body.event_def.params or {})
     fill_cfg = (
         FillConfig(

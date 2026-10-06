@@ -35,12 +35,15 @@ Notes on data source gaps (Wave RS-C1):
 - Offsets count trading sessions (0.169.0); an option leg is opened on one
   contract and closed on that same contract, or settled at intrinsic if the
   exit reaches its expiry.
-- Entry timing (0.175.0, ``summary.entry_timing`` version 2): for a signal
-  event (``indicator_signal`` / ``pine_signal``) offset 0 is the session
-  *after* the signal, because the signal only exists once its session has
-  closed; every leg is priced at the entry session's close. Other kinds keep
-  offset 0 = the first session on or after the event. Runs stored before
-  0.175.0 carry no ``entry_timing`` and read offset 0 as the signal session.
+- Entry timing (``summary.entry_timing``; version 2 from 0.175.0, 3 from
+  0.176.0): for a signal event (``event_defs.SIGNAL_KINDS``: indicator, Pine,
+  SEPA hit, IV percentile) offset 0 is the session *after* the signal, because
+  the signal only exists once its session has closed; every leg is priced at
+  the entry session's close. A signal with no ``entry_offset_days`` enters at
+  0, and a negative one is refused. Earnings and OpEx keep offset 0 = the
+  first session on or after the event. Runs stored before 0.175.0 carry no
+  ``entry_timing`` and read offset 0 as the signal session; v2 runs did so for
+  SEPA hits and IV percentiles.
 """
 
 from __future__ import annotations
@@ -54,7 +57,13 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from bifrost_research.engines.adjusted_contracts import not_adjusted_contract_sql
 from bifrost_research.engines.backtest.catalog import evaluation
-from bifrost_research.engines.backtest.event_defs import EventDef, entry_after_event, entry_timing
+from bifrost_research.engines.backtest.event_defs import (
+    EventDef,
+    check_entry_offset,
+    default_entry_offset,
+    entry_after_event,
+    entry_timing,
+)
 from bifrost_research.engines.backtest.strategy_templates import (
     LegSpec,
     build_legs,
@@ -429,8 +438,8 @@ def _resolve_sepa_hit_events(
         source="sepa" if not errors else "unavailable",
         errors=errors,
         notes=(
-            "sepa historical coverage is limited — features.stock_signal_sepa_daily "
-            "is daily-UPSERT overwrite (see schema notes)."
+            "scored on the session's close; sepa historical coverage is limited — "
+            "features.stock_signal_sepa_daily is daily-UPSERT overwrite (see schema notes)."
         ),
     )
 
@@ -471,7 +480,12 @@ def _resolve_iv_percentile_events(
             events.append((str(sym), td))
     except Exception as exc:  # noqa: BLE001
         _read_failed(conn, "features.option_metric_iv_percentile_daily", exc, errors)
-    return ResolvedEvents(events=events, source="iv" if not errors else "unavailable", errors=errors)
+    return ResolvedEvents(
+        events=events,
+        source="iv" if not errors else "unavailable",
+        errors=errors,
+        notes="IV percentile from the session's end-of-day option data; known after its close",
+    )
 
 
 def _resolve_sql_events(
@@ -1262,12 +1276,18 @@ def run_event_query(
         close_conn = True
 
     try:
-        resolved = resolve_events(conn, event_def, lookback_years, today=today)
-        legs = iter_legs(build_legs(template_name, **template_kwargs))
-        direction_sign = _direction_sign(legs)
         # A signal is computed from its session's close: offsets count from the
-        # next session, so offset 0 cannot fill on the close that made it (0.175.0).
+        # next session, so offset 0 cannot fill on the close that made it
+        # (0.175.0). With no offset given a signal enters on the next session,
+        # not on the templates' pre-event -1; a negative one is refused (0.176.0).
         after_event = entry_after_event(event_def.kind)
+        if after_event and "entry_offset_days" not in template_kwargs:
+            template_kwargs = {**template_kwargs, "entry_offset_days": default_entry_offset(event_def.kind)}
+        legs = iter_legs(build_legs(template_name, **template_kwargs))
+        for leg in legs:
+            check_entry_offset(event_def.kind, min(int(leg.entry_offset_days), int(leg.exit_offset_days)))
+        resolved = resolve_events(conn, event_def, lookback_years, today=today)
+        direction_sign = _direction_sign(legs)
 
         runs: list[EventRun] = []
         skipped = 0

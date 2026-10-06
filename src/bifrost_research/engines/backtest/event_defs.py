@@ -8,7 +8,9 @@ resolved to a set of ``(symbol, event_date)`` pairs by the event resolver in
                                resolver for the current data-source policy)
 - ``opex``                   — US monthly OpEx third Friday
 - ``sepa_hit``               — days where the SEPA composite score crossed a threshold
+                               (scored on the session's close)
 - ``iv_percentile_threshold``— days where IV percentile crossed a threshold
+                               (from the session's end-of-day option data)
 - ``indicator_signal``       — days a standard indicator signal fired on the
                                symbol's daily closes (MACD / RSI / Bollinger /
                                EMA crossings; ``engines.indicators``)
@@ -42,19 +44,41 @@ _ALLOWED_KINDS: frozenset[EventKind] = frozenset(
 
 #: Kinds whose event is computed from the session's own close: the signal
 #: exists only once that session has closed, so nothing can be filled on it.
-SIGNAL_KINDS: frozenset[str] = frozenset(("indicator_signal", "pine_signal"))
+#: An indicator or Pine plot is read off the day's bar; a SEPA score is scored
+#: on the day's close; an IV percentile comes from the day's end-of-day option
+#: data. An earnings date or an OpEx Friday is known before the session opens.
+SIGNAL_KINDS: frozenset[str] = frozenset(("indicator_signal", "pine_signal", "sepa_hit", "iv_percentile_threshold"))
 
 #: Version of the entry-timing rule written into every run's summary
 #: (``entry_timing``) and the simulator's params (``entry_timing_version``).
 #: 1 (before 0.175.0, never written): offset 0 was the event session for every
-#: kind, so a signal opened on the close it was computed from. 2: for
-#: ``SIGNAL_KINDS`` offset 0 is the first session after the signal session.
-ENTRY_TIMING_VERSION = 2
+#: kind, so a signal opened on the close it was computed from. 2 (0.175.0): for
+#: indicator and Pine signals offset 0 is the first session after the signal
+#: session. 3 (0.176.0): the same for ``sepa_hit`` and
+#: ``iv_percentile_threshold``, and a signal kind with no offset given enters
+#: on offset 0 instead of the templates' and simulator's -1.
+ENTRY_TIMING_VERSION = 3
 
 
 def entry_after_event(kind: str | None) -> bool:
     """True when offsets count from the session after the event (signals)."""
     return kind in SIGNAL_KINDS
+
+
+def default_entry_offset(kind: str | None) -> int:
+    """The entry offset when the caller gives none: the next session for a signal,
+    the session before for a dated event (the pre-event entry templates assume)."""
+    return 0 if entry_after_event(kind) else -1
+
+
+def check_entry_offset(kind: str | None, offset: int | float) -> None:
+    """Refuse a negative offset on a signal kind: it would fill on or before the
+    close the signal was computed from."""
+    if entry_after_event(kind) and offset < 0:
+        raise ValueError(
+            f"a {kind} event is known only at its session's close: the entry offset counts "
+            "from the next session (0 = the session after the signal) and must be 0 or later"
+        )
 
 
 def entry_timing(kind: str | None, fill: str) -> dict[str, Any]:
@@ -118,6 +142,8 @@ __all__ = [
     "SIGNAL_KINDS",
     "EventDef",
     "EventKind",
+    "check_entry_offset",
+    "default_entry_offset",
     "entry_after_event",
     "entry_timing",
 ]
