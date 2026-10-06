@@ -55,6 +55,7 @@ RESEARCH_TABLES = (
     "stock_signal_scan_daily",
     "stock_signal_lens_hit_daily",
     "stock_signal_alert_daily",
+    "stock_signal_pine_daily",
 )
 
 # Retired bare + prefixed legacy view schema names — cleaned on db-init.
@@ -891,6 +892,29 @@ def _create_research_workflow_tables(cur: _Cursor) -> None:
         f"""
         CREATE INDEX IF NOT EXISTS saved_screen_active
         ON {SCHEMA_RESEARCH}.saved_screen (is_active, updated_at DESC)
+        """
+    )
+    # --- W6 (0.173.0): the Pine script library ---
+    # A script's source, where it came from and under which licence. The
+    # pine-runner executes it over daily bars; its buy / sell plots become
+    # features.stock_signal_pine_daily. Community scripts live only here, never
+    # in the (public) repository. Owner-approved 2026-10-05; new table.
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_RESEARCH}.pine_script (
+            id           text        PRIMARY KEY,
+            name         text        NOT NULL,
+            source       text        NOT NULL,
+            version      integer     NOT NULL DEFAULT 1,
+            origin       text        NOT NULL DEFAULT 'user',
+            license      text,
+            source_url   text,
+            notes        text,
+            is_active    boolean     NOT NULL DEFAULT true,
+            created_at   timestamptz NOT NULL DEFAULT now(),
+            updated_at   timestamptz NOT NULL DEFAULT now(),
+            CONSTRAINT pine_script_origin_chk CHECK (origin IN ('bifrost', 'community', 'user'))
+        )
         """
     )
 
@@ -2181,6 +2205,33 @@ def _create_research_tables(cur: _Cursor) -> None:
         f"""
         CREATE INDEX IF NOT EXISTS stock_signal_lens_hit_daily_lens_date
         ON {SCHEMA_FEATURES}.stock_signal_lens_hit_daily (lens, trade_date DESC)
+        """
+    )
+
+    # --- W6 (0.173.0): Pine script signals ---
+    # One row per session a script's buy or sell plot fired — sparse; a session
+    # with no signal has no row. ``script_version`` is the library version that
+    # produced it, so an edited script's history can be told from its new one.
+    # Owner-approved 2026-10-05; new table.
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA_FEATURES}.stock_signal_pine_daily (
+            script_id       text        NOT NULL,
+            symbol          text        NOT NULL,
+            trade_date      date        NOT NULL,
+            side            text        NOT NULL,
+            script_version  integer     NOT NULL,
+            close           double precision,
+            computed_at     timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (script_id, symbol, trade_date, side),
+            CONSTRAINT stock_signal_pine_daily_side_chk CHECK (side IN ('buy', 'sell'))
+        )
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS stock_signal_pine_daily_date_script
+        ON {SCHEMA_FEATURES}.stock_signal_pine_daily (trade_date DESC, script_id, side)
         """
     )
 

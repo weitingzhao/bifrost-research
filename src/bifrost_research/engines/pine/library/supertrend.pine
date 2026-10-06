@@ -1,0 +1,11 @@
+//@version=5
+// Bifrost starter library — Supertrend flip. Own implementation of the public ATR-band algorithm.
+indicator("Bifrost · Supertrend flip", overlay=true)
+atrLen = input.int(10, "ATR length")
+mult   = input.float(3.0, "ATR multiplier")
+[st, dir] = ta.supertrend(mult, atrLen)
+buy  = dir < 0 and dir[1] > 0
+sell = dir > 0 and dir[1] < 0
+plot(st, "Supertrend")
+plotshape(buy,  "buy",  shape.triangleup,   location.belowbar)
+plotshape(sell, "sell", shape.triangledown, location.abovebar)

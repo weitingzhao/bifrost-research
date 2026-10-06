@@ -20,7 +20,8 @@ def test_canonical_feature_table_registry_has_twenty_five_tables() -> None:
     # + Analyze C.2 stock_signal_playbook_trigger_intraday
     # + Analyze Wave D stock_signal_scan_daily.
     # + Analyze Wave I stock_signal_lens_hit_daily.
-    assert len(CANONICAL_FEATURE_TABLES) == 26
+    # + W6 stock_signal_pine_daily.
+    assert len(CANONICAL_FEATURE_TABLES) == 27
     for qualified in CANONICAL_FEATURE_TABLES:
         assert qualified.startswith(f"{SCHEMA_FEATURES}.")
     assert (

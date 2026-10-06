@@ -224,6 +224,21 @@ def scan(context: AssetExecutionContext) -> MaterializeResult:
 
 
 @asset(
+    key=AssetKey(["engines", "pine"]),
+    deps=[AssetKey(["engines", "scan"])],
+    group_name="python_analytics",
+    description=(
+        "Pine library scripts run by the pine-runner over each universe symbol's daily bars "
+        "→ features.stock_signal_pine_daily (buy / sell sessions only)."
+    ),
+)
+def pine_signals(context: AssetExecutionContext) -> MaterializeResult:
+    result = runners.run_pine_signals()
+    context.log.info("pine result=%s", {k: v for k, v in result.items() if k != "scripts"})
+    return MaterializeResult(metadata=_metadata(result))
+
+
+@asset(
     key=AssetKey(["engines", "candidate_outcome"]),
     deps=[AssetKey(["engines", "scan"])],
     group_name="python_analytics",
@@ -304,6 +319,7 @@ ENGINE_ASSETS = [
     backtest,
     canonical_pnl,
     scan,
+    pine_signals,
     candidate_outcome,
     signal_hit_fwd_fill,
     option_universe,

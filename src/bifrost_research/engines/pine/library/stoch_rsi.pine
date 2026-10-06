@@ -1,0 +1,18 @@
+//@version=5
+// Bifrost starter library — Stochastic RSI K/D cross out of the extremes.
+indicator("Bifrost · Stoch RSI cross")
+rsiLen = input.int(14, "RSI length")
+stLen  = input.int(14, "Stoch length")
+kLen   = input.int(3, "K")
+dLen   = input.int(3, "D")
+lo = input.float(20, "Oversold")
+hi = input.float(80, "Overbought")
+r = ta.rsi(close, rsiLen)
+k = ta.sma(ta.stoch(r, r, r, stLen), kLen)
+d = ta.sma(k, dLen)
+buy  = ta.crossover(k, d) and k < lo
+sell = ta.crossunder(k, d) and k > hi
+plot(k, "K")
+plot(d, "D")
+plotshape(buy,  "buy",  shape.triangleup,   location.bottom)
+plotshape(sell, "sell", shape.triangledown, location.top)

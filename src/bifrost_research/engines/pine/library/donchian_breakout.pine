@@ -1,0 +1,12 @@
+//@version=5
+// Bifrost starter library — Donchian breakout (turtle-style): close beyond the prior N-day high / low.
+indicator("Bifrost · Donchian breakout", overlay=true)
+len = input.int(20, "Channel length")
+hi = ta.highest(high, len)[1]
+lo = ta.lowest(low, len)[1]
+buy  = ta.crossover(close, hi)
+sell = ta.crossunder(close, lo)
+plot(hi, "upper")
+plot(lo, "lower")
+plotshape(buy,  "buy",  shape.triangleup,   location.belowbar)
+plotshape(sell, "sell", shape.triangledown, location.abovebar)

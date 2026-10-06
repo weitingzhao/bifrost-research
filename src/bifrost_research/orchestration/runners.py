@@ -256,6 +256,15 @@ def run_canonical_pnl(
             pass
 
 
+def run_pine_signals() -> dict[str, Any]:
+    """Pine library scripts over the universe → features.stock_signal_pine_daily (W6)."""
+    from bifrost_research.engines.pine.build import run
+
+    result = run()
+    result["engine"] = "pine"
+    return result
+
+
 def run_scan(*, lookback_days: int = 3) -> dict[str, Any]:
     """Materialized scanner — depends on upstream CronJobs (vrp/opex) finishing first."""
     from bifrost_research.engines.scan.entry import run

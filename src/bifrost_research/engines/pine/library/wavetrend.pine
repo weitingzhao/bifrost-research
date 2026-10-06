@@ -1,0 +1,19 @@
+//@version=5
+// Bifrost starter library — WaveTrend cross in extreme zones. Own implementation of the public channel-index oscillator.
+indicator("Bifrost · WaveTrend cross")
+n1 = input.int(10, "Channel length")
+n2 = input.int(21, "Average length")
+ob = input.float(53, "Overbought")
+os = input.float(-53, "Oversold")
+ap  = hlc3
+esa = ta.ema(ap, n1)
+d   = ta.ema(math.abs(ap - esa), n1)
+ci  = (ap - esa) / (0.015 * d)
+wt1 = ta.ema(ci, n2)
+wt2 = ta.sma(wt1, 4)
+buy  = ta.crossover(wt1, wt2) and wt1 < os
+sell = ta.crossunder(wt1, wt2) and wt1 > ob
+plot(wt1, "wt1")
+plot(wt2, "wt2")
+plotshape(buy,  "buy",  shape.triangleup,   location.bottom)
+plotshape(sell, "sell", shape.triangledown, location.top)

@@ -1,0 +1,19 @@
+//@version=5
+// Bifrost starter library — Ichimoku Tenkan/Kijun cross, taken only on the cloud's side.
+indicator("Bifrost · Ichimoku TK cross", overlay=true)
+tenLen = input.int(9, "Tenkan")
+kijLen = input.int(26, "Kijun")
+sbLen  = input.int(52, "Senkou B")
+mid(l) => math.avg(ta.highest(high, l), ta.lowest(low, l))
+tenkan = mid(tenLen)
+kijun  = mid(kijLen)
+spanA  = math.avg(tenkan, kijun)[kijLen]
+spanB  = mid(sbLen)[kijLen]
+top = math.max(spanA, spanB)
+bot = math.min(spanA, spanB)
+buy  = ta.crossover(tenkan, kijun) and close > top
+sell = ta.crossunder(tenkan, kijun) and close < bot
+plot(tenkan, "tenkan")
+plot(kijun, "kijun")
+plotshape(buy,  "buy",  shape.triangleup,   location.belowbar)
+plotshape(sell, "sell", shape.triangledown, location.abovebar)

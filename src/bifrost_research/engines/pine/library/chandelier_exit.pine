@@ -1,0 +1,18 @@
+//@version=5
+// Bifrost starter library — Chandelier Exit direction flip. Own implementation of the public ATR trailing-stop rule.
+indicator("Bifrost · Chandelier flip", overlay=true)
+len  = input.int(22, "ATR period")
+mult = input.float(3.0, "ATR multiplier")
+a = mult * ta.atr(len)
+longStop  = ta.highest(close, len) - a
+shortStop = ta.lowest(close, len) + a
+var float ls = na
+var float ss = na
+ls := na(ls) ? longStop  : (close[1] > ls ? math.max(longStop, ls) : longStop)
+ss := na(ss) ? shortStop : (close[1] < ss ? math.min(shortStop, ss) : shortStop)
+var int dir = 1
+dir := close > ss[1] ? 1 : close < ls[1] ? -1 : dir
+buy  = dir == 1 and dir[1] == -1
+sell = dir == -1 and dir[1] == 1
+plotshape(buy,  "buy",  shape.triangleup,   location.belowbar)
+plotshape(sell, "sell", shape.triangledown, location.abovebar)
