@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter
 from fastapi.responses import PlainTextResponse
 
+from bifrost_research.api.http_metrics import HTTP_METRICS
 from bifrost_research.api.schedule_roster import SCHEDULE_ROSTER
 
 logger = logging.getLogger(__name__)
@@ -308,9 +309,11 @@ def metrics() -> PlainTextResponse:
             "1 when the probe's read succeeded on this scrape; its series are absent when 0.",
         )
         body.add(0.0, probe="connect")
-        return PlainTextResponse("\n".join(body.render()) + "\n", media_type=media)
+        # The HTTP series do not need the database: a DB outage is when 5xx happen.
+        text = "\n".join(body.render()) + "\n" + HTTP_METRICS.render()
+        return PlainTextResponse(text, media_type=media)
     try:
-        return PlainTextResponse(collect(conn), media_type=media)
+        return PlainTextResponse(collect(conn) + HTTP_METRICS.render(), media_type=media)
     finally:
         try:
             conn.close()

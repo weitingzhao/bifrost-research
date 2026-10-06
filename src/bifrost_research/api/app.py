@@ -25,6 +25,7 @@ from bifrost_research.api.symbol_verdicts import router as symbol_verdicts_route
 from bifrost_research.api.harness import router as harness_router
 from bifrost_research.api.policy_template import router as policy_template_router
 from bifrost_research.api.health import router as health_router
+from bifrost_research.api.http_metrics import HttpMetricsMiddleware
 from bifrost_research.api.hypothesis import router as hypothesis_router
 from bifrost_research.api.iv_cone import router as iv_cone_router
 from bifrost_research.api.lenses import router as lenses_router
@@ -76,6 +77,8 @@ def create_app() -> FastAPI:
         ),
         lifespan=_lifespan,
     )
+    # http_requests_total / latency for the API alert rules (TD-161).
+    app.add_middleware(HttpMetricsMiddleware)
     app.include_router(health_router)
     app.include_router(metrics_router)
     app.include_router(docs_router)
