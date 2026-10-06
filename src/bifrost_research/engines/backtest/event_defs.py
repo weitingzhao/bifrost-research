@@ -7,10 +7,12 @@ resolved to a set of ``(symbol, event_date)`` pairs by the event resolver in
 - ``earnings``               — quarterly earnings announcements (see event_query
                                resolver for the current data-source policy)
 - ``opex``                   — US monthly OpEx third Friday
-- ``sepa_hit``               — days where the SEPA composite score crossed a threshold
-                               (scored on the session's close)
-- ``iv_percentile_threshold``— days where IV percentile crossed a threshold
-                               (from the session's end-of-day option data)
+- ``sepa_hit``               — days where a SEPA score (0–100, ``threshold``
+                               default 70) reached a threshold (scored on the
+                               session's close)
+- ``iv_percentile_threshold``— days where the 1-year IV percentile (0–100,
+                               ``threshold`` default 80) was above / below a
+                               threshold (from the session's end-of-day option data)
 - ``indicator_signal``       — days a standard indicator signal fired on the
                                symbol's daily closes (MACD / RSI / Bollinger /
                                EMA crossings; ``engines.indicators``)

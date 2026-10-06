@@ -493,13 +493,13 @@ def test_sepa_hit_resolver_uses_threshold() -> None:
     today = date(2026, 6, 1)
     state = _FakeState()
     state.sepa_rows = [
-        ("NVDA", today - timedelta(days=10), 0.85),
-        ("NVDA", today - timedelta(days=20), 0.60),  # below threshold
-        ("AAPL", today - timedelta(days=15), 0.90),
+        ("NVDA", today - timedelta(days=10), 85.0),
+        ("NVDA", today - timedelta(days=20), 60.0),  # below threshold
+        ("AAPL", today - timedelta(days=15), 90.0),
     ]
     conn = _FakeConn(state)
     result = run_event_query(
-        EventDef(kind="sepa_hit", params={"threshold": 0.7}),
+        EventDef(kind="sepa_hit", params={"threshold": 70}),
         template_name="long_atm_call",
         lookback_years=1,
         conn=conn,

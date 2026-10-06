@@ -392,6 +392,24 @@ def _resolve_opex_events(
     return ResolvedEvents(events=events, source="opex")
 
 
+def _score_threshold(params: Mapping[str, Any], default: float, what: str) -> float:
+    """A 0–100 threshold; a fraction is refused rather than read as one point.
+
+    SEPA scores and IV percentiles are stored on a 0–100 scale. Until 0.176.1
+    the SEPA default was 0.7 and the Event backtest form sent an IV threshold
+    of 0.8, so each "hit" was nearly every session. A threshold of 1 or less
+    (or above 100) is that mistake, not a query anyone means.
+    """
+    raw = params.get("threshold")
+    threshold = float(default if raw is None else raw)
+    if not (1.0 < threshold <= 100.0):
+        raise ValueError(
+            f"{what} threshold {threshold:g} is outside (1, 100]: the scores are on a 0–100 scale "
+            f"(e.g. {default:g}, not {default / 100:g})"
+        )
+    return threshold
+
+
 def _resolve_sepa_hit_events(
     conn: Any,
     params: Mapping[str, Any],
@@ -399,7 +417,7 @@ def _resolve_sepa_hit_events(
     end: date,
 ) -> ResolvedEvents:
     symbols = _params_symbols(params)
-    threshold = float(params.get("threshold") or 0.7)
+    threshold = _score_threshold(params, 70.0, "sepa_hit")
     score_col = str(params.get("score_col") or "sepa_score")
     if score_col not in {
         "sepa_score",
@@ -451,7 +469,7 @@ def _resolve_iv_percentile_events(
     end: date,
 ) -> ResolvedEvents:
     symbols = _params_symbols(params)
-    threshold = float(params.get("threshold") or 80.0)
+    threshold = _score_threshold(params, 80.0, "iv_percentile_threshold")
     direction = str(params.get("direction") or "above").lower()
     if direction not in {"above", "below"}:
         raise ValueError(f"iv_percentile direction must be 'above'/'below', got {direction!r}")
