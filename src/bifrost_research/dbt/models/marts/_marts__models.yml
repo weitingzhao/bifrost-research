@@ -21,9 +21,13 @@ models:
       - name: eval_date
         tests:
           - not_null
+          - sepa_session_is_newest_trading_day
       - name: pass_count
         description: "Number of conditions passed (0-8)"
         tests:
+          - assert_pass_count_range:
+              min_value: 0
+              max_value: 8
           - elementary.column_anomalies:
               timestamp_column: eval_date
               column_anomalies:
@@ -41,6 +45,10 @@ models:
         tests:
           - not_null
           - unique
+      - name: eval_date
+        description: "The SEPA session (macro sepa_session), TD-87"
+        tests:
+          - sepa_session_is_newest_trading_day
 
   - name: mart_sepa_technical_eval
     description: "11 core technical conditions as boolean columns with pass_count summary"
@@ -57,8 +65,13 @@ models:
       - name: eval_date
         tests:
           - not_null
+          - sepa_session_is_newest_trading_day
       - name: pass_count
         description: "Number of conditions passed (0-11)"
+        tests:
+          - assert_pass_count_range:
+              min_value: 0
+              max_value: 11
 
   - name: mart_sepa_tier_momentum
     description: "Tier 2 momentum indicators: RSI, MACD, ROC, RS vs SPY (10 indicators)"
@@ -67,6 +80,10 @@ models:
         tests:
           - not_null
           - unique
+      - name: eval_date
+        description: "The SEPA session (macro sepa_session), TD-87"
+        tests:
+          - sepa_session_is_newest_trading_day
       - name: momentum_score
         description: "Normalized momentum score (0-1)"
 
@@ -77,6 +94,10 @@ models:
         tests:
           - not_null
           - unique
+      - name: eval_date
+        description: "The SEPA session (macro sepa_session), TD-87"
+        tests:
+          - sepa_session_is_newest_trading_day
       - name: structure_score
         description: "Normalized structure score (0-1)"
 
@@ -87,8 +108,31 @@ models:
         tests:
           - not_null
           - unique
+      - name: eval_date
+        description: "The SEPA session (macro sepa_session), TD-87"
+        tests:
+          - sepa_session_is_newest_trading_day
       - name: sentiment_score
         description: "Normalized sentiment score (0-1)"
+
+  - name: mart_sepa_tier_options
+    description: >-
+      Options structure tier (the 15% "O" of the composite): per dim_universe
+      symbol, the newest IV percentile, put/call OI ratio and GEX levels from
+      features.option_metric_*, scored 0-1 like sepa_fusion._structure_score / 100.
+      Only symbols with at least one option metric have a row (684 of the
+      universe on 2026-10-06); composite_score and feature_daily left-join it.
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+          - unique
+      - name: iv_percentile
+        description: "Newest 1y IV percentile (option_metric_iv_percentile_daily)"
+      - name: pcr_oi
+        description: "Newest put/call open-interest ratio (option_metric_pcr_daily)"
+      - name: options_structure_score
+        description: "Mean of the available IV, PCR, zero-gamma and wall components, 0-1"
 
   - name: mart_sepa_composite_score
     description: "Weighted composite 30F/35T/20M/15O (fundamental + technical + momentum + options structure)"
@@ -97,6 +141,10 @@ models:
         tests:
           - not_null
           - unique
+      - name: eval_date
+        description: "The SEPA session (macro sepa_session), TD-87"
+        tests:
+          - sepa_session_is_newest_trading_day
       - name: composite_score
         description: "Weighted composite score (0-1)"
 
@@ -107,6 +155,10 @@ models:
         tests:
           - not_null
           - unique
+      - name: eval_date
+        description: "The SEPA session (macro sepa_session), TD-87"
+        tests:
+          - sepa_session_is_newest_trading_day
       - name: overall_rank
         tests:
           - not_null
@@ -120,6 +172,7 @@ models:
         description: "'fundamental' or 'technical'"
         tests:
           - not_null
+          - unique
       - name: stats
         description: "jsonb object with per-condition pass/fail counters"
         tests:
@@ -132,6 +185,10 @@ models:
         tests:
           - not_null
           - unique
+      - name: eval_date
+        description: "The SEPA session (macro sepa_session), TD-87"
+        tests:
+          - sepa_session_is_newest_trading_day
       - name: overall_rank
         tests:
           - not_null

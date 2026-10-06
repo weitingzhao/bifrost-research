@@ -23,6 +23,12 @@ models:
 
   - name: int_stock_daily_enriched
     description: "Daily bars enriched with moving averages, ATR, 52-week range, ROC, and return metrics"
+    tests:
+      # Incremental on (symbol, trade_date): a broken merge duplicates the grain.
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - symbol
+            - trade_date
     columns:
       - name: symbol
         tests:
@@ -41,6 +47,11 @@ models:
 
   - name: int_stock_crs
     description: "Composite Relative Strength — 252d return percentile rank within universe"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - symbol
+            - trade_date
     columns:
       - name: symbol
         tests:
