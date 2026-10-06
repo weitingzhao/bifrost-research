@@ -32,7 +32,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: pine
-          image: 192.168.10.73:30500/bifrost-research-pine:0.3.0
+          image: 192.168.10.73:30500/bifrost-research-pine:0.4.0
           imagePullPolicy: IfNotPresent
           env:
             - name: PORT
