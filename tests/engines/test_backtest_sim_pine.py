@@ -374,3 +374,17 @@ def test_load_overlays_builds_each_symbol_and_reports_errors(monkeypatch: pytest
     monkeypatch.setattr(client, "run", down)
     with pytest.raises(PineRunnerUnavailable, match="connection refused"):
         sim_pine.load_overlays(None, "supertrend", ["AAA"], DAYS[0], DAYS[59], exit_mode="auto", anchor_plot=None)
+
+
+def test_load_overlays_sends_the_context_a_script_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    from bifrost_research.engines.pine import build, client, context, library
+
+    src = '//@version=5\nindicator("v")\nv = request.security("IV_RANK", timeframe.period, close)\nplotshape(v > 50, "buy")'
+    monkeypatch.setattr(library, "get_script", lambda conn, sid: library.PineScript(id=sid, name="v", source=src, version=1))
+    monkeypatch.setattr(build, "load_bars_many", lambda conn, syms, a, b: {s: [{"date": DAYS[0], "close": 1.0}] for s in syms})
+    monkeypatch.setattr(context, "load", lambda conn, names, bars: ({s: {"IV_RANK": {}} for s in bars}, {}, {}))
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(client, "run", lambda source, bars, **kw: seen.append(kw) or {s: {"buy": [], "sell": []} for s in bars})
+    _, report = sim_pine.load_overlays(None, "v", ["AAA"], DAYS[0], DAYS[59], exit_mode="auto", anchor_plot=None)
+    assert seen[0]["context"] == {"AAA": {"IV_RANK": {}}} and seen[0]["market"] == {}
+    assert report["context"] == ["IV_RANK"]

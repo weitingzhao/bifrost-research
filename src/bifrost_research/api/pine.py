@@ -4,6 +4,7 @@ GET  /research/pine/scripts                 the library (source with ?with_sourc
 GET  /research/pine/scripts/{id}            one script with its source
 PUT  /research/pine/scripts/{id}            add or edit a script (owner)
 POST /research/pine/check                   run a source over one symbol without saving (owner)
+GET  /research/pine/context                 the option context series a script can read (S6)
 GET  /research/pine/signals                 who fired on a session (Screener), or one symbol's marks (chart)
 GET  /research/pine/signal-stats            net forward returns after a script's signal vs the same names' other sessions
 
@@ -25,7 +26,7 @@ from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.engines.indicators.bars import load_bars
-from bifrost_research.engines.pine import client, stats
+from bifrost_research.engines.pine import client, context, stats
 from bifrost_research.engines.pine.library import (
     MAX_PLOTS,
     PineScript,
@@ -154,6 +155,23 @@ def put_script(body: ScriptBody, script_id: str = Path(..., min_length=2, max_le
     return {"ok": True, "data": saved.to_dict()}
 
 
+@router.get("/context")
+def context_series() -> dict[str, Any]:
+    """The option context a script reads with ``request.security("NAME", timeframe.period, close)``."""
+    return {
+        "ok": True,
+        "data": {
+            "series": [s.to_dict() for s in context.CATALOG.values()],
+            "rules": {
+                "timeframe": "the script's own (timeframe.period); no higher timeframe yet",
+                "missing_day": f"carries the last value for up to {context.FFILL_SESSIONS} sessions, then na",
+                "warm_up": f"signals are stored from {context.WARMUP_SESSIONS} sessions after the latest first value among the series a script reads",
+                "as_of": "each value is what was known at that session's close",
+            },
+        },
+    }
+
+
 @router.post("/check", dependencies=[Depends(require_owner)])
 def check(body: CheckBody) -> dict[str, Any]:
     """Run a source (or a library script) over one symbol and return its signals — nothing is stored."""
@@ -164,14 +182,23 @@ def check(body: CheckBody) -> dict[str, Any]:
         lib = get_script(conn, body.script) if body.script else None
         if body.script and lib is None:
             raise HTTPException(status_code=404, detail=f"pine script {body.script} not found")
+        source = lib.source if lib is not None else str(body.source)
+        try:
+            names = context.referenced(source)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         bars = load_bars(conn, sym, end - timedelta(days=body.days), end)
+        extra: dict[str, Any] = {}
+        warm: date | None = None
+        if bars and names:
+            extra["context"], extra["market"], warm_by = context.load(conn, names, {sym: bars})
+            warm = warm_by.get(sym)
     finally:
         _close(conn)
     if not bars:
         raise HTTPException(status_code=404, detail=f"no daily bars for {sym}")
-    source = lib.source if lib is not None else str(body.source)
     try:
-        res = client.run(source, {sym: bars}, plots=body.plots).get(sym, {})
+        res = client.run(source, {sym: bars}, plots=body.plots, **extra).get(sym, {})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -188,6 +215,9 @@ def check(body: CheckBody) -> dict[str, Any]:
     data: dict[str, Any] = {"symbol": sym, "bars": len(bars), "marks": marks, "warnings": res.get("warnings") or []}
     if lib is not None:
         data["script"], data["script_version"] = lib.id, lib.version
+    if names:
+        # The nightly build stores this script's signals from warm_from on (None: never in this window).
+        data["context"] = {"series": names, "warm_from": warm.isoformat() if warm else None}
     if body.plots:
         # [[session, value | null]] oldest first; null in the warm-up or where the plot is na.
         data["series"] = {

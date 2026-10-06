@@ -6,7 +6,9 @@ community or user script is pasted into ``research.pine_script`` through the
 API and never enters the repository.
 
 Contract every script keeps: a plot or plotshape titled ``buy`` and/or
-``sell`` that is true on the session the signal fires.
+``sell`` that is true on the session the signal fires. A script may read the
+option context series (``context.CATALOG``) with ``request.security`` on its own
+timeframe; nothing else from ``request.*``.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from bifrost_research.engines.pine.context import referenced
 from bifrost_research.schema.schemas import TABLE_RESEARCH_PINE_SCRIPT
 
 LIBRARY_DIR = Path(__file__).with_name("library")
@@ -101,6 +104,7 @@ def validate(script_id: str, name: str, source: str) -> None:
         raise ValueError(f"source longer than {MAX_SOURCE} characters")
     if not signal_sides(source):
         raise ValueError('the script must plot a series titled "buy" and/or "sell"')
+    referenced(source)  # a request.security the runner would refuse, or an unknown series name
 
 
 def builtin_scripts() -> list[PineScript]:

@@ -2,7 +2,9 @@
 
 Research never imports PineTS: it sends a script and bars over HTTP and gets
 back the sessions each ``buy`` / ``sell`` plot fired — and, from runner 0.2.0 on
-request, numeric plot series and a ``strategy()``'s trades.
+request, numeric plot series and a ``strategy()``'s trades; from runner 0.3.0 it
+also sends the option context a script reads with ``request.security``
+(``engines/pine/context.py``).
 """
 
 from __future__ import annotations
@@ -74,6 +76,21 @@ def _trade(t: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _bar(b: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "t": _ms(b["date"]),
+        "o": b.get("open") if b.get("open") is not None else b["close"],
+        "h": b.get("high") if b.get("high") is not None else b["close"],
+        "l": b.get("low") if b.get("low") is not None else b["close"],
+        "c": b["close"],
+        "v": b.get("volume") or 0,
+    }
+
+
+def _pairs(values: Mapping[date, float | None]) -> list[list[Any]]:
+    return [[_ms(d), v] for d, v in sorted(values.items())]
+
+
 def run(
     source: str,
     series: Mapping[str, Sequence[Mapping[str, Any]]],
@@ -81,6 +98,8 @@ def run(
     timeout: float = 120.0,
     plots: Sequence[str] | None = None,
     trades: bool = False,
+    context: Mapping[str, Mapping[str, Mapping[date, float | None]]] | None = None,
+    market: Mapping[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Run ``source`` over each symbol's bars ``[{date, open, high, low, close, volume}]``.
 
@@ -97,27 +116,25 @@ def run(
       sessions its fills fell on (``entry_date`` / ``exit_date``), prices, ids,
       comments, and ``*_at_open``: True when the fill was at the session's open
       (decided on the previous close), False when it filled inside the session.
+
+    Runner 0.3.0: ``context`` ``{symbol: {name: {session: value | None}}}`` and
+    ``market`` ``{name: bars | {session: value | None}}`` — the series a script
+    reads with ``request.security`` (``context.load``). An older runner refuses
+    a script that calls ``request.security``.
     """
     payload: dict[str, Any] = {
         "source": source,
-        "series": [
-            {
-                "symbol": sym,
-                "bars": [
-                    {
-                        "t": _ms(b["date"]),
-                        "o": b.get("open") if b.get("open") is not None else b["close"],
-                        "h": b.get("high") if b.get("high") is not None else b["close"],
-                        "l": b.get("low") if b.get("low") is not None else b["close"],
-                        "c": b["close"],
-                        "v": b.get("volume") or 0,
-                    }
-                    for b in bars
-                ],
-            }
-            for sym, bars in series.items()
-        ],
+        "series": [{"symbol": sym, "bars": [_bar(b) for b in bars]} for sym, bars in series.items()],
     }
+    if context:
+        for row in payload["series"]:
+            ctx = context.get(row["symbol"])
+            if ctx:
+                row["context"] = {name: _pairs(values) for name, values in ctx.items()}
+    if market:
+        payload["market"] = {
+            name: (_pairs(v) if isinstance(v, Mapping) else [_bar(b) for b in v]) for name, v in market.items()
+        }
     if plots:
         payload["plots"] = list(plots)
     if trades:

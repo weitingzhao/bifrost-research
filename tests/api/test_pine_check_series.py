@@ -111,3 +111,45 @@ def test_overlay_marks_the_scripts_whose_lines_are_prices() -> None:
     assert not is_overlay('indicator("x", overlay=false)')
     row = builtin_scripts()[0].to_dict(with_source=False)
     assert {"plots", "overlay"} <= set(row)
+
+
+# -- S6: option context ------------------------------------------------------------------
+
+_CTX_SRC = '//@version=5\nindicator("v")\nv = request.security("VRP_20", timeframe.period, close)\nplotshape(v > 0, "buy")'
+
+
+def test_a_context_script_is_sent_its_series_and_told_when_signals_count(
+    api: TestClient, calls: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d1, d2 = date(2026, 1, 5), date(2026, 1, 6)
+    loaded: list[list[str]] = []
+
+    def load(conn, names, bars):  # noqa: ANN001
+        loaded.append(list(names))
+        return {"SPY": {"VRP_20": {d1: None, d2: 2.0}}}, {}, {"SPY": d2}
+
+    monkeypatch.setattr(f"{_MOD}.context.load", load)
+    resp = api.post(_PATH, json={"source": _CTX_SRC, "symbol": "SPY"})
+    assert resp.status_code == 200, resp.text
+    assert loaded == [["VRP_20"]]
+    assert calls == [{"source": _CTX_SRC, "plots": None, "context": {"SPY": {"VRP_20": {d1: None, d2: 2.0}}}, "market": {}}]
+    assert resp.json()["data"]["context"] == {"series": ["VRP_20"], "warm_from": "2026-01-06"}
+
+
+def test_an_unknown_series_or_a_higher_timeframe_is_400(api: TestClient, calls: list[dict[str, Any]]) -> None:
+    for src in (_CTX_SRC.replace("VRP_20", "VRP_21"), _CTX_SRC.replace("timeframe.period", '"W"')):
+        resp = api.post(_PATH, json={"source": src, "symbol": "SPY"})
+        assert resp.status_code == 400
+    assert calls == []
+
+
+def test_the_context_catalog() -> None:
+    api = TestClient(create_app())
+    resp = api.get("/research/pine/context")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    names = [s["name"] for s in data["series"]]
+    assert names[:3] == ["IV_30", "IV_RANK", "IV_PCTL"] and len(names) == 12
+    iv = data["series"][0]
+    assert iv["pine"] == 'request.security("IV_30", timeframe.period, close)' and iv["history_from"] == "2024-09-09"
+    assert "5 sessions" in data["rules"]["missing_day"]

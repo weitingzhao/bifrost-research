@@ -25,7 +25,8 @@ Timing, so that nothing acts on what was not yet known:
   before D: known at D's open.
 
 Nothing is stored: the runner computes this per request from the same adjusted
-daily bars the signal build uses, with ``HISTORY_DAYS`` of warm-up.
+daily bars the signal build uses, with ``HISTORY_DAYS`` of warm-up, and the same
+option context when the script reads any (``engines/pine/context.py``, S6).
 
 D10 BLOCKED — historical replay only.
 """
@@ -154,7 +155,7 @@ def load_overlays(
     anchor_plot: str | None,
 ) -> tuple[dict[str, PineOverlay], dict[str, Any]]:
     """Run ``script_id`` over each symbol's bars and build its overlay; also a report for the summary."""
-    from bifrost_research.engines.pine import client
+    from bifrost_research.engines.pine import client, context
     from bifrost_research.engines.pine.build import load_bars_many
     from bifrost_research.engines.pine.library import get_script
 
@@ -163,6 +164,7 @@ def load_overlays(
         raise ValueError(f"pine script {script_id!r} not found")
     syms = [str(s).strip().upper() for s in symbols if str(s).strip()]
     want_trades = exit_mode in ("auto", "strategy")
+    names = context.referenced(script.source)
     overlays: dict[str, PineOverlay] = {}
     used: set[str] = set()
     report: dict[str, Any] = {
@@ -170,6 +172,7 @@ def load_overlays(
         "script_version": script.version,
         "exit_mode": exit_mode,
         "anchor_plot": anchor_plot,
+        "context": names,
         "history_days": HISTORY_DAYS,
         "per_symbol": {},
         "errors": {},
@@ -180,9 +183,12 @@ def load_overlays(
         bars = load_bars_many(conn, chunk, start - timedelta(days=HISTORY_DAYS), end)
         if not bars:
             continue
+        extra: dict[str, Any] = {}
+        if names:
+            extra["context"], extra["market"], _ = context.load(conn, names, bars)
         try:
             results = client.run(
-                script.source, bars, plots=[anchor_plot] if anchor_plot else None, trades=want_trades
+                script.source, bars, plots=[anchor_plot] if anchor_plot else None, trades=want_trades, **extra
             )
         except ValueError:
             raise

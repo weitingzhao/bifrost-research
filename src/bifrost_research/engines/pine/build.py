@@ -24,6 +24,12 @@ What a signal row means (0.175.0):
   ``raw_market.ticker``, with option history in the window), so a signal
   study is not limited to the survivors (B7). Incremental runs skip them:
   they print no new bars.
+- **Option context** (0.195.0, S6). A script that reads context series with
+  ``request.security`` (``engines/pine/context.py``) is sent them with its bars,
+  ``CONTEXT_CHUNK`` symbols a request, and writes no signal before
+  ``context.warm_from``: 100 sessions after the latest first value among the
+  series it reads (IV rank starts 2025-03, so such a script's signals start
+  about 2025-08). A script without ``request.security`` runs exactly as before.
 - **Adjustment basis.** Bars are the feed's adjusted closes as of the day the
   row was written. An incremental run rewrites only the last few sessions, so
   after a split or a large dividend the older rows of that name were computed
@@ -46,7 +52,7 @@ from typing import Any, Mapping, Sequence
 
 from bifrost_research.db.calendar import load_symbols_from_env_or_query, ny_today
 from bifrost_research.db.conn import connect
-from bifrost_research.engines.pine import client
+from bifrost_research.engines.pine import client, context
 from bifrost_research.engines.pine.library import PineScript, ensure_builtins, list_scripts
 from bifrost_research.repositories.listing_lineage import spliced_bars_sql
 from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_PINE_DAILY
@@ -54,6 +60,8 @@ from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_PINE_DAILY
 logger = logging.getLogger(__name__)
 
 CHUNK = 100
+#: Symbols a request for a script that reads context: each series rides along with the bars.
+CONTEXT_CHUNK = 50
 FULL_HISTORY_DAYS = 365 * 6
 HISTORY_DAYS = 600
 WARMUP_BARS = 100
@@ -135,8 +143,10 @@ def signal_rows(
     since: date | None,
     *,
     warmup_bars: int = 0,
+    context_warm: Mapping[str, date | None] | None = None,
 ) -> tuple[list[tuple[Any, ...]], dict[str, str]]:
-    """Rows to write: signals on or after ``since`` and past the first ``warmup_bars`` bars sent."""
+    """Rows to write: signals on or after ``since``, past the first ``warmup_bars`` bars sent
+    and, for a script that reads context, on or after ``context_warm[symbol]`` (none when None)."""
     rows: list[tuple[Any, ...]] = []
     errors: dict[str, str] = {}
     for sym, res in fired.items():
@@ -146,11 +156,14 @@ def signal_rows(
         sent = bars_by_symbol.get(sym, [])
         close_on = {b["date"]: b["close"] for b in sent}
         warm_from = sent[warmup_bars]["date"] if warmup_bars and len(sent) > warmup_bars else None
+        ctx_from = context_warm.get(sym) if context_warm is not None else None
         for side in ("buy", "sell"):
             for d in res.get(side) or []:
                 if since is not None and d < since:
                     continue
                 if warmup_bars and (warm_from is None or d < warm_from):
+                    continue
+                if context_warm is not None and (ctx_from is None or d < ctx_from):
                     continue
                 rows.append((script.id, sym, d, side, script.version, close_on.get(d)))
     return rows, errors
@@ -198,35 +211,51 @@ def run(
         report: dict[str, Any] = {"as_of": end.isoformat(), "seeded": seeded, "symbols": len(universe), "scripts": {}}
         retired: list[str] | None = None
         for script in scripts:
+            try:
+                names = context.referenced(script.source)
+            except ValueError as exc:
+                report["scripts"][script.id] = {
+                    "version": script.version,
+                    "rows": 0,
+                    "errors": 1,
+                    "error_sample": {"*": str(exc)[:300]},
+                }
+                continue
             rebuild = full or versions.get(script.id) != script.version
             start = end - timedelta(days=FULL_HISTORY_DAYS if rebuild else HISTORY_DAYS)
-            names = list(universe)
+            symbols_to_run = list(universe)
             if rebuild and not symbols:
                 if retired is None:
                     retired = retired_names(conn, universe, start)
                     report["retired_names"] = retired
-                names += retired
+                symbols_to_run += retired
             # Calendar days back to cover ``recent_sessions`` sessions with weekends and holidays.
             since = None if rebuild else end - timedelta(days=int(recent_sessions * 1.5) + 4)
             written = 0
             errors: dict[str, str] = {}
-            for i in range(0, len(names), CHUNK):
-                chunk = names[i : i + CHUNK]
+            step = CONTEXT_CHUNK if names else CHUNK
+            for i in range(0, len(symbols_to_run), step):
+                chunk = symbols_to_run[i : i + step]
                 bars = load_bars_many(conn, chunk, start, end)
                 if not bars:
                     continue
+                warm: dict[str, date | None] | None = None
+                extra: dict[str, Any] = {}
+                if names:
+                    extra["context"], extra["market"], warm = context.load(conn, names, bars)
                 try:
-                    fired = client.run(script.source, bars)
+                    fired = client.run(script.source, bars, **extra)
                 except Exception as exc:  # noqa: BLE001 — the runner down is a run failure, said once
                     errors["*"] = f"pine-runner: {type(exc).__name__}: {str(exc)[:200]}"
                     break
-                rows, errs = signal_rows(script, bars, fired, since, warmup_bars=WARMUP_BARS)
+                rows, errs = signal_rows(script, bars, fired, since, warmup_bars=WARMUP_BARS, context_warm=warm)
                 errors.update(errs)
                 if not dry_run:
                     _write(conn, script.id, rows, replace_from=since, symbols=list(bars))
                 written += len(rows)
             report["scripts"][script.id] = {
                 "version": script.version,
+                "context": names,
                 "mode": "rebuild" if rebuild else "recent",
                 "rows": written,
                 "errors": len(errors),
