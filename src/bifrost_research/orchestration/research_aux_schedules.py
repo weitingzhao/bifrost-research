@@ -241,11 +241,18 @@ engines_terrain_intraday = _run_asset(
         soft_failed=(("skipped_no_spot", "rows_written"),),
     ),
 )
+# SEC 8-K filings -> event radar (TD-100). Until 2026-10 this asset ran the file
+# ingest against an input directory the pod never had, answered "idle" every
+# 30 minutes, and the real feed ran from a tmux loop on the Owner's Mac. The
+# Owner's own drop-zone files stay on the Mac (scripts/event_radar_watch.sh).
 engines_event_radar_sched = _run_asset(
     key_path=["engines", "event_radar_cron"],
     group=GROUP_INTRADAY,
-    description="Event radar file ingest (*/30); distinct key from excluded ai_forecast asset",
-    fn=lambda: runners.run_event_radar(),
+    description=(
+        "SEC 8-K filings (raw_market.sec_8k_filing) -> features.event_signal_radar_daily, "
+        "every 30 minutes; idempotent, raises on failure"
+    ),
+    fn=lambda: runners.run_event_radar_sec(),
     spec=None,
 )
 
@@ -578,7 +585,8 @@ _specs: list[tuple[str, str, list[Any], str, str, str]] = [
         "research_event_radar_schedule",
         "research_event_radar_job",
         [engines_event_radar_sched],
-        "*/30 * * * 1-5",
+        # Every day: the plugin writes Friday's filings early Saturday UTC.
+        "*/30 * * * *",
         "UTC",
         "event-radar",
     ),

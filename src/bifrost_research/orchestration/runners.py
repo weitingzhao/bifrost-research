@@ -162,12 +162,20 @@ def run_event_radar(
     """Run Event Radar from Research-workspace input files.
 
     An empty input directory is idle: no pipeline, no upsert. ``sample_text`` is
-    only for an explicit dry-run and even then does not write.
+    only for an explicit dry-run and even then does not write. A *missing*
+    directory raises: the cluster had no input mount, so for weeks this answered
+    "idle" every 30 minutes and looked like a quiet feed (TD-100).
     """
-    from bifrost_research.engines.event_radar.ingest import ingest_directory
+    from bifrost_research.engines.event_radar.ingest import (
+        ingest_directory,
+        resolve_input_dir,
+    )
     from bifrost_research.engines.event_radar.pipeline import run_pipeline
 
-    summary = ingest_directory(input_dir, upsert=True, archive=None)
+    resolved = resolve_input_dir(input_dir)
+    if not resolved.is_dir():
+        raise FileNotFoundError(f"event radar input directory does not exist: {resolved}")
+    summary = ingest_directory(resolved, upsert=True, archive=None)
     if summary.files_processed or summary.files_seen:
         return {
             "engine": "event_radar",
@@ -194,6 +202,18 @@ def run_event_radar(
         "rows_written": 0,
         "advisory": "D10 BLOCKED — event radar is advisory only",
     }
+
+
+def run_event_radar_sec() -> dict[str, Any]:
+    """SEC 8-K filings -> features.event_signal_radar_daily; raises on failure."""
+    from bifrost_research.db.conn import connect
+    from bifrost_research.engines.event_radar.sec_source import ingest_sec_filings
+
+    conn = connect()
+    try:
+        return ingest_sec_filings(conn).to_dict()
+    finally:
+        conn.close()
 
 
 def run_backtest(*, as_of: date | None = None) -> dict[str, Any]:

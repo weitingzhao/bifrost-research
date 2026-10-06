@@ -10,39 +10,22 @@ Manifests for `dagster-webserver` + `dagster-daemon` in namespace `research`.
 make dagster-ensure-schedule
 ```
 
-## Schedule roster (after full migrate)
+## Schedule roster
 
-| Schedule | Cron / TZ | Role |
-|----------|-----------|------|
-| `research_trading_day_schedule` | `30 22 * * 1-5` ET | Market EOD + Flex enqueue → gate → dbt → engines + scan |
-| `research_canonical_pnl_schedule` | `40 23 * * 1-5` UTC | Canonical PnL |
-| `market_snapshot_schedule` | `5 21 * * *` UTC | stock-snapshot |
-| `market_movers_schedule` | `10 21 * * *` UTC | stock-movers |
-| `market_reference_schedule` | `30 21 * * *` UTC | reference |
-| `market_universe_calendar_schedule` | `0 22 * * *` UTC (~17:00 America/Chicago) | universe-daily + calendar + stock-eod + eod-pipeline |
-| `market_related_schedule` | `30 22 * * *` UTC | related-rotate |
-| `market_option_bars_schedule` | `45 22 * * *` UTC | option-bars |
-| `market_corporate_schedule` | `0 23 * * *` UTC | corporate — dividends + splits, whole market (option-trades retired until an Options Developer upgrade) |
-| `market_minute_bars_schedule` | `15 23 * * *` UTC | minute-bars |
-| `market_fundamentals_rotate_schedule` | `0 3 * * *` UTC | fundamentals-rotate |
-| `market_fundamentals_market_schedule` | `30 4 * * 2-6` UTC | fundamentals-market — ratios + short data, whole market by date |
-| `market_ratios_market_schedule` | `10 2-20/3 * * *` UTC | ratios-market — ratios alone, every three hours incl. weekends (the endpoint ignores `?date`; this catches a session's ratios the day they appear) |
-| `market_option_depth_schedule` | `30 7 * * 0` UTC | option-depth — option history for universe names short of their tier's depth, only the missing months (a newly added name gets its history without a manual one-off) |
-| `market_option_refresh_schedule` | `20 */6 * * *` UTC | option-refresh |
-| `market_trim_schedule` | `15 2 * * *` UTC | trim (maintenance Cron) |
-| `market_treasury_schedule` | `0 12 * * 1-5` UTC | treasury yields |
-| `market_intraday_chain_{1030,1300,1530}_schedule` | `10:30 / 13:00 / 15:30` **America/New_York** | intraday option chain snapshots (market clock, not UTC) |
-| `market_self_heal_schedule` | `45 0 * * 2-6` UTC | Plugin doctor → heal → drain → recheck for the day's session; fails (→ Alertmanager) only when still critical |
-| `market_self_heal_late_schedule` | `30 5 * * 2-6` UTC | Same job, an hour after `fundamentals-market` (04:30): refetches ratios / short volume that landed short while the vendor still serves them |
-| `research_opex_schedule` … | see `research_aux_schedules.py` | OpEx / SVI / alert / signal-hit / settlement (VRP moved into `research_trading_day` after volatility — A4) |
-| `research_intraday_schedule` | `45 10-16 * * 1-5` **America/New_York** | terrain + gex intraday — a quarter past the intraday chain; gex runs on the names that chain observed and fails when none computes |
-| `research_event_radar_schedule` | `*/30 * * * 1-5` UTC | event-radar ingest |
-| `research_morning_prep_schedule` / `research_eod_review_schedule` | UTC | agents |
-| `research_ensure_partitions_schedule` / `research_vol_weekly_backfill_schedule` | UTC | maintenance |
+There is no table here on purpose: three hand-kept copies of the roster (this
+README, Ops Console, `scripts/verify_husbandry_schedulers.sh`) drifted apart
+(TD-108). The roster is the code, and the places that need it read it:
 
-**Outside Dagster:** IB Gateway / IB Client / realtime WS Deployments only.
+| Where | What |
+|-------|------|
+| `src/bifrost_research/orchestration/{schedules,market_slot_schedules,research_aux_schedules}.py` | The ScheduleDefinitions — name, cron, timezone, job, and for market slots the plugin slots each job enqueues |
+| `src/bifrost_research/api/schedule_roster.py` | The same roster for research-api (its image has no Dagster); a test fails on any field that differs from the definitions |
+| `GET /research/orchestration/status` → `schedules[]` | Live state per schedule: RUNNING / STOPPED, cron, timezone, next tick, last run, `market_slots` (Ops Console reads this) |
+| research-api `GET /metrics` | `bifrost_dagster_schedule_*` liveness series behind the `bifrost-research-orchestration` alerts |
+| `make verify-husbandry-schedulers` | Every roster schedule listed by the daemon and RUNNING |
 
-**Executors:** Plugin workers + `ops_jobs.*` (HTTP enqueue). Research Python / dbt run in Dagster.
+**Outside Dagster:** the `research-harness` CronJob (weekdays 13:30 UTC, the only
+research CronJob not suspended), and IB Gateway / realtime WS Deployments.
 
 ## Landing check
 
@@ -50,7 +33,7 @@ make dagster-ensure-schedule
 make verify-husbandry-schedulers
 ```
 
-All Golden Source husbandry CronJobs must be `suspend: true`. Core schedules must be RUNNING after image roll.
+Every CronJob in `research`, `plugin-market-data` and `plugin-flex-query` must be `suspend: true` except `research-harness`; every schedule in research-api's roster must be listed by the daemon and RUNNING.
 
 See Ops Console `dataHusbandryCatalog` `HUSBANDRY_SCHEDULER_NOTE` and Research `CLAUDE.md`.
 

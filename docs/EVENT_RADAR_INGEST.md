@@ -72,20 +72,44 @@ Trade FE `EventRadarPage` shows the events table when API returns rows.
 "News source not configured" is replaced by a "No events yet" empty state that
 points at the Research-workspace input path once this ingest Cron exists.
 
-## Local watcher (2026-09-24)
+## SEC 8-K filings — in Dagster (TD-100, 2026-10)
 
-The Dagster schedule that owns the event-radar slot runs in a pod with no
-mount for `event-radar-input-pvc`, so cluster runs always idle; the Owner's
-drop zone is `Research-workspace/事件雷达工作流/input/` on the Mac. The drain
-therefore runs on the Mac, under bdev (a launchd job cannot reach the LAN
-database — macOS grants local network per executable and launchd does not
-inherit it):
+`research_event_radar_schedule` (every 30 minutes, every day) materializes
+`engines/event_radar_cron`, which reads `raw_market.sec_8k_filing` (+ the
+vendor's `sec_8k_disclosure` category) for the last 7 days, skips filings whose
+line is already in `features.event_signal_radar_daily`, and upserts the rest
+(`engines/event_radar/sec_source.py`). There is no watermark file: a filing is
+"new" when its head (`<filing_date> <symbol> filed an 8-K (items …)`) is not in
+the table as many times as filings share it, so a missed tick is caught up by
+the next one and a re-run writes nothing. A database failure fails the run, and
+`bifrost_run_failure_alert` reports it. Rows keep the `ws:sec-8k-<UTC stamp>`
+source and the Central-time `collected_at` the Mac loop used.
+
+Manual run (inside a research pod): `python -m bifrost_research.engines.event_radar.sec_source`.
+
+Liveness: research-api `/metrics` exports the newest filing's `fetched_at` and
+the newest SEC radar row's `computed_at`; `BifrostEventRadarSecBacklog` and
+`BifrostEventRadarStale` (bifrost-trade-infra `k8s/monitoring`) fire when the
+second falls behind the first or goes four days without a row.
+
+Until 2026-10 this ran on the Owner's Mac (`scripts/event_radar_sec_source.py`
+in the bdev watcher, watermark `Research-workspace/事件雷达工作流/.sec-8k-watermark.json`);
+both are gone.
+
+## Local watcher (optional — Owner drop-zone files only)
+
+The Owner's drop zone is `Research-workspace/事件雷达工作流/input/` on the Mac and
+the cluster has no mount for it, so files dropped there are drained on the Mac,
+under bdev (a launchd job cannot reach the LAN database — macOS grants local
+network per executable and launchd does not inherit it):
 
 ```bash
 bdev start event-radar-watch     # scripts/event_radar_watch.sh
 ```
 
 The watcher checks the input directory every 10 minutes and runs the ingest
-only when supported files are present. Wiring the PVC into the Dagster
-daemon (mount + `EVENT_RADAR_INPUT_DIR`) plus a Mac→PVC sync remains the
-cluster-native alternative if the drop zone ever moves off this machine.
+only when supported files are present. It re-reads `.env` each time and exits
+non-zero after three consecutive failed ingests, so bdev shows it. With no files
+to drop it need not run. Wiring the PVC into the Dagster daemon (mount +
+`EVENT_RADAR_INPUT_DIR`) plus a Mac→PVC sync remains the cluster-native
+alternative if the drop zone ever moves off this machine.

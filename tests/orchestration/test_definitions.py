@@ -275,3 +275,48 @@ def test_every_whitelisted_job_resolves_its_assets() -> None:
 
     for _sched, job_name, _tz in HUSBANDRY_SCHEDULE_JOBS:
         defs.get_job_def(job_name)  # raises DagsterInvalidSubsetError on drift
+
+
+def test_schedule_roster_matches_the_definitions_field_by_field() -> None:
+    """research-api cannot import Dagster, so it reads schedule_roster (TD-108).
+
+    Every field it serves -- job, timezone, cron, the plugin slots a schedule
+    fires -- must equal the code's, or Console, /metrics and the liveness alerts
+    describe a schedule that is not the one running.
+    """
+    from bifrost_research.api.schedule_roster import SCHEDULE_ROSTER
+    from bifrost_research.orchestration.definitions import defs
+    from bifrost_research.orchestration.market_slot_schedules import MARKET_SLOTS_BY_SCHEDULE
+
+    declared = {s.name: s for s in defs.schedules}
+    assert len({s.name for s in SCHEDULE_ROSTER}) == len(SCHEDULE_ROSTER), "duplicate names"
+    for spec in SCHEDULE_ROSTER:
+        sched = declared[spec.name]
+        assert spec.job == sched.job_name, spec.name
+        assert spec.tz == (sched.execution_timezone or "UTC"), spec.name
+        assert spec.cron == sched.cron_schedule, spec.name
+        assert spec.market_slots == MARKET_SLOTS_BY_SCHEDULE.get(spec.name, ()), spec.name
+
+
+def test_schedule_names_in_docs_and_scripts_exist() -> None:
+    """A README table and a runbook script kept their own schedule lists and drifted.
+
+    k8s/orchestration/README listed research_morning_prep_schedule; the verify
+    script asserted market_corporate_trades_schedule and only warned when it was
+    absent. Any *_schedule named in those places must be a declared schedule.
+    """
+    import re
+    from pathlib import Path
+
+    from bifrost_research.api.schedule_roster import ROSTER_BY_NAME
+
+    root = Path(__file__).resolve().parents[2]
+    files = [*root.glob("k8s/**/*.md"), *root.glob("scripts/*.sh"), root / "Makefile"]
+    pattern = re.compile(r"\b((?:research|market)_[a-z0-9_]+_schedule)\b")
+    unknown = {
+        f"{path.relative_to(root)}: {name}"
+        for path in files
+        for name in pattern.findall(path.read_text(encoding="utf-8"))
+        if name not in ROSTER_BY_NAME
+    }
+    assert not unknown, sorted(unknown)

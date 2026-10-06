@@ -295,8 +295,9 @@ OUTPUT_CHECK_OPT_OUT: dict[str, str] = {
         "the input mount exists is TD-100's check"
     ),
     "engines/event_radar_cron": (
-        "file ingest where an empty input directory is a legitimate idle; whether "
-        "the input mount exists is TD-100's check"
+        "SEC 8-K ingest every 30 minutes: most ticks find no new filing (they land once "
+        "a day), so 0 rows is normal; a failure raises, and BifrostEventRadarSecBacklog "
+        "watches filings vs rows (TD-100)"
     ),
     "maintenance/terrain_backfill": "manual run; the operator who launched it reads its report",
     "maintenance/event_radar_purge": "manual one-off (dry run by default); the operator reads its counts",

@@ -73,3 +73,27 @@ def test_files_present_still_file_ingest(monkeypatch, tmp_path: Path) -> None:
     assert result["files_seen"] == 1
     assert result["files_processed"] == 1
     assert result["rows_written"] == 2
+
+
+def test_a_missing_input_directory_raises(tmp_path: Path) -> None:
+    """The cluster had no input mount and answered "idle" for weeks (TD-100)."""
+    import pytest
+
+    with pytest.raises(FileNotFoundError):
+        runners.run_event_radar(input_dir=str(tmp_path / "not-mounted"))
+
+
+def test_the_scheduled_event_radar_asset_runs_the_sec_ingest(monkeypatch) -> None:
+    from dagster import materialize
+
+    from bifrost_research.orchestration.research_aux_schedules import engines_event_radar_sched
+
+    calls: list[int] = []
+    monkeypatch.setattr(
+        runners, "run_event_radar_sec", lambda: calls.append(1) or {"mode": "sec_8k", "lines_new": 0}
+    )
+    monkeypatch.setattr(
+        runners, "run_event_radar", lambda **k: (_ for _ in ()).throw(AssertionError("file ingest"))
+    )
+    assert materialize([engines_event_radar_sched]).success
+    assert calls == [1]

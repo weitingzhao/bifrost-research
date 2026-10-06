@@ -8,51 +8,12 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-logger = logging.getLogger(__name__)
-
-# (schedule_name, pipeline/job name in ops_dagster.runs, execution_timezone)
-# Timezone is the ScheduleDefinition's, not the instigator row (which omits it).
-HUSBANDRY_SCHEDULE_JOBS: tuple[tuple[str, str, str], ...] = (
-    ("research_trading_day_schedule", "research_trading_day", "America/New_York"),
-    ("research_flex_morning_schedule", "research_flex_morning", "America/New_York"),
-    ("research_canonical_pnl_schedule", "research_canonical_pnl_job", "UTC"),
-    ("market_snapshot_schedule", "market_snapshot_job", "UTC"),
-    ("market_movers_schedule", "market_movers_job", "UTC"),
-    ("market_reference_schedule", "market_reference_job", "UTC"),
-    ("market_universe_calendar_schedule", "market_universe_calendar_job", "UTC"),
-    ("market_related_schedule", "market_related_job", "UTC"),
-    ("market_option_bars_schedule", "market_option_bars_job", "UTC"),
-    ("market_corporate_schedule", "market_corporate_job", "UTC"),
-    ("market_minute_bars_schedule", "market_minute_bars_job", "UTC"),
-    ("market_fundamentals_rotate_schedule", "market_fundamentals_rotate_job", "UTC"),
-    ("market_fundamentals_market_schedule", "market_fundamentals_market_job", "UTC"),
-    ("market_ratios_market_schedule", "market_ratios_market_job", "UTC"),
-    ("market_option_depth_schedule", "market_option_depth_job", "UTC"),
-    ("market_option_refresh_schedule", "market_option_refresh_job", "UTC"),
-    ("market_trim_schedule", "market_trim_job", "UTC"),
-    ("market_self_heal_schedule", "market_self_heal_job", "UTC"),
-    ("market_self_heal_late_schedule", "market_self_heal_job", "UTC"),
-    ("market_treasury_schedule", "market_treasury_job", "UTC"),
-    ("market_ticker_details_schedule", "market_ticker_details_job", "UTC"),
-    ("market_corporate_backfill_schedule", "market_corporate_backfill_job", "UTC"),
-    ("market_intraday_chain_1030_schedule", "market_intraday_chain_job", "America/New_York"),
-    ("market_intraday_chain_1300_schedule", "market_intraday_chain_job", "America/New_York"),
-    ("market_intraday_chain_1530_schedule", "market_intraday_chain_job", "America/New_York"),
-    ("research_opex_schedule", "research_opex_job", "UTC"),
-    ("research_vol_surface_svi_schedule", "research_vol_surface_svi_job", "UTC"),
-    ("research_iv_solver_schedule", "research_iv_solver_job", "UTC"),
-    ("research_signal_hit_schedule", "research_signal_hit_job", "UTC"),
-    ("research_settlement_schedule", "research_settlement_job", "UTC"),
-    ("research_forecast_schedule", "research_forecast_job", "America/New_York"),
-    ("research_intraday_schedule", "research_intraday_job", "America/New_York"),
-    ("research_event_radar_schedule", "research_event_radar_job", "UTC"),
-    ("research_daily_digest_schedule", "research_daily_digest_job", "UTC"),
-    ("research_weekly_policy_review_schedule", "research_weekly_policy_review_job", "UTC"),
-    ("research_eod_review_schedule", "research_eod_review_job", "UTC"),
-    ("research_memory_distill_schedule", "research_memory_distill_job", "UTC"),
-    ("research_ensure_partitions_schedule", "research_ensure_partitions_job", "UTC"),
-    ("research_vol_weekly_backfill_schedule", "research_vol_weekly_backfill_job", "UTC"),
+from bifrost_research.api.schedule_roster import (
+    HUSBANDRY_SCHEDULE_JOBS,
+    ROSTER_BY_NAME,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_schedule_status(raw: str | None) -> str:
@@ -283,8 +244,12 @@ def build_schedules_summary(
     for sched_name, job_name, tz in HUSBANDRY_SCHEDULE_JOBS:
         info = meta.get(sched_name) or {}
         st = str(info.get("status") or "unknown")
-        cron = info.get("cron_schedule")
-        cron_s = str(cron) if isinstance(cron, str) else None
+        spec = ROSTER_BY_NAME[sched_name]
+        # The code's cron, not the instigator row's: a DECLARED_IN_CODE row keeps
+        # the cron it was created with. Measured 2026-10-06: ratios, treasury and
+        # research_intraday rows still held crons replaced weeks earlier, while
+        # the daemon ticked on the code's (ratios fired 14:10, the row said 2-20/3).
+        cron_s = spec.cron
         if st == "RUNNING":
             running += 1
         elif st == "STOPPED":
@@ -298,6 +263,10 @@ def build_schedules_summary(
             "job_name": job_name,
             "status": st,
             "cron_schedule": cron_s,
+            "execution_timezone": tz,
+            # Plugin slots this schedule fires; Console maps slot -> schedule from
+            # these instead of keeping its own table (TD-108).
+            "market_slots": list(spec.market_slots),
             "next_tick_at": next_tick_at(cron_s, status=st, now=now, tz=tz),
             "last_run_status": last_status,
             "last_run_ended_at": last_ended,

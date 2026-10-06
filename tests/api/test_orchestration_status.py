@@ -143,7 +143,27 @@ def test_schedules_summary_computes_next_tick() -> None:
     digest = next(s for s in summary["schedules"] if s["name"] == "research_daily_digest_schedule")
     trading = next(s for s in summary["schedules"] if s["name"] == "research_trading_day_schedule")
     eod = next(s for s in summary["schedules"] if s["name"] == "research_eod_review_schedule")
-    assert digest["next_tick_at"] == "2026-09-15T03:00:00Z"
+    # The instigator rows above carry stale crons (a DECLARED_IN_CODE row keeps the
+    # cron it was created with); the code's cron wins: digest 30 11 * * 1-5 UTC.
+    assert digest["cron_schedule"] == "30 11 * * 1-5"
+    assert digest["next_tick_at"] == "2026-09-15T11:30:00Z"
     assert trading["next_tick_at"] == "2026-09-15T02:30:00Z"
     assert eod["next_tick_at"] is None
-    assert eod["cron_schedule"] == "30 22 * * 1-5"
+    assert eod["cron_schedule"] == "30 21 * * 1-5"
+
+
+def test_schedule_rows_carry_timezone_and_market_slots() -> None:
+    """Console maps plugin slot -> schedule from these fields (TD-108)."""
+    summary = build_schedules_summary(schedule_meta={})
+    rows = {s["name"]: s for s in summary["schedules"]}
+    assert rows["market_corporate_schedule"]["market_slots"] == ["corporate"]
+    assert rows["market_universe_calendar_schedule"]["market_slots"] == [
+        "universe-daily",
+        "calendar",
+        "stock-eod",
+        "eod-pipeline",
+    ]
+    assert rows["research_trading_day_schedule"]["market_slots"] == []
+    assert rows["market_intraday_chain_1030_schedule"]["execution_timezone"] == "America/New_York"
+    slots = [slot for row in rows.values() for slot in row["market_slots"]]
+    assert "option-trades" not in slots

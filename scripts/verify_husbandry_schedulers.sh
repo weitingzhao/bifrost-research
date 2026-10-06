@@ -1,86 +1,41 @@
 #!/usr/bin/env bash
 # Verify Data Husbandry scheduler landing (Dagster owns all Golden Source husbandry Cron).
-# Authority: bifrost-platform/console dataHusbandryCatalog HUSBANDRY_SCHEDULER_NOTE
+#
+# Nothing here is a hand-kept list (TD-108: the old one asserted retired schedules
+# and only WARNed when one was absent):
+#   - CronJobs: every CronJob in the husbandry namespaces must be suspended,
+#     except the ones Dagster does not own (ALLOW_ACTIVE).
+#   - Schedules: the expected set is research-api's roster
+#     (bifrost_research.api.schedule_roster, test-locked to the Dagster
+#     definitions); each must be listed by the daemon and RUNNING. A schedule the
+#     daemon lists that the roster does not know is reported (the two images can
+#     be on different versions).
+#
 # Usage: KUBECONFIG=... ./scripts/verify_husbandry_schedulers.sh
 set -euo pipefail
 
 KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/bifrost-k3s.yaml}"
 export KUBECONFIG
 NS_RESEARCH="${NS_RESEARCH:-research}"
+# CronJobs that stay active on purpose. research-harness is the only research
+# CronJob outside Dagster (weekdays 13:30 UTC).
+ALLOW_ACTIVE="${ALLOW_ACTIVE:-research-harness}"
 FAIL=0
 
-must_suspend() {
-  local ns="$1" name="$2"
-  local sus
-  sus="$(kubectl -n "$ns" get cronjob "$name" -o jsonpath='{.spec.suspend}' 2>/dev/null || echo MISSING)"
-  if [[ "$sus" == "MISSING" ]]; then
-    echo "OK   missing CronJob ${ns}/${name} (treated as retired)"
-  elif [[ "$sus" != "true" ]]; then
-    echo "FAIL ${ns}/${name} suspend=${sus} (must be true — Dagster owns this slot)"
-    FAIL=1
-  else
-    echo "OK   suspend ${ns}/${name}"
-  fi
-}
-
-echo "== Market-data CronJobs must be suspended =="
-for name in \
-  market-data-stock-eod \
-  market-data-eod-pipeline \
-  market-data-universe-daily \
-  market-data-corporate \
-  market-data-calendar \
-  market-data-stock-snapshot \
-  market-data-stock-movers \
-  market-data-oi-gap-heal \
-  market-data-option-bars \
-  market-data-minute-bars \
-  market-data-option-trades \
-  market-data-option-refresh \
-  market-data-reference \
-  market-data-fundamentals-rotate \
-  market-data-related-rotate \
-  market-data-maintenance
-do
-  must_suspend plugin-market-data "$name"
-done
-
-echo
-echo "== Flex CronJobs must be suspended =="
-must_suspend plugin-flex-query flex-query-trades
-must_suspend plugin-flex-query flex-query-transactions
-
-echo
-echo "== Research CronJobs must be suspended =="
-for name in \
-  bifrost-analytics-daily \
-  research-max-pain \
-  research-atm-iv-pcr \
-  research-iv-percentile \
-  research-engines-momentum \
-  research-engines-gex \
-  research-engines-iv-surface \
-  research-engines-flow \
-  research-engines-terrain \
-  research-engines-forecast \
-  research-scan \
-  research-harness \
-  research-vrp \
-  research-opex-cycle \
-  research-vol-surface \
-  research-vol-weekly-backfill \
-  research-terrain-intraday \
-  research-gex-intraday \
-  research-settlement \
-  research-engines-event-radar \
-  research-alert-scan \
-  research-signal-hit \
-  research-canonical-pnl \
-  research-morning-prep \
-  research-eod-review \
-  research-ensure-partitions
-do
-  must_suspend "$NS_RESEARCH" "$name"
+echo "== Husbandry CronJobs must be suspended =="
+for ns in plugin-market-data plugin-flex-query "$NS_RESEARCH"; do
+  while read -r name sus; do
+    [[ -z "$name" ]] && continue
+    if [[ " $ALLOW_ACTIVE " == *" $name "* ]]; then
+      echo "OK   ${ns}/${name} suspend=${sus:-false} (outside Dagster by design)"
+    elif [[ "$sus" == "true" ]]; then
+      echo "OK   suspend ${ns}/${name}"
+    else
+      echo "FAIL ${ns}/${name} suspend=${sus:-false} (must be true — Dagster owns this slot)"
+      FAIL=1
+    fi
+  done < <(kubectl -n "$ns" get cronjob \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.suspend}{"\n"}{end}')
 done
 
 echo
@@ -99,54 +54,41 @@ else
 fi
 
 echo
-echo "== Core schedules must be RUNNING =="
-SCHED_OUT="$(
-  kubectl -n "$NS_RESEARCH" exec deploy/dagster-daemon -- \
-    dagster schedule list -m bifrost_research.orchestration.definitions 2>/dev/null || true
+echo "== Every roster schedule must be RUNNING =="
+EXPECTED="$(
+  kubectl -n "$NS_RESEARCH" exec deploy/research-api -- python -c \
+    'from bifrost_research.api.schedule_roster import SCHEDULE_ROSTER as R; print("\n".join(s.name for s in R))'
 )"
-echo "$SCHED_OUT" | grep -E 'Schedule:|STOPPED|RUNNING' || true
+LISTED="$(
+  kubectl -n "$NS_RESEARCH" exec deploy/dagster-daemon -- \
+    dagster schedule list -m bifrost_research.orchestration.definitions 2>/dev/null \
+    | sed -n 's/^Schedule: \([A-Za-z0-9_]*\) \[\([A-Z_]*\)\].*/\1 \2/p'
+)"
+if [[ -z "$EXPECTED" ]]; then
+  echo "FAIL could not read the roster from research-api"
+  FAIL=1
+fi
+if [[ -z "$LISTED" ]]; then
+  echo "FAIL dagster schedule list returned nothing"
+  FAIL=1
+fi
 
-must_running() {
-  local name="$1"
-  if echo "$SCHED_OUT" | grep -q "${name} \[RUNNING\]"; then
-    echo "OK   ${name} RUNNING"
-  elif echo "$SCHED_OUT" | grep -q "${name} \[STOPPED\]"; then
-    echo "FAIL ${name} STOPPED — make dagster-ensure-schedule (or start individually)"
-    FAIL=1
-  else
-    echo "WARN ${name} not listed yet (image may predate multi-schedule migrate)"
+while read -r name; do
+  [[ -z "$name" ]] && continue
+  state="$(awk -v n="$name" '$1 == n {print $2}' <<<"$LISTED")"
+  case "$state" in
+    RUNNING) echo "OK   ${name} RUNNING" ;;
+    "") echo "FAIL ${name} not listed by the daemon (its image predates the roster?)"; FAIL=1 ;;
+    *) echo "FAIL ${name} ${state} — make dagster-ensure-schedule (or start it)"; FAIL=1 ;;
+  esac
+done <<<"$EXPECTED"
+
+while read -r name state; do
+  [[ -z "$name" ]] && continue
+  if ! grep -qx "$name" <<<"$EXPECTED"; then
+    echo "WARN ${name} [${state}] listed by the daemon but not in research-api's roster"
   fi
-}
-
-must_running research_trading_day_schedule
-must_running research_canonical_pnl_schedule
-for name in \
-  market_snapshot_schedule \
-  market_movers_schedule \
-  market_reference_schedule \
-  market_universe_calendar_schedule \
-  market_related_schedule \
-  market_option_bars_schedule \
-  market_corporate_trades_schedule \
-  market_minute_bars_schedule \
-  market_fundamentals_rotate_schedule \
-  market_option_refresh_schedule \
-  market_trim_schedule \
-  market_oi_gap_heal_schedule \
-  research_vrp_schedule \
-  research_opex_schedule \
-  research_vol_surface_svi_schedule \
-  research_signal_hit_schedule \
-  research_settlement_schedule \
-  research_intraday_schedule \
-  research_event_radar_schedule \
-  research_morning_prep_schedule \
-  research_eod_review_schedule \
-  research_ensure_partitions_schedule \
-  research_vol_weekly_backfill_schedule
-do
-  must_running "$name"
-done
+done <<<"$LISTED"
 
 echo
 if [[ "$FAIL" -ne 0 ]]; then

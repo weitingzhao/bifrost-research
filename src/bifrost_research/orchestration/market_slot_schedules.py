@@ -32,13 +32,21 @@ GROUP = "plugin_market_schedule"
 ENQUEUE_RETRY = RetryPolicy(max_retries=3, delay=60, backoff=Backoff.EXPONENTIAL)
 
 
+# Plugin slots each asset enqueues, keyed by asset key. The per-schedule view
+# (MARKET_SLOTS_BY_SCHEDULE, below) is derived from it, so the slot names live
+# only in the _make_slot_asset calls; research-api serves the derived roster.
+_SLOTS_BY_ASSET: dict[AssetKey, tuple[str, ...]] = {}
+
+
 def _make_slot_asset(asset_name: str, slots: tuple[str, ...], description: str):
     def _impl(context: AssetExecutionContext) -> MaterializeResult:
         return enqueue_market_slots(context, slots)
 
     _impl.__name__ = asset_name
+    key = AssetKey(["batch", "market", asset_name])
+    _SLOTS_BY_ASSET[key] = tuple(slots)
     return asset(
-        key=AssetKey(["batch", "market", asset_name]),
+        key=key,
         group_name=GROUP,
         description=description,
         retry_policy=ENQUEUE_RETRY,
@@ -325,7 +333,12 @@ _INTRADAY_FIRES: tuple[tuple[str, str], ...] = (
 
 MARKET_SCHEDULE_JOBS: list[Any] = []
 MARKET_SCHEDULES: list[ScheduleDefinition] = []
+# schedule name -> plugin slots its job enqueues on its own cron. Catch-up
+# enqueues (market_eod inside research_trading_day, the self-heal) are not
+# listed: they re-fire slots whose primary schedule is here.
+MARKET_SLOTS_BY_SCHEDULE: dict[str, tuple[str, ...]] = {}
 for sched_name, job_name, asset_def, cron, label in _MARKET_SPECS:
+    MARKET_SLOTS_BY_SCHEDULE[sched_name] = _SLOTS_BY_ASSET[asset_def.key]
     job, sched = _make_schedule(
         schedule_name=sched_name,
         job_name=job_name,
@@ -343,6 +356,7 @@ market_intraday_chain_job = define_asset_job(
 )
 MARKET_SCHEDULE_JOBS.append(market_intraday_chain_job)
 for _sched_name, _cron in _INTRADAY_FIRES:
+    MARKET_SLOTS_BY_SCHEDULE[_sched_name] = _SLOTS_BY_ASSET[market_intraday_chain.key]
     MARKET_SCHEDULES.append(
         ScheduleDefinition(
             name=_sched_name,

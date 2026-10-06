@@ -28,6 +28,7 @@ from bifrost_research.api.health import router as health_router
 from bifrost_research.api.hypothesis import router as hypothesis_router
 from bifrost_research.api.iv_cone import router as iv_cone_router
 from bifrost_research.api.lenses import router as lenses_router
+from bifrost_research.api.metrics import router as metrics_router
 from bifrost_research.api.narrative import router as narrative_router
 from bifrost_research.api.opex_cycle import router as opex_cycle_router
 from bifrost_research.api.options import router as options_router
@@ -76,6 +77,7 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
     app.include_router(health_router)
+    app.include_router(metrics_router)
     app.include_router(docs_router)
     app.include_router(sepa_router)
     app.include_router(options_router)
