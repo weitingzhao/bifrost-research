@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createServer, runScript, validateOptions, validateSource } from './server.mjs'
+import { readFileSync, readdirSync } from 'node:fs'
+import { createServer, runScript, securityCalls, validateContext, validateOptions, validateSource } from './server.mjs'
 
 const bars = []
 let p = 100
@@ -22,8 +23,10 @@ plotshape(ta.crossunder(close, ta.ema(close, 5)), "sell")`
   assert.deepEqual(r.plots.sort(), ['buy', 'sell'])
 })
 
-test('refuses request.* and empty sources', () => {
-  assert.match(validateSource('x = request.security("SPY", "D", close)'), /not supported/)
+test('refuses request.* other than same-timeframe request.security, and empty sources', () => {
+  assert.equal(validateSource('x = request.security("SPY", "D", close)'), null)
+  assert.match(validateSource('x = request.financial("AAPL", "EPS", "FQ")'), /only request.security/)
+  assert.match(validateSource('x = request.security_lower_tf("AAPL", "5", close)'), /only request.security/)
   assert.equal(validateSource(''), 'source is required')
   assert.equal(validateSource('//@version=5\nindicator("x")'), null)
 })
@@ -200,11 +203,141 @@ test('/health answers while a large /run is computing', async () => {
     const body = await run
     const total = performance.now() - t0
     assert.equal(body.results.length, 100)
-    assert.equal(body.runner, '0.2.0')
+    assert.equal(body.runner, '0.3.0')
     assert.ok(total > 500, `fixture: the run should be long enough to matter (${total.toFixed(0)} ms)`)
     assert.ok(lat.length >= 3, `/health answered ${lat.length} times during a ${total.toFixed(0)} ms run`)
     assert.ok(Math.max(...lat) < 250, `slowest /health ${Math.max(...lat).toFixed(0)} ms`)
   } finally {
     server.close()
+  }
+})
+
+// -- 0.3.0: context series through request.security ------------------------------
+
+const ctxPine = (body) => `//@version=5\nindicator("c")\n${body}`
+
+test('request.security validation: own timeframe only, no lookahead_on', () => {
+  assert.equal(validateSource(ctxPine('iv = request.security("IV_30", timeframe.period, close)')), null)
+  assert.equal(validateSource(ctxPine('iv = request.security("IV_30", timeframe = timeframe.period, expression = close)')), null)
+  assert.equal(validateSource(ctxPine('iv = request.security(symbol="IV_30", timeframe="1D", expression=ta.sma(close, 5))')), null)
+  assert.match(validateSource(ctxPine('w = request.security(syminfo.tickerid, "W", close)')), /own timeframe only.*"W"/)
+  assert.match(validateSource(ctxPine('w = request.security(syminfo.tickerid, tf, close)')), /own timeframe only.*tf/)
+  assert.match(validateSource(ctxPine('w = request.security("IV_30", timeframe.period, close, lookahead=barmerge.lookahead_on)')), /lookahead_on/)
+  assert.deepEqual(securityCalls('a = request.security("X", timeframe.period, f(a, b), gaps=barmerge.gaps_off)'), [
+    ['"X"', 'timeframe.period', 'f(a, b)', 'gaps=barmerge.gaps_off'],
+  ])
+})
+
+test('context validation: names, shapes, caps', () => {
+  assert.equal(validateContext({ series: [{ context: { IV_30: [] } }], market: { SPY: [], SPY_IV_30: [] } }), null)
+  assert.match(validateContext({ series: [{ context: { 'IV:30': [] } }] }), /upper-case/)
+  assert.match(validateContext({ series: [{ context: { iv_30: [] } }] }), /upper-case/)
+  assert.match(validateContext({ series: [{ context: { IV_30: {} } }] }), /list/)
+  assert.match(validateContext({ market: [] }), /object/)
+  assert.match(validateContext({ series: [{ context: { SPY: [] } }], market: { SPY: [] } }), /both/)
+  const many = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`X_${i}`, []]))
+  assert.match(validateContext({ series: [{ context: many }] }), /at most 8/)
+})
+
+test('a context series is read on each session; a session it lacks is na', async () => {
+  const pairs = W.map((b, i) => [b.t, i % 50 === 7 ? null : 10 + i])
+  delete pairs[100] // a session the series does not carry at all
+  const r = await runScript(
+    ctxPine('iv = request.security("IV_30", timeframe.period, close)\nplot(iv, "iv")\nplotshape(iv > 300, "buy")'),
+    W,
+    { plots: ['iv'], context: { IV_30: pairs.filter(Boolean) }, symbol: 'AAPL' },
+  )
+  const iv = r.series.iv
+  assert.deepEqual(iv.map((p) => p[0]), W.map((b) => b.t))
+  for (const i of [0, 6, 8, 99, 101, 399]) assert.equal(iv[i][1], 10 + i)
+  for (const i of [7, 57, 100]) assert.equal(iv[i][1], null)
+  assert.deepEqual(r.buy, W.filter((_, i) => 10 + i > 300 && i % 50 !== 7).map((b) => b.t))
+})
+
+test('market bars: OHLCV under their name, na where the market has no bar', async () => {
+  const spy = W.map((b) => ({ ...b, c: b.c * 2, o: b.o * 2 })).filter((_, i) => i !== 5)
+  const r = await runScript(
+    ctxPine('s = request.security("SPY", timeframe.period, close)\no = request.security("SPY", timeframe.period, open)\nplot(s, "s")\nplot(o, "o")\nplotshape(s > 0, "buy")'),
+    W,
+    { plots: ['s', 'o'], market: { SPY: spy } },
+  )
+  assert.equal(r.series.s[4][1], W[4].c * 2)
+  assert.equal(r.series.o[4][1], W[4].o * 2)
+  assert.equal(r.series.s[5][1], null)
+  assert.equal(r.buy.length, W.length - 1)
+})
+
+test('an unknown series name fails that symbol with the names it carries; the runner lives on', async () => {
+  await assert.rejects(
+    runScript(ctxPine('x = request.security("IV_RNK", timeframe.period, close)\nplotshape(x > 1, "buy")'), W, {
+      context: { IV_RANK: [] },
+      market: { SPY: [] },
+    }),
+    /unknown series "IV_RNK"; this request carries SPY, IV_RANK/,
+  )
+  const server = createServer().listen(0)
+  await new Promise((r) => server.once('listening', r))
+  const base = `http://127.0.0.1:${server.address().port}`
+  try {
+    const body = await fetch(base + '/run', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        source: ctxPine('x = request.security("NOPE", timeframe.period, close)\nplotshape(x > 1, "buy")'),
+        series: [{ symbol: 'A', bars: W.slice(0, 50) }],
+      }),
+    }).then((r) => r.json())
+    assert.match(body.results[0].error, /unknown series "NOPE"; this request carries none/)
+    assert.equal((await fetch(base + '/health').then((r) => r.json())).ok, true)
+    const bad = await fetch(base + '/run', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: ST, series: [{ symbol: 'A', bars: W, context: { 'X:Y': [] } }] }),
+    })
+    assert.equal(bad.status, 400)
+  } finally {
+    server.close()
+  }
+})
+
+test('dates and calendar functions read the same through the provider (UTC)', async () => {
+  const src = ctxPine('x = request.security(syminfo.tickerid, timeframe.period, close)\nplot(dayofweek, "dow")\nplot(dayofmonth, "dom")\nplot(x, "x")\nplotshape(x > 0, "buy")')
+  const viaProvider = await runScript(src, W, { plots: ['dow', 'dom', 'x'], symbol: 'BRK.B' })
+  const plain = await runScript(src.replace(/x = request[^\n]+/, 'x = close'), W, { plots: ['dow', 'dom', 'x'] })
+  assert.deepEqual(viaProvider.series, plain.series)
+  assert.equal(viaProvider.series.dow[0][1], new Date(W[0].t).getUTCDay() + 1)
+})
+
+// The eight built-ins, run as shipped (bars only) and through the provider
+// (one request.security line added that the plots do not use): every signal,
+// every plot value, every trade identical. Unused context sent alongside a
+// script without request.security changes nothing either.
+const LIB = new URL('../src/bifrost_research/engines/pine/library/', import.meta.url)
+test('scripts without context give exactly the same results through the provider path', async () => {
+  const files = readdirSync(LIB).filter((f) => f.endsWith('.pine'))
+  assert.equal(files.length, 8)
+  const ctx = { IV_30: walk(1200).map((b) => [b.t, b.c]) }
+  for (const seed of [1, 7, 42]) {
+    const bars = walk(1200, seed)
+    for (const f of files) {
+      const src = readFileSync(new URL(f, LIB), 'utf8')
+      const plots = [...src.matchAll(/\bplot\(\s*[^,\n]+,\s*(?:title\s*=\s*)?"([^"]+)"/g)].map((m) => m[1]).slice(0, 8)
+      const base = await runScript(src, bars, { plots, trades: true })
+      const unused = await runScript(src, bars, { plots, trades: true, context: ctx, market: { SPY: bars } })
+      const forced = await runScript(`${src}\n__ctx = request.security("IV_30", timeframe.period, close)\n`, bars, {
+        plots,
+        trades: true,
+        context: ctx,
+        market: { SPY: bars },
+        symbol: 'T',
+      })
+      assert.ok(base.buy.length + base.sell.length > 0, `${f}: fixture fires`)
+      for (const r of [unused, forced]) {
+        assert.deepEqual([r.buy, r.sell], [base.buy, base.sell], `${f} seed ${seed}`)
+        assert.deepEqual(r.series, base.series, `${f} seed ${seed} plots`)
+        assert.deepEqual(r.trades, base.trades, `${f} seed ${seed} trades`)
+        assert.deepEqual(r.warnings, base.warnings, `${f} seed ${seed} warnings`)
+      }
+    }
   }
 })
