@@ -216,6 +216,13 @@ def run_event_radar_sec() -> dict[str, Any]:
         conn.close()
 
 
+def run_macro_calendar() -> dict[str, Any]:
+    """Forward macro calendar (FOMC / CPI) -> features.macro_event_daily (TD-151)."""
+    from bifrost_research.scheduler.macro_ingest import run_macro_ingest
+
+    return run_macro_ingest()
+
+
 def run_backtest(*, as_of: date | None = None) -> dict[str, Any]:
     """Settlement / accuracy scaffold — aggregates recent forecast settlements.
 

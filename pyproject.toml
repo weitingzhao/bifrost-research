@@ -1,6 +1,6 @@
 [project]
 name = "bifrost-research"
-version = "0.196.0"
+version = "0.197.0"
 description = "Bifrost Research Engine — OLAP analytics, engines, and Research API"
 requires-python = ">=3.11"
 dependencies = [
@@ -66,6 +66,8 @@ bifrost_research = [
     "docs/*.md",
     # W6: the built-in Pine library, seeded into research.pine_script by the daily build.
     "engines/pine/library/*.pine",
+    # TD-151: the forward macro calendar research_macro_calendar_job ingests.
+    "scheduler/data/*.csv",
     "dbt/dbt_project.yml",
     "dbt/profiles.yml",
     "dbt/packages.yml",

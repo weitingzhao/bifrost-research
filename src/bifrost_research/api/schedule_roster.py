@@ -212,6 +212,12 @@ SCHEDULE_ROSTER: tuple[ScheduleSpec, ...] = (
         "*/30 * * * *",
     ),
     ScheduleSpec(
+        "research_macro_calendar_schedule",
+        "research_macro_calendar_job",
+        "UTC",
+        "0 10 * * 1",
+    ),
+    ScheduleSpec(
         "research_daily_digest_schedule",
         "research_daily_digest_job",
         "UTC",

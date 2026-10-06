@@ -3,7 +3,7 @@
 | ID | Question | Default (implemented) |
 |----|----------|----------------------|
 | D-R4-a | Event LLM tagger | `EventTagger` interface; heuristic default; optional `EVENT_RADAR_LLM_PROVIDER` |
-| D-R4-b | Macro calendar source | Manual CSV drop (`macro_ingest` scheduler) |
+| D-R4-b | Macro calendar source | Packaged calendar `scheduler/data/macro_calendar.csv` (FOMC, CPI) ingested by `macro_ingest` every Monday (`research_macro_calendar_job`, TD-151; no entitled vendor calendar), plus optional CSV drops with actual/expected values |
 | D-R5-a | Polygon options tape | Scaffold ingest + flow reads tape when rows exist |
 | D-R6-a | News auto-ingest | Manual drop only (existing event radar ingest) |
 | D-R6-b | Schwab settlement | Use `market.stock_daily` close (no Schwab API) |

@@ -297,6 +297,33 @@ engines_event_radar_sched = _run_asset(
 )
 
 
+def _macro_horizon(result: dict[str, Any]) -> list[tuple[Any, str]]:
+    from bifrost_research.scheduler.macro_ingest import horizon_findings
+
+    return [(ERROR if level == "error" else WARN, text) for level, text in horizon_findings(result)]
+
+
+# TD-151: macro_ingest had no caller, so features.macro_event_daily stayed at 0
+# rows and the Events board's "Macro forward" panel was always empty. The source
+# is the packaged calendar (no entitled vendor feed exists); the check is the
+# reminder to extend it before it runs out.
+engines_macro_calendar = _run_asset(
+    key_path=["engines", "macro_calendar"],
+    group=GROUP_SIGNALS,
+    description=(
+        "Forward macro calendar (scheduler/data/macro_calendar.csv via macro_ingest) -> "
+        "features.macro_event_daily; ERROR when it reaches less than 30 days ahead"
+    ),
+    fn=lambda: runners.run_macro_calendar(),
+    spec=OutputSpec(
+        rows=field("rows_written"),
+        expect_rows=True,
+        trailing=False,
+        extra=_macro_horizon,
+    ),
+)
+
+
 def _run_morning_prep_agent() -> dict[str, Any]:
     from bifrost_research.copilot.agents.morning_prep import run_morning_prep
 
@@ -542,6 +569,7 @@ RESEARCH_AUX_ASSETS = [
     engines_terrain_intraday,
     engines_gex_intraday,
     engines_event_radar_sched,
+    engines_macro_calendar,
     agents_morning_prep,
     agents_daily_digest,
     agents_weekly_policy_review,
@@ -631,6 +659,15 @@ _specs: list[tuple[str, str, list[Any], str, str, str]] = [
         "*/30 * * * *",
         "UTC",
         "event-radar",
+    ),
+    # Weekly: the calendar changes a few times a year; the check alerts at most weekly.
+    (
+        "research_macro_calendar_schedule",
+        "research_macro_calendar_job",
+        [engines_macro_calendar],
+        "0 10 * * 1",
+        "UTC",
+        "macro-calendar",
     ),
     # D2: the digest takes Morning Prep's slot; one post a day instead of one per hypothesis.
     (
