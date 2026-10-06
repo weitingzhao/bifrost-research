@@ -154,7 +154,10 @@ PINE_LIVE: dict[str, Any] = {
 # that made it (replay 2024-11..2026-10: +4% on risk vs ~0% for the signal). The difference to the suggestion's own ``model``
 # settlement is what the timing added; ``baseline_paired`` (SPY) also carries
 # the single name's own premium. Settled once the window has passed.
-SYMBOL_PAIRED: dict[str, Any] = {"sources": ("pine",), "window_days": 7}
+# Off until the PROD CHECK is widened (schema/migrate_symbol_paired.py, Owner
+# approval pending): a symbol_paired row against the old CHECK would fail the
+# whole settlement transaction. Turn on with ("pine",) once applied.
+SYMBOL_PAIRED: dict[str, Any] = {"sources": (), "window_days": 7}
 
 # Every mechanical source (S4 liquidity, Owner 2026-10-06 option c):
 # - issue: each leg must have traded at least ``min_leg_volume`` contracts on

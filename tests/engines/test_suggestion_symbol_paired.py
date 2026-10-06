@@ -151,6 +151,12 @@ def test_pending_counts_the_extra_basis_only_for_signal_sources() -> None:
     assert (unpaired, n_own, sources, n_paired, n_all) == ("baseline", 2, ["pine"], 4, 3)
 
 
+def test_it_stays_off_until_the_check_is_widened() -> None:
+    from bifrost_research.engines.suggestion.config import SYMBOL_PAIRED
+
+    assert SYMBOL_PAIRED["sources"] == ()
+
+
 # -- the control ------------------------------------------------------------------
 
 
