@@ -5,7 +5,13 @@ hypothesis id in ``source_ref``; once its intent is linked to a fill it is
 ``filled`` with the trade's ``trade_id`` (core ``link_fill``; the table's CHECK
 holds ``filled`` and the trade together). That is the link: nothing is written
 into either store to make it (D13) — Research reads Trade's
-``GET /strategies/plans?status=filled`` and joins on the id.
+``GET /strategies/plans?status=filled&source_kind=hypothesis`` and joins on the id.
+
+``source_kind`` is a filter from trade-api 0.11.0 / core 0.53.0 (TD-178): the
+500-row cap then counts hypothesis plans only. An older trade-api ignores the
+name and answers the newest filled plans of every kind, so the kind is still
+checked here (``links_from_plans``) and ``truncated`` still says when the cap
+was reached.
 
 ``research.hypothesis.linked_opportunity_ids`` stays as it is: only Research's
 own create / patch write it, and on 2026-10-06 it was empty on all 91 rows.
@@ -34,6 +40,8 @@ TRADE_ENVS = ("dev", "stg", "prod")
 PLANS_PATH = "/strategies/plans"
 # trade-api's PLANS_LIMIT_MAX. Filled plans on 2026-10-06: PROD 0 · STG 0 · DEV 0.
 PLANS_LIMIT = 500
+# Sent to trade-api (TD-178); ignored by one before 0.11.0, filtered here again either way.
+PLANS_QUERY: dict[str, Any] = {"status": "filled", "source_kind": "hypothesis", "limit": PLANS_LIMIT}
 # An overlay on the hypothesis read, not the read itself: fail soft and fast.
 TIMEOUT_S = 3.0
 CACHE_TTL_S = 60.0
@@ -83,7 +91,8 @@ def links_from_plans(plans: Iterable[Mapping[str, Any]]) -> dict[str, list[dict[
 def read_trade_links(trade_env: str = "prod", *, use_cache: bool = True) -> dict[str, Any]:
     """``{trade_env, source, links, plans_read, truncated, error}`` for one Trade
     environment. ``truncated`` is true when the read came back at the limit — the
-    oldest filled plans may be missing, so an absent link is then not a fact."""
+    oldest filled hypothesis plans (or, from a trade-api before 0.11.0, the oldest
+    filled plans of any kind) may be missing, so an absent link is then not a fact."""
     env = trade_env.strip().lower()
     now = time.monotonic()
     if use_cache:
@@ -94,14 +103,14 @@ def read_trade_links(trade_env: str = "prod", *, use_cache: bool = True) -> dict
     base = strategy_base(env)
     reading: dict[str, Any] = {
         "trade_env": env,
-        "source": f"trade-api {PLANS_PATH}?status=filled ({env})",
+        "source": f"trade-api {PLANS_PATH}?status=filled&source_kind=hypothesis ({env})",
         "links": {},
         "plans_read": 0,
         "truncated": False,
         "error": None,
     }
     try:
-        payload = get(base, PLANS_PATH, {"status": "filled", "limit": PLANS_LIMIT}, timeout=TIMEOUT_S)
+        payload = get(base, PLANS_PATH, dict(PLANS_QUERY), timeout=TIMEOUT_S)
         plans = list_items(payload)
         reading["links"] = links_from_plans(plans)
         reading["plans_read"] = len(plans)
@@ -131,6 +140,7 @@ def attach_trade_links(rows: list[dict[str, Any]], trade_env: str = "prod") -> d
 __all__ = [
     "CACHE_TTL_S",
     "PLANS_LIMIT",
+    "PLANS_QUERY",
     "TRADE_ENVS",
     "attach_trade_links",
     "links_from_plans",

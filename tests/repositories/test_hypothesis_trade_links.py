@@ -51,7 +51,11 @@ def test_the_read_asks_for_filled_plans_of_the_named_env(monkeypatch: pytest.Mon
     monkeypatch.setattr(links, "get", fake_get)
     reading = links.read_trade_links("dev")
     assert asked == [
-        ("http://api-account.bifrost-dev.svc.cluster.local:8769", "/strategies/plans", {"status": "filled", "limit": 500})
+        (
+            "http://api-account.bifrost-dev.svc.cluster.local:8769",
+            "/strategies/plans",
+            {"status": "filled", "source_kind": "hypothesis", "limit": 500},
+        )
     ]
     assert reading["links"]["zzz-thesis"][0]["trade_id"] == 901
     assert reading["error"] is None and reading["truncated"] is False
@@ -107,3 +111,30 @@ def test_the_hypothesis_read_carries_the_trade(monkeypatch: pytest.MonkeyPatch) 
     assert [r["linked_trade_ids"] for r in listed["rows"]] == [[901], []]
     assert listed["trade_link_basis"]["plans_read"] == 2
     assert client.get("/research/hypothesis?trade_env=qa").status_code == 422
+
+
+def test_the_kind_is_sent_and_still_checked_here(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TD-178: trade-api 0.11.0 filters by source_kind; one before it ignores the name and
+    answers filled plans of every kind. Both answers give the same links, and a read at
+    the cap still says it may be short."""
+    asked: list[Any] = []
+    mixed = [_plan(7, "filled", 901), _plan(10, "filled", 903, kind="symbol"), _plan(12, "filled", 905, kind="manual")]
+
+    def old_api(base: str, path: str, params: Any = None, *, timeout: Any = None) -> Any:
+        asked.append(params)
+        return {"items": mixed, "count": len(mixed)}  # ignores source_kind
+
+    monkeypatch.setattr(links, "get", old_api)
+    reading = links.read_trade_links("stg", use_cache=False)
+    assert asked[-1]["source_kind"] == "hypothesis"
+    assert reading["links"] == {
+        "zzz-thesis": [{"trade_id": 901, "strategy_plan_id": 7, "symbol": "ZZZ", "structure_label": "Short put"}]
+    }
+    assert reading["plans_read"] == 3 and reading["truncated"] is False
+    assert "source_kind=hypothesis" in reading["source"]
+
+    # The old api's cap is filled by other kinds: no link, and it says so.
+    others = [_plan(i, "filled", 2000 + i, kind="manual") for i in range(links.PLANS_LIMIT)]
+    monkeypatch.setattr(links, "get", lambda *a, **k: {"items": others, "count": len(others)})
+    capped = links.read_trade_links("stg", use_cache=False)
+    assert capped["links"] == {} and capped["truncated"] is True
