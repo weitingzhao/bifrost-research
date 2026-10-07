@@ -1,6 +1,6 @@
 [project]
 name = "bifrost-research"
-version = "0.203.0"
+version = "0.204.0"
 description = "Bifrost Research Engine — OLAP analytics, engines, and Research API"
 requires-python = ">=3.11"
 dependencies = [
@@ -75,6 +75,9 @@ bifrost_research = [
     "dbt/models/**/*.sql",
     "dbt/models/**/*.yml",
     "dbt/macros/**/*.sql",
+    # TD-252: generic tests (tests/generic/*.sql) are compiled by dbt build; without them
+    # every model that uses one fails to compile in the container.
+    "dbt/tests/**/*.sql",
     "dbt/seeds/**/*",
     "dbt/snapshots/**/*",
 ]
