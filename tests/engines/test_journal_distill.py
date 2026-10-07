@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
+import pytest
+
 from bifrost_research.engines.journal_distill import (
     ARCHIVE_STRENGTH,
     candidates_from_decisions,
@@ -158,3 +160,100 @@ def test_earnings_weak_spot_needs_samples_and_a_net_loss() -> None:
     # opens far from any print — absent
     far = {"ZZTM": [(T0 - timedelta(days=300)).date()]}
     assert candidates_from_earnings(pairs(3, -100), far) == []
+
+
+# ── the Flex gate (TD-244): no fills memories from a stale book ──────────────
+
+
+class _Cur:
+    def __init__(self, conn: "_Conn") -> None:
+        self.conn = conn
+        self.rowcount = 0
+        self._rows: list[dict] = []
+
+    def __enter__(self) -> "_Cur":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: object = None) -> None:
+        self.conn.sql.append(sql)
+        if "raw_broker.executions_final" in sql:
+            self._rows = list(self.conn.fills)
+        elif "SELECT DISTINCT owner_id" in sql:
+            self._rows = [{"owner_id": "alice"}]
+        elif "INSERT INTO" in sql:
+            self.conn.topics.append(params[1])  # type: ignore[index]
+            self._rows = [{"mem_no": len(self.conn.topics)}]
+        else:
+            self._rows = []
+
+    def fetchall(self) -> list[dict]:
+        return self._rows
+
+    def fetchone(self) -> dict:
+        return self._rows[0]
+
+
+class _Conn:
+    def __init__(self, fills: list[dict]) -> None:
+        self.fills = fills
+        self.sql: list[str] = []
+        self.topics: list[str] = []
+        self.committed = False
+
+    def cursor(self, **_kw: object) -> _Cur:
+        return _Cur(self)
+
+    def commit(self) -> None:
+        self.committed = True
+
+
+def _five_closed() -> list[dict]:
+    out: list[dict] = []
+    for i in range(5):
+        at = T0 + timedelta(days=10 * i)
+        out += [
+            _fill(f"K{i}", "ZZZ", "SLD", 1, 2.0, at),
+            _fill(f"K{i}", "ZZZ", "BOT", 1, 0.5, at + timedelta(days=4)),
+        ]
+    return out
+
+
+def _distill(monkeypatch, flex: tuple[str, str] | None) -> tuple[dict, _Conn]:
+    import bifrost_research.auth.bearer as bearer
+    from bifrost_research.engines.journal_distill import run_distill
+
+    monkeypatch.setattr(bearer, "known_owner_ids", lambda: ("alice",))
+    conn = _Conn(_five_closed())
+    return run_distill(conn, today=date(2026, 3, 2), flex=flex), conn
+
+
+def test_distill_reads_the_fills_when_flex_is_ok(monkeypatch) -> None:
+    result, conn = _distill(monkeypatch, ("ok", "2 kinds fresh"))
+    assert result["fills"] == "read" and "fills_skip_reason" not in result
+    assert any("raw_broker.executions_final" in s for s in conn.sql)
+    assert "axis-hold" in conn.topics
+
+
+@pytest.mark.parametrize("verdict", ["failed", "stale", "unknown"])
+def test_distill_skips_the_fills_when_flex_is_not_fresh(monkeypatch, verdict: str) -> None:
+    """The night the Flex ingest failed: no memory from the stale book, a reason, no failure."""
+    result, conn = _distill(monkeypatch, (verdict, "flex-trades: [1003]"))
+    assert result["fills"] == "skipped" and result["flex_ingest"] == verdict
+    assert result["fills_skip_reason"] == f"Flex ingest {verdict}: flex-trades: [1003]"
+    assert not any("raw_broker" in s for s in conn.sql)
+    assert "axis-hold" not in conn.topics
+    # The sources that do not read Flex still ran, and the night committed.
+    assert any("research.ai_draft" in s for s in conn.sql)
+    assert conn.committed
+
+
+def test_distill_asks_the_flex_gate_when_not_told(monkeypatch) -> None:
+    import bifrost_research.orchestration.flex_husbandry as fh
+
+    monkeypatch.setattr(fh, "flex_ingest_now", lambda: ("failed", "flex-trades: [1003]"))
+    result, conn = _distill(monkeypatch, None)
+    assert result["fills"] == "skipped"
+    assert not any("raw_broker" in s for s in conn.sql)

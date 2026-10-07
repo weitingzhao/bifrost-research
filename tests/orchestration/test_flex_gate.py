@@ -12,6 +12,8 @@ readers. Both directions are held here, with the readers derived from the code:
 - every reader that runs in research_trading_day waits for flex_gate, and every
   asset that waits for flex_gate is such a reader (or a dbt model on a
   ``FLEX_DERIVED_SCHEMAS`` source);
+- a reader asset outside the batch (own schedule: the journal distill, TD-244)
+  asks the same verdict in code (``FLEX_GATE_IN_CODE``) before its read;
 - flex_gate is no ancestor of sepa_projection, dbt or the engines.
 
 The gate itself keeps TD-94's design: it fails closed.
@@ -192,7 +194,8 @@ def test_every_flex_reading_file_is_classified() -> None:
     assert not stale, f"FLEX_READERS lists files that no longer read Flex data: {stale}"
 
 
-def test_every_trading_day_flex_reader_waits_for_flex_gate() -> None:
+def test_every_flex_reader_asset_is_gated() -> None:
+    """In the batch: waits for flex_gate. Outside it: asks the same verdict in code."""
     defs = _defs()
     graph = defs.resolve_asset_graph()
     trading_day = _trading_day(defs)
@@ -206,16 +209,43 @@ def test_every_trading_day_flex_reader_waits_for_flex_gate() -> None:
                 assert AssetKey(named.split("/")) not in trading_day, (path, named)
             continue
         key = AssetKey(asset.split("/"))
-        assert key in trading_day, f"{asset} ({path}) is not in research_trading_day"
-        assert FLEX_GATE in graph.get(key).parent_keys, f"{asset} reads Flex data ungated"
+        assert graph.has(key), f"{asset} ({path}) is not an asset"
+        if key in trading_day:
+            assert FLEX_GATE in graph.get(key).parent_keys, f"{asset} reads Flex data ungated"
+        else:
+            source = (SRC / path).read_text(encoding="utf-8")
+            assert pba.FLEX_GATE_IN_CODE in source, (
+                f"{asset} ({path}) runs outside research_trading_day and reads Flex data "
+                f"without asking {pba.FLEX_GATE_IN_CODE}...) first"
+            )
+
+
+def test_the_journal_distill_is_gated_not_exempt() -> None:
+    """TD-244: it was the exemption; its entry now names the asset."""
+    asset, _ = pba.FLEX_READERS["engines/journal_distill.py"]
+    assert asset == "agents/journal_distill"
 
 
 def test_only_flex_readers_wait_for_flex_gate() -> None:
     defs = _defs()
     graph = defs.resolve_asset_graph()
+    trading_day = _trading_day(defs)
     readers = {AssetKey(a.split("/")) for a, _ in pba.FLEX_READERS.values() if a}
+    readers &= trading_day
     children = {k for k in graph.get_all_asset_keys() if FLEX_GATE in graph.get(k).parent_keys}
     assert children == readers, sorted(k.to_user_string() for k in children ^ readers)
+
+
+def test_a_skipped_fills_read_is_a_warn_on_the_distill() -> None:
+    from dagster import AssetCheckSeverity
+
+    from bifrost_research.orchestration.research_aux_schedules import _distill_fills_skipped
+
+    assert _distill_fills_skipped({"fills": "read"}) == []
+    [(severity, text)] = _distill_fills_skipped(
+        {"fills": "skipped", "fills_skip_reason": "Flex ingest failed: flex-trades: [1003]"}
+    )
+    assert severity == AssetCheckSeverity.WARN and "[1003]" in text
 
 
 def test_flex_gate_is_not_upstream_of_sepa_dbt_or_the_engines() -> None:

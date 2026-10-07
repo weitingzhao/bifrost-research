@@ -147,10 +147,12 @@ PROBE_RETRY_SEC = 15.0
 #: build behind flex_gate (dbt is one step); none does today.
 FLEX_DERIVED_SCHEMAS: tuple[str, ...] = ("raw_broker",)
 
-#: Every module that reads Flex-derived data, with the asset that runs it in the
-#: trading-day batch (and so waits for flex_gate), or ``None`` and why it is not
-#: gated there. Markers: a table in raw_broker, or the Trade API's
-#: ``/executions`` routes, whose book is executions_final (Flex-confirmed fills).
+#: Every module that reads Flex-derived data, with the asset that runs it, or
+#: ``None`` and why it is not gated. An asset in the trading-day batch waits for
+#: flex_gate; one outside it (own schedule) must call ``FLEX_GATE_IN_CODE``, the
+#: same verdict, before its read. Markers: a table in raw_broker, or the Trade
+#: API's ``/executions`` routes, whose book is executions_final (Flex-confirmed
+#: fills).
 FLEX_READERS: dict[str, tuple[str | None, str]] = {
     "engines/option_pinned/entry.py": (
         "engines/option_pinned_contract",
@@ -158,9 +160,10 @@ FLEX_READERS: dict[str, tuple[str | None, str]] = {
         "book decides which traded contracts keep their history",
     ),
     "engines/journal_distill.py": (
-        None,
-        "agents/journal_distill: own 23:55 UTC schedule (research_memory_distill), not "
-        "in the trading-day batch, so no gate of this batch can order it",
+        "agents/journal_distill",
+        "own 23:55 UTC schedule (research_memory_distill), outside the batch: asks "
+        "flex_ingest_now() and skips the fills memories with the reason unless Flex "
+        "is ok (TD-244)",
     ),
     "engines/forecast/terrain_backfill.py": (
         None,
@@ -169,6 +172,11 @@ FLEX_READERS: dict[str, tuple[str | None, str]] = {
     "repositories/journal_memory.py": (None, "research-api read path, not a Dagster asset"),
     "mcp/tools/trade_context.py": (None, "MCP tool read path, not a Dagster asset"),
 }
+
+
+#: The call a Flex reader outside the trading-day batch makes before its read:
+#: flex_gate's verdict (flex_husbandry.flex_ingest_now), not the asset.
+FLEX_GATE_IN_CODE = "flex_ingest_now("
 
 
 def expected_session() -> date:

@@ -29,6 +29,14 @@ which this domain cannot read (D13) — absent, named here, not faked.
 
 Idempotent per day: re-running upserts the same topics; a same-day re-run
 keeps the morning's ``change`` verdict unless strength actually moved again.
+
+Flex gate (TD-244): the fills are the Flex-confirmed book, and this runs on its
+own schedule outside the trading-day batch, so no flex_gate orders it. It asks
+the gate's verdict itself (``flex_husbandry.flex_ingest_now``) and reads the
+fills only when Flex is ``ok``. Otherwise the fills memories are skipped with the
+reason in the result — not rewritten from a stale book, and not failed: every
+run re-reads the whole book, so the next fresh night recovers them. The other
+sources do not read Flex and run as usual.
 """
 
 from __future__ import annotations
@@ -356,9 +364,22 @@ def resolve_change(
     return "steady", archived
 
 
-def run_distill(conn: Any, *, today: date | None = None) -> dict[str, Any]:
-    """One pass for every owner with any journal presence."""
+def run_distill(
+    conn: Any, *, today: date | None = None, flex: tuple[str, str] | None = None
+) -> dict[str, Any]:
+    """One pass for every owner with any journal presence.
+
+    ``flex`` is the Flex ingest (verdict, reason); ``None`` asks the gate now.
+    """
+    from bifrost_research.orchestration.flex_husbandry import flex_ingest_now
+
     today = today or datetime.now().astimezone().date()
+    flex_verdict, flex_reason = flex if flex is not None else flex_ingest_now()
+    fills_fresh = flex_verdict == "ok"
+    if not fills_fresh:
+        logger.warning(
+            "journal distill: fills skipped — Flex ingest %s (%s)", flex_verdict, flex_reason
+        )
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             f"""
@@ -376,15 +397,17 @@ def run_distill(conn: Any, *, today: date | None = None) -> dict[str, Any]:
     from bifrost_research.auth.bearer import known_owner_ids
 
     owners = sorted(journal_owners | set(known_owner_ids()))
+    fills: list[dict[str, Any]] = []
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(
-            """
-            SELECT contract_key, symbol, sec_type, side, quantity, price, exec_time
-            FROM raw_broker.executions_final
-            ORDER BY exec_time
-            """
-        )
-        fills = [dict(r) for r in cur.fetchall()]
+        if fills_fresh:
+            cur.execute(
+                """
+                SELECT contract_key, symbol, sec_type, side, quantity, price, exec_time
+                FROM raw_broker.executions_final
+                ORDER BY exec_time
+                """
+            )
+            fills = [dict(r) for r in cur.fetchall()]
         cur.execute(
             """
             SELECT status, count(*) AS n FROM research.ai_draft
@@ -436,7 +459,7 @@ def run_distill(conn: Any, *, today: date | None = None) -> dict[str, Any]:
             prev_by_topic = {r["topic"]: dict(r) for r in cur.fetchall()}
 
         cands: list[Candidate] = []
-        if enabled["fills"]:
+        if enabled["fills"] and fills_fresh:
             cands += candidates_from_pairs(pairs)
             cands += candidates_from_earnings(pairs, prints_by_sym)
         if enabled["decisions"]:
@@ -548,6 +571,10 @@ def run_distill(conn: Any, *, today: date | None = None) -> dict[str, Any]:
         "memories_written": written,
         "notes_locked": locked_notes,
         "visits_trimmed": trimmed,
+        "flex_ingest": flex_verdict,
+        "fills": "read" if fills_fresh else "skipped",
     }
+    if not fills_fresh:
+        result["fills_skip_reason"] = f"Flex ingest {flex_verdict}: {flex_reason}"
     logger.info("journal distill: %s", result)
     return result

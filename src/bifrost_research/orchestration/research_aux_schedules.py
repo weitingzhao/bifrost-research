@@ -414,13 +414,25 @@ def _run_journal_distill() -> dict:
         conn.close()
 
 
+def _distill_fills_skipped(result: Any) -> list[tuple[Any, str]]:
+    reason = result.get("fills_skip_reason")
+    return [(WARN, f"fills not distilled: {reason}")] if reason else []
+
+
 # §20: after the close the trader's own trail (fills, notes, visits, Inbox
-# answers) distils into journal.memory — measured, never invented.
+# answers) distils into journal.memory — measured, never invented. Outside the
+# batch, so it gates its own Flex read (TD-244): a Flex ingest that is not ok
+# skips the fills memories, shown as a WARN; the next fresh night recovers them.
 agents_journal_distill = _run_asset(
     key_path=["agents", "journal_distill"],
     group=GROUP_AGENTS,
-    description="Journal memory distill — the trader's own trail → journal.memory (§20)",
+    description=(
+        "Journal memory distill — the trader's own trail → journal.memory (§20). "
+        "Reads the fills only when Flex ingest is ok (flex_gate's verdict); "
+        "otherwise skips them with the reason (TD-244)"
+    ),
     fn=_run_journal_distill,
+    spec=OutputSpec(extra=_distill_fills_skipped),
 )
 
 maint_ensure_partitions = _run_asset(
