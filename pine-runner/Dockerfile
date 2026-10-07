@@ -4,7 +4,7 @@ FROM node:22-bookworm-slim
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
-COPY server.mjs pine.mjs worker.mjs LICENSE.md ./
+COPY server.mjs pine.mjs worker.mjs lint.mjs LICENSE.md ./
 USER node
 ENV PORT=8797
 EXPOSE 8797
@@ -17,6 +17,7 @@ CMD ["node", "--permission", "--allow-worker", \
      "--allow-fs-read=/app/server.mjs", \
      "--allow-fs-read=/app/pine.mjs", \
      "--allow-fs-read=/app/worker.mjs", \
+     "--allow-fs-read=/app/lint.mjs", \
      "--allow-fs-read=/app/package.json", \
      "--allow-fs-read=/app/node_modules/", \
      "server.mjs"]

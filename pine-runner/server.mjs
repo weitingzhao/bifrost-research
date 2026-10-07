@@ -3,16 +3,19 @@
 // and a strategy()'s trades (0.2.0), and serves named context series (IV, VRP,
 // earnings, SPY) to request.security (0.3.0). Since 0.4.0 the scripts run in a
 // worker thread with a deadline per series, so a heavy script cannot hold the
-// runner. Research calls it over HTTP; nothing here touches a database or a
+// runner; since 0.5.0 a script is checked for the slips PineTS runs without
+// complaint (lint.mjs) and errors carry their line where it can be found. Research calls it over HTTP; nothing here touches a database or a
 // broker (D10). Licensed AGPL-3.0-only: it links PineTS
 // (https://github.com/LuxAlgo/PineTS), and stays a separate process so that
 // licence does not reach bifrost-research or the frontend.
 import http from 'node:http'
 import { readFileSync } from 'node:fs'
 import { Worker } from 'node:worker_threads'
+import { lintSource, locateError } from './lint.mjs'
 import { validateContext, validateOptions, validateSource } from './pine.mjs'
 
 export { runScript, securityCalls, validateContext, validateOptions, validateSource } from './pine.mjs'
+export { lintSource, locateError } from './lint.mjs'
 
 // The runner pins the engine; reported on /health and every /run response.
 const PKG = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
@@ -132,9 +135,20 @@ export class ScriptPool {
 let pool = null
 const getPool = () => (pool ??= new ScriptPool())
 
+function lintFailure(issues) {
+  const first = issues[0]
+  return {
+    ok: false,
+    error: `the script has ${issues.length} problem${issues.length === 1 ? '' : 's'}; line ${first.line}: ${first.message}`,
+    issues,
+  }
+}
+
 async function handleRun(body, scripts) {
   const err = validateSource(body?.source)
   if (err) return [400, { ok: false, error: err }]
+  const issues = lintSource(body.source)
+  if (issues.length) return [400, lintFailure(issues)]
   const series = Array.isArray(body?.series) ? body.series : null
   if (!series || series.length === 0) return [400, { ok: false, error: 'series is required' }]
   const optErr = validateOptions(body) ?? validateContext(body)
@@ -158,7 +172,8 @@ async function handleRun(body, scripts) {
       results.push(row)
     } catch (e) {
       if (e instanceof ScriptTimeout) overran = s.symbol
-      results.push({ symbol: s.symbol, error: String(e?.message ?? e).slice(0, 500) })
+      const error = String(e?.message ?? e).slice(0, 500)
+      results.push({ symbol: s.symbol, error, ...(locateError(body.source, error) ?? {}) })
     }
   }
   return [200, { ok: true, pinets: PINETS_VERSION, runner: RUNNER_VERSION, results }]
@@ -184,7 +199,7 @@ export function createServer({ scripts } = {}) {
         worker_restarts: runner.restarts,
       })
     }
-    if (req.method !== 'POST' || req.url !== '/run') return send(res, 404, { ok: false, error: 'not found' })
+    if (req.method !== 'POST' || (req.url !== '/run' && req.url !== '/lint')) return send(res, 404, { ok: false, error: 'not found' })
     let size = 0
     const chunks = []
     req.on('data', (c) => {
@@ -201,6 +216,11 @@ export function createServer({ scripts } = {}) {
         body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
       } catch {
         return send(res, 400, { ok: false, error: 'body must be JSON' })
+      }
+      if (req.url === '/lint') {
+        const err = validateSource(body?.source)
+        if (err) return send(res, 400, { ok: false, error: err })
+        return send(res, 200, { ok: true, runner: RUNNER_VERSION, issues: lintSource(body.source) })
       }
       try {
         const [status, payload] = await handleRun(body, runner)

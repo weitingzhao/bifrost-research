@@ -203,7 +203,7 @@ test('/health answers while a large /run is computing', async () => {
     const body = await run
     const total = performance.now() - t0
     assert.equal(body.results.length, 100)
-    assert.equal(body.runner, '0.4.0')
+    assert.equal(body.runner, '0.5.0')
     assert.ok(total > 500, `fixture: the run should be long enough to matter (${total.toFixed(0)} ms)`)
     assert.ok(lat.length >= 3, `/health answered ${lat.length} times during a ${total.toFixed(0)} ms run`)
     assert.ok(Math.max(...lat) < 250, `slowest /health ${Math.max(...lat).toFixed(0)} ms`)
@@ -423,5 +423,27 @@ test('a worker that cannot start fails each series with the reason, and the queu
     assert.equal(calls, 2)
   } finally {
     globalThis.__pineWorkerFactory = orig
+  }
+})
+
+// -- 0.5.0: checks PineTS does not make, and errors with their line ----------------
+
+test('/run refuses a script with a slip and says where; /lint lists the problems', async () => {
+  const { server, base } = await serve(new ScriptPool({ timeoutMs: 5000 }))
+  try {
+    const bad = pine('a = close +\nplotshape(a > 0, "buy")')
+    const r = await fetch(base + '/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: bad, series: [{ symbol: 'A', bars: W }] }) })
+    assert.equal(r.status, 400)
+    const body = await r.json()
+    assert.match(body.error, /^the script has 1 problem; line 3: line 3 ends with `\+`/)
+    assert.deepEqual(body.issues.map((i) => i.line), [3])
+    const lint = await fetch(base + '/lint', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: bad }) }).then((x) => x.json())
+    assert.deepEqual(lint.issues.map((i) => [i.line, i.col]), [[3, 11]])
+    const clean = await fetch(base + '/lint', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: ST }) }).then((x) => x.json())
+    assert.deepEqual(clean.issues, [])
+    const undef = await post(base, { source: pine('b = foo + 1\nplotshape(b > 0, "buy")'), series: [{ symbol: 'A', bars: W }] })
+    assert.deepEqual([undef.results[0].error, undef.results[0].line], ['foo is not defined', 3])
+  } finally {
+    server.close()
   }
 })
