@@ -1,8 +1,12 @@
-"""husbandry_gate: the Market side is judged on a freshly computed doctor report.
+"""husbandry_gate (the Market gate): judged on a freshly computed doctor report.
 
 TD-94: the gate fails closed. A probe that raised left the verdict 'unknown',
 which passed (09-16, 09-25, 09-26), and nothing tied the doctor's session to the
 one being closed (09-22 passed on 09-18's 'healthy', 09-24 on 09-22's).
+
+TD-192: Flex is no longer judged here (batch/flex_gate, test_flex_gate.py); the
+fixture still answers the Flex URLs so a gate that probed them again would pass
+or fail on them visibly.
 """
 
 from __future__ import annotations
@@ -103,12 +107,12 @@ def test_a_critical_eod_session_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_every_probe_failing_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """(a) Doctor and both Flex probes raise: the gate used to pass on 'unknown'."""
+    """(a) The doctor raises: the gate used to pass on 'unknown'."""
     down = ConnectionError("connection refused")
     with pytest.raises(RuntimeError, match="fails closed") as err:
         _run(monkeypatch, down, flex=down, summary=down)
     assert "Market EOD verdict unknown" in str(err.value)
-    assert "Flex ingest unknown" in str(err.value)
+    assert "Flex" not in str(err.value)
 
 
 def test_a_doctor_that_does_not_answer_blocks_after_one_retry(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -138,18 +142,13 @@ def test_a_doctor_timeout_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_a_transient_probe_failure_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
     attempts: list[str] = []
 
-    def flaky_flex() -> dict[str, Any]:
-        attempts.append("flex")
+    def fake_get(url: str, **kw: Any) -> dict[str, Any]:
+        if "/market/doctor" not in url:
+            raise AssertionError(f"the Market gate probed {url}")
+        attempts.append("doctor")
         if len(attempts) == 1:
             raise ConnectionError("blip")
-        return _flex_ok()
-
-    def fake_get(url: str, **kw: Any) -> dict[str, Any]:
-        if "/market/doctor" in url:
-            return HEALTHY
-        if url.endswith("/flex/config/summary"):
-            return {"source": "secret"}
-        return flaky_flex()
+        return HEALTHY
 
     monkeypatch.setattr(pba, "get_json", fake_get)
     monkeypatch.setattr(pba, "expected_session", lambda: date(2026, 9, 4))
@@ -158,9 +157,21 @@ def test_a_transient_probe_failure_is_retried(monkeypatch: pytest.MonkeyPatch) -
     assert _md(result, "gate") == "pass" and len(attempts) == 2
 
 
-def test_flex_without_dimensions_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
-    with pytest.raises(RuntimeError, match="Flex ingest unknown"):
-        _run(monkeypatch, HEALTHY, flex={"dimensions": []})
+@pytest.mark.parametrize(
+    "flex",
+    [
+        {"dimensions": [{"kind": "flex-trades", "last_ok": False, "last_error": "[1003]"}]},
+        {"dimensions": []},
+        ConnectionError("flex down"),
+    ],
+)
+def test_a_flex_failure_does_not_block_the_market_gate(
+    monkeypatch: pytest.MonkeyPatch, flex: Any
+) -> None:
+    """TD-192: 09-08 and 09-16 lost their SEPA to a Flex [1003] through this gate."""
+    result, calls = _run(monkeypatch, HEALTHY, flex=flex, summary={"source": "none"})
+    assert _md(result, "gate") == "pass"
+    assert not [u for u, _ in calls if "/flex/" in u]
 
 
 def test_the_doctor_must_have_judged_the_session_being_closed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -194,10 +205,9 @@ def test_a_hand_run_may_name_the_session(monkeypatch: pytest.MonkeyPatch) -> Non
     assert _md(result, "expected_session") == "2026-09-04" and _md(result, "gate") == "pass"
 
 
-def test_critical_still_wins_over_unknown_flex(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_critical_blocks_with_flex_healthy(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(RuntimeError, match="incomplete"):
         _run(
             monkeypatch,
             {**HEALTHY, "eod_critical": {"verdict": "critical", "detail": "open interest 0/25"}},
-            flex=ConnectionError("down"),
         )

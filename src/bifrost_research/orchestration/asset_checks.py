@@ -305,13 +305,14 @@ OUTPUT_CHECK_OPT_OUT: dict[str, str] = {
     "batch/market_eod": _ENQUEUE_ONLY,
     "batch/flex_trades": (
         "enqueue only: the Flex plugin's worker does the work; its outcome is judged "
-        "by husbandry_gate (freshness-kpis), which raises"
+        "by flex_gate (freshness-kpis), which raises"
     ),
     "batch/flex_transactions": (
         "enqueue only: the Flex plugin's worker does the work; its outcome is judged "
-        "by husbandry_gate (freshness-kpis), which raises"
+        "by flex_gate (freshness-kpis), which raises"
     ),
     "batch/husbandry_gate": "the gate is itself a check: it raises (fails closed) instead of reporting",
+    "batch/flex_gate": "the gate is itself a check: it raises (fails closed) instead of reporting",
     "batch/market/market_self_heal": (
         "doctor -> heal -> recheck: it raises when the session is still critical after the heal"
     ),

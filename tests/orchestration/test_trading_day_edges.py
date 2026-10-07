@@ -16,6 +16,10 @@ rows at 02:33-02:36.
 gate -> signal_hit_fwd_fill: its only upstream is outside the job, so it started at
 02:30:21, before the gate had judged the session whose bars it reads.
 
+flex_gate -/-> dbt / sepa_projection (TD-192): on 09-08 and 09-16 an IB Flex [1003]
+failed the one gate and that night's SEPA was never projected. Flex now gates only
+the assets that read Flex data (option_pinned_contract).
+
 These tests run the real dbt assets in-process with a stub dbt CLI and stub engine
 runners. They need the parsed manifest (``make dbt-parse``); skipped without it,
 like the Definitions smoke test.
@@ -58,6 +62,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 GATE = pba.husbandry_gate.key
+FLEX_GATE_STEP = "batch__flex_gate"
+PINNED_STEP = "engines__option_pinned_contract"
+UNIVERSE_STEP = "engines__option_universe"
 FEATURE_MART = AssetKey(["mart_sepa_feature_daily"])
 GATE_STEP = "batch__husbandry_gate"
 DBT_STEP = "bifrost_research_dbt_assets"
@@ -105,8 +112,13 @@ class StubDbtCli(DbtCliResource):
         return _Invocation(context, self.fail)
 
 
-def _stub_gate(monkeypatch: pytest.MonkeyPatch, *, eod_verdict: str) -> None:
+def _stub_gate(monkeypatch: pytest.MonkeyPatch, *, eod_verdict: str, flex_ok: bool = True) -> None:
     recent = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    flex_dim = (
+        {"kind": "flex-trades", "last_ok": True, "last_success_at": recent}
+        if flex_ok
+        else {"kind": "flex-trades", "last_ok": False, "last_error": "[1003] statement not ready"}
+    )
 
     def fake_get(url: str, **_kw: Any) -> dict[str, Any]:
         if "/market/doctor" in url:
@@ -118,7 +130,7 @@ def _stub_gate(monkeypatch: pytest.MonkeyPatch, *, eod_verdict: str) -> None:
             }
         if url.endswith("/flex/config/summary"):
             return {"source": "secret"}
-        return {"dimensions": [{"kind": "flex-trades", "last_ok": True, "last_success_at": recent}]}
+        return {"dimensions": [flex_dim]}
 
     monkeypatch.setattr(pba, "get_json", fake_get)
     monkeypatch.setattr(pba, "expected_session", lambda: date(2026, 9, 28))
@@ -155,7 +167,7 @@ def _stub_engines(monkeypatch: pytest.MonkeyPatch, *, failing: str | None = None
 
         return run
 
-    for name in ("volatility", "gex", "signal_hit_fwd_fill"):
+    for name in ("volatility", "gex", "signal_hit_fwd_fill", "option_universe", "option_pinned_contract"):
         monkeypatch.setattr(runners, f"run_{name}", runner(name))
     return ran
 
@@ -178,7 +190,7 @@ def _run(*assets: Any, dbt_fails: bool = False) -> tuple[Any, Events]:
         project_dir=str(DBT_PROJECT_DIR), profiles_dir=str(DBT_PROFILES_DIR), fail=dbt_fails
     )
     result = materialize(
-        [pba.husbandry_gate, *assets], resources={"dbt": dbt}, raise_on_error=False
+        [pba.husbandry_gate, pba.flex_gate, *assets], resources={"dbt": dbt}, raise_on_error=False
     )
     events = [(e.event_type, e.step_key) for e in result.all_events]
     return result, events
@@ -350,3 +362,49 @@ def test_signal_hit_fwd_fill_waits_for_the_gate(monkeypatch: pytest.MonkeyPatch)
     assert not result.success
     assert (DagsterEventType.STEP_START, FWD_FILL_STEP) not in events
     assert ran == []
+
+
+def test_flex_gate_is_not_upstream_of_dbt_or_sepa_in_the_job() -> None:
+    """TD-192: in research_trading_day only the Flex reader waits for flex_gate."""
+    assert FLEX_GATE_STEP not in _trading_day_upstream(DBT_STEP)
+    assert FLEX_GATE_STEP not in _trading_day_upstream(SEPA_STEP)
+    assert FLEX_GATE_STEP in _trading_day_upstream(PINNED_STEP)
+
+
+def test_a_flex_failure_no_longer_blocks_sepa_projection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The 09-08 / 09-16 night replayed: Flex [1003], Market healthy.
+
+    dbt, the SEPA projection and option_universe run; only option_pinned_contract,
+    which reads the Flex-confirmed executions, is skipped, and the run is still red.
+    """
+    _stub_gate(monkeypatch, eod_verdict="healthy", flex_ok=False)
+    projected = _stub_projection(monkeypatch)
+    ran = _stub_engines(monkeypatch)
+    result, events = _run(
+        *_dbt_assets(), spa.sepa_projection, ea.option_universe, ea.option_pinned_contract
+    )
+
+    assert not result.success
+    assert (DagsterEventType.STEP_FAILURE, FLEX_GATE_STEP) in events
+    assert (DagsterEventType.STEP_SUCCESS, GATE_STEP) in events
+    assert (DagsterEventType.STEP_SUCCESS, DBT_STEP) in events
+    assert (DagsterEventType.STEP_SUCCESS, SEPA_STEP) in events
+    assert projected == ["mart_sepa_feature_daily"]
+    assert (DagsterEventType.STEP_SUCCESS, UNIVERSE_STEP) in events
+    assert (DagsterEventType.STEP_START, PINNED_STEP) not in events
+    assert ran == ["option_universe"]
+
+
+def test_a_healthy_flex_lets_the_flex_reader_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_gate(monkeypatch, eod_verdict="healthy")
+    _stub_projection(monkeypatch)
+    ran = _stub_engines(monkeypatch)
+    result, events = _run(
+        *_dbt_assets(), spa.sepa_projection, ea.option_universe, ea.option_pinned_contract
+    )
+
+    assert result.success
+    assert _index(events, DagsterEventType.STEP_SUCCESS, FLEX_GATE_STEP) < _index(
+        events, DagsterEventType.STEP_START, PINNED_STEP
+    )
+    assert ran == ["option_universe", "option_pinned_contract"]

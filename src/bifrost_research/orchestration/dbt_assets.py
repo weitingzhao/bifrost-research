@@ -18,7 +18,11 @@ from bifrost_research.orchestration.paths import (
     DBT_PROJECT_DIR,
     dbt_manifest_exists,
 )
-from bifrost_research.orchestration.plugin_batch_assets import husbandry_gate
+from bifrost_research.orchestration.plugin_batch_assets import (
+    FLEX_DERIVED_SCHEMAS,
+    flex_gate,
+    husbandry_gate,
+)
 
 # dbt nodes that become assets; sources are external keys, tests are checks.
 _GATED_RESOURCE_TYPES = frozenset({"model", "seed", "snapshot"})
@@ -39,6 +43,7 @@ ENGINE_WRITTEN_SOURCES: Mapping[tuple[str, str], AssetKey] = {
 def _engine_writers(
     manifest: Mapping[str, Any], resource_props: Mapping[str, Any]
 ) -> set[AssetKey]:
+    """Engines that write a source the node reads, and flex_gate for a Flex-derived one."""
     sources = manifest.get("sources", {})
     writers = set()
     for node_id in resource_props.get("depends_on", {}).get("nodes", []):
@@ -47,12 +52,16 @@ def _engine_writers(
             writer = ENGINE_WRITTEN_SOURCES.get((source["source_name"], source["name"]))
             if writer is not None:
                 writers.add(writer)
+            if source.get("schema") in FLEX_DERIVED_SCHEMAS:
+                writers.add(flex_gate.key)
     return writers
 
 
 class GatedDbtTranslator(DagsterDbtTranslator):
     """Every dbt asset waits for ``batch/husbandry_gate`` (Owner decision 2026-09-29),
-    and a model that reads an engine's table also waits for that engine.
+    and a model that reads an engine's table also waits for that engine. A model
+    reading a Flex-derived source (``FLEX_DERIVED_SCHEMAS``) also waits for
+    ``batch/flex_gate``; none does, so a Flex failure no longer stops dbt (TD-192).
 
     The default translator derives deps from the manifest alone, so the dbt
     assets' only upstreams were their dbt sources (``market.short_volume``, …)

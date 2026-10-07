@@ -67,8 +67,13 @@
 
 ```
 Dagster market_eod / flex_* (HTTP enqueue) → Plugin workers (ops_jobs.*)
-  → husbandry_gate → dbt (dw_stock.*) → sepa_projection → engines → scan
+  → husbandry_gate (Market) → dbt (dw_stock.*) → sepa_projection → engines → scan
+  → flex_gate (Flex) → only the Flex readers (option_pinned_contract)
 ```
+
+两道闸门（TD-192）：Flex 失败只挡读 Flex 数据的资产（`plugin_batch_assets.FLEX_READERS`），
+不再挡 dbt / SEPA / engines；两道都 fail-closed（TD-94）。新读 `raw_broker.*` 或 Trade API `/executions`
+的代码要登记进 `FLEX_READERS`，`tests/orchestration/test_flex_gate.py` 会拦。
 
 | 项 | 说明 |
 |----|------|

@@ -120,9 +120,55 @@ class HusbandryGateConfig(Config):
     expected_session: str = ""
 
 
+class FlexGateConfig(Config):
+    """Override for ``flex_gate`` launched by hand: ``allow_unknown`` lets a Flex
+    probe that did not answer pass (the gate fails closed otherwise)."""
+
+    allow_unknown: bool = False
+
+
 #: Seconds before the one retry of a probe that raised (not after a timeout:
 #: the doctor already had MARKET_DOCTOR_TIMEOUT_SEC).
 PROBE_RETRY_SEC = 15.0
+
+# ---------------------------------------------------------------------------
+# What reads Flex data (TD-192). The trading-day batch has two gates: the Market
+# gate (``husbandry_gate``, key kept for its run history) that everything waits
+# for, and ``flex_gate``, which only the assets reading Flex-derived data wait
+# for. Until 2026-10 one gate judged both, so an IB Flex failure (TWS log-off,
+# statement not generated: [1003] on 09-08 and 09-16) also blocked dbt, SEPA and
+# every engine, none of which read a Flex row, and the SEPA of those nights was
+# lost for good. tests/orchestration/test_flex_gate.py derives the readers from
+# the code and holds both directions.
+# ---------------------------------------------------------------------------
+
+#: Schemas the Flex Query Plugin writes (executions_raw_flex, transactions,
+#: positions, … in raw_broker). A dbt source in one of them puts the whole dbt
+#: build behind flex_gate (dbt is one step); none does today.
+FLEX_DERIVED_SCHEMAS: tuple[str, ...] = ("raw_broker",)
+
+#: Every module that reads Flex-derived data, with the asset that runs it in the
+#: trading-day batch (and so waits for flex_gate), or ``None`` and why it is not
+#: gated there. Markers: a table in raw_broker, or the Trade API's
+#: ``/executions`` routes, whose book is executions_final (Flex-confirmed fills).
+FLEX_READERS: dict[str, tuple[str | None, str]] = {
+    "engines/option_pinned/entry.py": (
+        "engines/option_pinned_contract",
+        "Trade API /executions + /executions/position-attribution — the Flex-confirmed "
+        "book decides which traded contracts keep their history",
+    ),
+    "engines/journal_distill.py": (
+        None,
+        "agents/journal_distill: own 23:55 UTC schedule (research_memory_distill), not "
+        "in the trading-day batch, so no gate of this batch can order it",
+    ),
+    "engines/forecast/terrain_backfill.py": (
+        None,
+        "maintenance/terrain_backfill: launched by hand, the operator reads its report",
+    ),
+    "repositories/journal_memory.py": (None, "research-api read path, not a Dagster asset"),
+    "mcp/tools/trade_context.py": (None, "MCP tool read path, not a Dagster asset"),
+}
 
 
 def expected_session() -> date:
@@ -155,23 +201,31 @@ def _probe(context: AssetExecutionContext, label: str, fn: Callable[[], Any]) ->
     return None, "unreachable"
 
 
+def _fail_closed(context: AssetExecutionContext, gate: str, unknown: list[str], allow: bool) -> None:
+    if not unknown:
+        return
+    if not allow:
+        raise RuntimeError(
+            f"{gate}: fails closed — "
+            + "; ".join(unknown)
+            + " (a hand-launched run may set config allow_unknown: true)"
+        )
+    context.log.warning("%s: allow_unknown set, passing despite: %s", gate, "; ".join(unknown))
+
+
 @asset(
     key=AssetKey(["batch", "husbandry_gate"]),
-    deps=[
-        AssetKey(["batch", "market_eod"]),
-        AssetKey(["batch", "flex_trades"]),
-        AssetKey(["batch", "flex_transactions"]),
-    ],
+    deps=[AssetKey(["batch", "market_eod"])],
     group_name="plugin_batch",
     description=(
-        "Gate before Research dbt/engines. Market is judged on the doctor's "
+        "Market gate before Research dbt/engines. Judged on the doctor's "
         "EOD-critical verdict — what the session's tables actually hold "
         "(chain coverage, open interest, stock bars) — not on cron adherence, "
         "so a lagging rotate or a maintenance slot no longer blocks dbt. The "
         "doctor must have judged tonight's New York session. "
-        "Flex is checked on its outcome (freshness-kpis: last attempt ok, last "
-        "success within FLEX_GATE_MAX_AGE_HOURS) — an accepted enqueue is not a success. "
-        "Fails closed: a probe that does not answer blocks (TD-94)."
+        "Fails closed: a probe that does not answer blocks (TD-94). "
+        "Flex is not judged here: batch/flex_gate gates only the assets that read "
+        "Flex data (TD-192)."
     ),
 )
 def husbandry_gate(context: AssetExecutionContext, config: HusbandryGateConfig) -> MaterializeResult:
@@ -179,17 +233,12 @@ def husbandry_gate(context: AssetExecutionContext, config: HusbandryGateConfig) 
         "MARKET_DATA_API_URL",
         "http://market-data-api.plugin-market-data.svc.cluster.local:8790",
     ).rstrip("/")
-    flex_base = env(
-        "FLEX_QUERY_API_URL",
-        "http://flex-query-api.plugin-flex-query.svc.cluster.local:8791",
-    ).rstrip("/")
 
     market_verdict = "unknown"
     eod_verdict = "unknown"
     eod_detail = "doctor not probed"
     market_session = "unknown"
     market_generated_at = "unknown"
-    flex_source = "unknown"
     unknown: list[str] = []
 
     doctor, error = _probe(
@@ -212,6 +261,73 @@ def husbandry_gate(context: AssetExecutionContext, config: HusbandryGateConfig) 
     if eod_verdict == "unknown":
         unknown.append(f"Market EOD verdict unknown ({eod_detail})")
 
+    if eod_verdict == "critical":
+        raise RuntimeError(
+            f"husbandry_gate: Market EOD session {market_session} incomplete — {eod_detail}"
+        )
+
+    # The verdict must be about tonight's session, computed tonight (09-22 and 09-24
+    # passed on the previous session's 'healthy', before the doctor was read fresh).
+    expected = (
+        date.fromisoformat(config.expected_session) if config.expected_session else expected_session()
+    )
+    if isinstance(doctor, dict):
+        if market_session != expected.isoformat():
+            unknown.append(
+                f"doctor judged session {market_session}, the batch closes {expected.isoformat()}"
+            )
+        if market_generated_at == "unknown":
+            unknown.append("doctor report carries no generated_at (not a fresh computation)")
+
+    _fail_closed(context, "husbandry_gate", unknown, config.allow_unknown)
+
+    context.log.info(
+        "husbandry_gate ok market=%s eod=%s session=%s expected=%s generated_at=%s",
+        market_verdict,
+        eod_verdict,
+        market_session,
+        expected.isoformat(),
+        market_generated_at,
+    )
+    return MaterializeResult(
+        metadata=meta(
+            {
+                "market_verdict": market_verdict,
+                "market_eod": eod_verdict,
+                "market_eod_detail": eod_detail,
+                "market_session": market_session,
+                "expected_session": expected.isoformat(),
+                "market_generated_at": market_generated_at,
+                "gate": "pass" if not unknown else "pass (allow_unknown)",
+                "overridden": "; ".join(unknown) if unknown else None,
+            }
+        )
+    )
+
+
+@asset(
+    key=AssetKey(["batch", "flex_gate"]),
+    deps=[
+        AssetKey(["batch", "flex_trades"]),
+        AssetKey(["batch", "flex_transactions"]),
+    ],
+    group_name="plugin_batch",
+    description=(
+        "Flex gate: only the assets that read Flex-derived data wait for it "
+        "(FLEX_READERS; TD-192). Flex is checked on its outcome (freshness-kpis: last "
+        "attempt ok, last success within FLEX_GATE_MAX_AGE_HOURS) — an accepted "
+        "enqueue is not a success — and on its token source. Fails closed: a probe "
+        "that does not answer blocks (TD-94)."
+    ),
+)
+def flex_gate(context: AssetExecutionContext, config: FlexGateConfig) -> MaterializeResult:
+    flex_base = env(
+        "FLEX_QUERY_API_URL",
+        "http://flex-query-api.plugin-flex-query.svc.cluster.local:8791",
+    ).rstrip("/")
+    flex_source = "unknown"
+    unknown: list[str] = []
+
     summary, error = _probe(context, "flex summary", lambda: get_json(f"{flex_base}/flex/config/summary"))
     if isinstance(summary, dict):
         flex_source = str(summary.get("source") or "unknown")
@@ -231,57 +347,20 @@ def husbandry_gate(context: AssetExecutionContext, config: HusbandryGateConfig) 
         unknown.append(f"Flex ingest unknown ({flex_reason})")
 
     if flex_source == "none":
-        raise RuntimeError("husbandry_gate: Flex source=none — block dbt")
+        raise RuntimeError("flex_gate: Flex source=none — block the Flex readers")
     if flex_verdict in ("failed", "stale"):
-        raise RuntimeError(f"husbandry_gate: Flex ingest {flex_verdict} ({flex_reason}) — block dbt")
-    if eod_verdict == "critical":
         raise RuntimeError(
-            f"husbandry_gate: Market EOD session {market_session} incomplete — {eod_detail}"
+            f"flex_gate: Flex ingest {flex_verdict} ({flex_reason}) — block the Flex readers"
         )
 
-    # The verdict must be about tonight's session, computed tonight (09-22 and 09-24
-    # passed on the previous session's 'healthy', before the doctor was read fresh).
-    expected = (
-        date.fromisoformat(config.expected_session) if config.expected_session else expected_session()
-    )
-    if isinstance(doctor, dict):
-        if market_session != expected.isoformat():
-            unknown.append(
-                f"doctor judged session {market_session}, the batch closes {expected.isoformat()}"
-            )
-        if market_generated_at == "unknown":
-            unknown.append("doctor report carries no generated_at (not a fresh computation)")
-
-    if unknown:
-        if not config.allow_unknown:
-            raise RuntimeError(
-                "husbandry_gate: fails closed — "
-                + "; ".join(unknown)
-                + " (a hand-launched run may set config allow_unknown: true)"
-            )
-        context.log.warning("husbandry_gate: allow_unknown set, passing despite: %s", "; ".join(unknown))
+    _fail_closed(context, "flex_gate", unknown, config.allow_unknown)
 
     context.log.info(
-        "husbandry_gate ok market=%s eod=%s session=%s expected=%s generated_at=%s "
-        "flex_source=%s flex_ingest=%s (%s)",
-        market_verdict,
-        eod_verdict,
-        market_session,
-        expected.isoformat(),
-        market_generated_at,
-        flex_source,
-        flex_verdict,
-        flex_reason,
+        "flex_gate ok flex_source=%s flex_ingest=%s (%s)", flex_source, flex_verdict, flex_reason
     )
     return MaterializeResult(
         metadata=meta(
             {
-                "market_verdict": market_verdict,
-                "market_eod": eod_verdict,
-                "market_eod_detail": eod_detail,
-                "market_session": market_session,
-                "expected_session": expected.isoformat(),
-                "market_generated_at": market_generated_at,
                 "flex_source": flex_source,
                 "flex_ingest": flex_verdict,
                 "flex_ingest_reason": flex_reason,
@@ -297,4 +376,5 @@ PLUGIN_BATCH_ASSETS = [
     flex_trades,
     flex_transactions,
     husbandry_gate,
+    flex_gate,
 ]

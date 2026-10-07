@@ -35,7 +35,11 @@ plugin_market_ingest = AssetSpec(
 
 # Batch enqueue assets (Dagster schedules; workers still execute).
 _MARKET_EOD = AssetKey(["batch", "market_eod"])
+# The Market gate: every trading-day engine waits for it. Only an engine that reads
+# Flex-derived data also waits for batch/flex_gate (plugin_batch_assets.FLEX_READERS;
+# TD-192 — a Flex failure used to block every engine through the one gate).
 _GATE = AssetKey(["batch", "husbandry_gate"])
+_FLEX_GATE = AssetKey(["batch", "flex_gate"])
 _SEPA = AssetKey(["features", "sepa_projection"])
 _MARKET = [_MARKET_EOD, _GATE]
 
@@ -400,7 +404,9 @@ def option_universe(context: AssetExecutionContext) -> MaterializeResult:
 @asset(
     key=AssetKey(["engines", "option_pinned_contract"]),
     check_specs=output_check_specs(AssetKey(["engines", "option_pinned_contract"])),
-    deps=[AssetKey(["engines", "option_universe"])],
+    # Reads the Trade API's executions (the Flex-confirmed book): a failed or stale
+    # Flex ingest skips the round rather than pinning from a book missing fills.
+    deps=[AssetKey(["engines", "option_universe"]), _FLEX_GATE],
     group_name="python_analytics",
     description=(
         "research.option_pinned_contract — the option contracts whose history the "

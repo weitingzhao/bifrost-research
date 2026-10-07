@@ -3,10 +3,11 @@
 Pipeline (Data Husbandry + Dagster)::
 
     batch market_eod / flex_* (HTTP enqueue → Plugin workers)
-      → husbandry_gate
+      → husbandry_gate (Market EOD)        flex_gate (Flex outcome, TD-192)
       → dbt transforms (dw_stock.*)          [when target/manifest.json exists]
       → sepa_projection → features.stock_signal_sepa_daily
       → Python analytics engines → scan
+      (flex_gate gates only the Flex readers: option_pinned_contract)
 
     Plus multi-schedule market_* UTC slots and research_* aux schedules
     (former CronJobs). D10 BLOCKED.

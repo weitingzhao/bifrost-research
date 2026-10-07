@@ -3,7 +3,8 @@
 ``research_trading_day`` excludes plugin_market_schedule and research aux groups,
 and since the Flex morning split also the two Flex enqueue assets: IB's Activity
 statement is generated overnight, so Flex is fetched at 06:30 America/New_York
-(``research_flex_morning``) and the trading-day gate checks its outcome.
+(``research_flex_morning``) and the trading-day ``flex_gate`` checks its outcome
+for the assets that read Flex data (TD-192).
 All husbandry CronJobs must stay suspended after migrate. D10 BLOCKED.
 """
 
@@ -83,8 +84,9 @@ research_trading_day_job = define_asset_job(
         }
     },
     description=(
-        "Trading-day batch: Plugin EOD enqueue → husbandry gate → "
-        "dbt (if present) → SEPA projection → core engines + scan → signal hit → alert scan. "
+        "Trading-day batch: Plugin EOD enqueue → husbandry gate (Market) → "
+        "dbt (if present) → SEPA projection → core engines + scan → signal hit → alert scan; "
+        "flex_gate (Flex outcome) gates only the Flex readers. "
         "D10 BLOCKED."
     ),
 )
@@ -96,8 +98,8 @@ research_trading_day_schedule = ScheduleDefinition(
     execution_timezone="America/New_York",
     default_status=DefaultScheduleStatus.RUNNING,
     description=(
-        "Mon–Fri after US close: enqueue Market EOD, gate on Market + Flex outcome, "
-        "then Research OLAP. Flex itself is enqueued by research_flex_morning_schedule. "
+        "Mon–Fri after US close: enqueue Market EOD, gate on Market EOD, then Research "
+        "OLAP; the Flex outcome gates only the assets that read Flex data. Flex itself is enqueued by research_flex_morning_schedule. "
         "All overlapping husbandry CronJobs must stay suspended."
     ),
 )

@@ -21,11 +21,13 @@ from bifrost_research.orchestration.sepa_projection import (
     run_sepa_projection,
 )
 
-# Upstreams: husbandry_gate (market_eod + flex enqueues) must pass, and dbt must
+# Upstreams: husbandry_gate (the Market gate) must pass, and dbt must
 # have rebuilt the mart this asset projects. Without the mart edge the projection
 # only followed dbt by luck: on 2026-09-29 (run e1dd41e5) the mart landed at
 # 02:33:29 and the projection read it at 02:36:21, with nothing ordering the two.
 # dbt is one step, so this waits for the whole dbt build and is skipped if it fails.
+# Not batch/flex_gate: SEPA reads no Flex data, and a Flex [1003] night used to
+# drop that night's SEPA for good (09-08, 09-16; TD-192).
 _GATE = AssetKey(["batch", "husbandry_gate"])
 _FEATURE_MART = AssetKey(["mart_sepa_feature_daily"])
 
@@ -49,8 +51,9 @@ def _metadata(result: dict[str, Any]) -> dict[str, Any]:
     group_name="feature_store",
     description=(
         "Project dbt mart_sepa_feature_daily → features.stock_signal_sepa_daily. "
-        "Runs after husbandry_gate (Market EOD + Flex outcome) and after the dbt "
-        "build that rebuilds the mart; a failed dbt build skips it."
+        "Runs after husbandry_gate (Market EOD) and after the dbt build that "
+        "rebuilds the mart; a failed dbt build skips it. A Flex failure does not "
+        "(batch/flex_gate gates only Flex readers, TD-192)."
     ),
 )
 def sepa_projection(context: AssetExecutionContext) -> MaterializeResult:
