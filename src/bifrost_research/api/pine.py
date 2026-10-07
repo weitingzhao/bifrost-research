@@ -4,6 +4,7 @@ GET  /research/pine/scripts                 the library (source with ?with_sourc
 GET  /research/pine/scripts/{id}            one script with its source
 PUT  /research/pine/scripts/{id}            add or edit a script (owner)
 POST /research/pine/check                   run a source over one symbol without saving (owner)
+POST /research/pine/try                     run a source over a basket and measure its signals, nothing saved (owner)
 GET  /research/pine/context                 the option context series a script can read (S6)
 GET  /research/pine/signals                 who fired on a session (Screener), or one symbol's marks (chart)
 GET  /research/pine/signal-stats            net forward returns after a script's signal vs the same names' other sessions
@@ -19,6 +20,7 @@ from datetime import date, timedelta
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from bifrost_research.db.calendar import ny_today
@@ -26,7 +28,7 @@ from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.engines.indicators.bars import load_bars
-from bifrost_research.engines.pine import client, context, stats
+from bifrost_research.engines.pine import client, context, stats, trial
 from bifrost_research.engines.pine.library import (
     MAX_PLOTS,
     PineScript,
@@ -60,6 +62,18 @@ def _close(conn: Any) -> None:
 
 def _csv(raw: str | None) -> list[str]:
     return [s.strip() for s in (raw or "").split(",") if s.strip()]
+
+
+def _problems(message: str, issues: list[dict[str, Any]]) -> JSONResponse:
+    """400 with the reason in ``detail`` (what every client reads) and the lines in ``issues``."""
+    return JSONResponse(status_code=400, content={"detail": message, "issues": issues})
+
+
+def _error_issue(res: dict[str, Any]) -> list[dict[str, Any]]:
+    """A runner error as one issue when it named the line (runner 0.5.0)."""
+    if res.get("line") is None:
+        return []
+    return [{"line": res["line"], "col": res.get("col") or 1, "message": str(res.get("error"))}]
 
 
 class ScriptBody(BaseModel):
@@ -149,6 +163,15 @@ def put_script(body: ScriptBody, script_id: str = Path(..., min_length=2, max_le
                 status_code=409,
                 detail="built-in scripts are edited in the repository; save a copy under another id",
             )
+        try:
+            issues = client.lint(body.source)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 — a script is not saved unchecked
+            raise HTTPException(status_code=503, detail=f"the script cannot be checked now (pine-runner): {str(exc)[:200]}") from exc
+        if issues:
+            first = issues[0]
+            return _problems(f"the script has {len(issues)} problem{'' if len(issues) == 1 else 's'}; line {first['line']}: {first['message']}", issues)
         saved = upsert_script(conn, PineScript(id=script_id, **body.model_dump()))
     finally:
         _close(conn)
@@ -199,12 +222,14 @@ def check(body: CheckBody) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"no daily bars for {sym}")
     try:
         res = client.run(source, {sym: bars}, plots=body.plots, **extra).get(sym, {})
+    except client.PineScriptProblems as exc:
+        return _problems(str(exc), exc.issues)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=503, detail=f"pine-runner unreachable: {str(exc)[:200]}") from exc
     if res.get("error"):
-        raise HTTPException(status_code=400, detail=f"script error: {res['error']}")
+        return _problems(f"script error: {res['error']}", _error_issue(res))
     close_on = {b["date"]: b["close"] for b in bars}
     marks = [
         {"date": d.isoformat(), "side": side, "close": close_on.get(d)}
@@ -225,6 +250,65 @@ def check(body: CheckBody) -> dict[str, Any]:
             for title in body.plots
         }
     return {"ok": True, "data": data}
+
+
+class TryBody(BaseModel):
+    """A pasted ``source`` or a library ``script``, over a basket of names (S13)."""
+
+    model_config = ConfigDict(extra="forbid")
+    source: str | None = Field(None, min_length=1, max_length=200_000)
+    script: str | None = Field(None, min_length=2, max_length=48)
+    symbols: list[Annotated[str, Field(min_length=1, max_length=16)]] | None = Field(None, max_length=trial.MAX_SYMBOLS)
+    basket: Literal["resident", "liquid50"] | None = None
+    days: int = Field(730, ge=120, le=366 * 6)
+    horizons: list[Annotated[int, Field(ge=1, le=120)]] = Field(default_factory=lambda: [5, 10, 20], min_length=1, max_length=6)
+    cost_bps: float = Field(stats.DEFAULT_COST_BPS, ge=0.0, le=200.0)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "TryBody":
+        if (self.source is None) == (self.script is None):
+            raise ValueError("send either source or script")
+        if self.symbols and self.basket:
+            raise ValueError("send either symbols or basket")
+        return self
+
+
+@router.post("/try", dependencies=[Depends(require_owner)])
+def try_script(body: TryBody) -> Any:
+    """Run a script over a basket now and measure its signals like Signal Decay — nothing is stored."""
+    end = ny_today()
+    start = end - timedelta(days=body.days)
+    conn = _connect_or_503()
+    try:
+        lib = get_script(conn, body.script) if body.script else None
+        if body.script and lib is None:
+            raise HTTPException(status_code=404, detail=f"pine script {body.script} not found")
+        source = lib.source if lib is not None else str(body.source)
+        try:
+            context.referenced(source)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        symbols = body.symbols or trial.basket_symbols(conn, body.basket or trial.DEFAULT_BASKET)
+        try:
+            out = trial.run_trial(conn, source, symbols, start=start, end=end, horizons=sorted(set(body.horizons)), cost_bps=body.cost_bps)
+        except client.PineScriptProblems as exc:
+            return _problems(str(exc), exc.issues)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail=f"pine-runner unreachable: {str(exc)[:200]}") from exc
+    finally:
+        _close(conn)
+    data: dict[str, Any] = {
+        "window": {"start": start.isoformat(), "end": end.isoformat()},
+        "basket": None if body.symbols else (body.basket or trial.DEFAULT_BASKET),
+        "horizons": sorted(set(body.horizons)),
+        "cost_bps": body.cost_bps,
+        **out,
+    }
+    if lib is not None:
+        data["script"], data["script_version"] = lib.id, lib.version
+    return {"ok": True, "data": data, "evaluation": evaluation("pine_signal")}
 
 
 @router.get("/signals")

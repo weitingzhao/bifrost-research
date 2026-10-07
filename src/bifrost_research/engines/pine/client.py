@@ -31,6 +31,17 @@ def _day(ms: int) -> date:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).date()
 
 
+class PineScriptProblems(ValueError):
+    """The runner refused a script for slips PineTS would have run quietly (runner 0.5.0).
+
+    ``issues``: ``[{"line", "col", "message"}]``, 1-based, sorted.
+    """
+
+    def __init__(self, message: str, issues: Sequence[Mapping[str, Any]]) -> None:
+        super().__init__(message)
+        self.issues = [dict(i) for i in issues]
+
+
 def _post(path: str, payload: Mapping[str, Any], timeout: float) -> dict[str, Any]:
     req = urllib.request.Request(
         runner_url() + path,
@@ -46,7 +57,22 @@ def _post(path: str, payload: Mapping[str, Any], timeout: float) -> dict[str, An
             body = json.loads(exc.read().decode("utf-8"))
         except Exception:  # noqa: BLE001
             body = {}
-        raise ValueError(body.get("error") or f"pine-runner HTTP {exc.code}") from exc
+        message = body.get("error") or f"pine-runner HTTP {exc.code}"
+        if body.get("issues"):
+            raise PineScriptProblems(message, body["issues"]) from exc
+        raise ValueError(message) from exc
+
+
+def lint(source: str, *, timeout: float = 10.0) -> list[dict[str, Any]]:
+    """The slips in ``source`` PineTS would run quietly (runner 0.5.0): ``[{line, col, message}]``.
+
+    ValueError when the runner refuses the source outright (empty, too long, a
+    ``request.*`` it does not serve); OSError family when it cannot be reached.
+    """
+    body = _post("/lint", {"source": source}, timeout)
+    if "issues" not in body:
+        raise ValueError("pine-runner returned no issues: it predates 0.5.0")
+    return [dict(i) for i in body["issues"]]
 
 
 def health(timeout: float = 5.0) -> dict[str, Any]:
@@ -144,7 +170,8 @@ def run(
     for r in body.get("results") or []:
         sym = str(r.get("symbol"))
         if r.get("error"):
-            out[sym] = {"error": r["error"]}
+            # runner 0.5.0: the script line the error points at, when it could tell
+            out[sym] = {"error": r["error"], **{k: r[k] for k in ("line", "col") if r.get(k) is not None}}
             continue
         row: dict[str, Any] = {
             "buy": [_day(t) for t in r.get("buy") or []],
