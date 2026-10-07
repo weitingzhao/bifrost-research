@@ -10,7 +10,7 @@
 |---------|------|
 | Offline workspace (Owner drop zone) | `Research-workspace/事件雷达工作流/input/` |
 | Local Cron / CLI default override | `EVENT_RADAR_INPUT_DIR=<abs path to input/>` |
-| K8s CronJob mount | `/data/event-radar/input` (+ `/data/event-radar/archive`) |
+| Default inside a container | `/data/event-radar/input` (+ `/data/event-radar/archive`); nothing mounts it in the cluster |
 | Processed files | `EVENT_RADAR_ARCHIVE_DIR` (default: sibling `archive/` of input) |
 
 Supported suffixes: `.txt` `.md` `.json` `.csv` `.eml`  
@@ -51,26 +51,27 @@ python -m bifrost_research.scheduler.event_radar \
 pytest -q tests/engines/test_event_radar_ingest.py
 ```
 
-## K8s apply
+## In the cluster (Dagster)
+
+There is no event-radar CronJob any more: `research-engines-event-radar` and its
+`event-radar-input-pvc` were suspended Job templates for platform's trigger
+route, and both went with it (TD-190, 2026-10). The cluster side is Dagster's
+`research_event_radar_job` (SEC 8-K filings, below), on
+`research_event_radar_schedule` every 30 minutes. To run it once by hand:
 
 ```bash
-# From Mac Apple Silicon — must target cluster arch:
-docker build --platform linux/amd64 --target base \
-  -t 192.168.10.73:30500/bifrost-research:0.5.2 -f Dockerfile .
-docker push 192.168.10.73:30500/bifrost-research:0.5.2
-
-kubectl apply -f k8s/engines/cronjob-event-radar.yaml
-# Optional: copy Owner files into the PVC (or sync from Research-workspace)
-kubectl -n research create job --from=cronjob/research-engines-event-radar event-radar-manual-$(date +%s)
+kubectl -n research exec deploy/dagster-daemon -- \
+  dagster job launch -w /opt/dagster/workspace.yaml -j research_event_radar_job
 ```
 
-Mac node hostPath alternative is documented as a comment in the CronJob YAML.
+The Owner's drop-zone files are drained on the Mac (Local watcher, below); the
+cluster has no mount for them.
 
 ## Empty state retirement
 
 Trade FE `EventRadarPage` shows the events table when API returns rows.
 "News source not configured" is replaced by a "No events yet" empty state that
-points at the Research-workspace input path once this ingest Cron exists.
+points at the Research-workspace input path.
 
 ## SEC 8-K filings — in Dagster (TD-100, 2026-10)
 

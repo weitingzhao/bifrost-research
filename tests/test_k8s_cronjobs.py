@@ -1,4 +1,4 @@
-"""Dagster owns every research slot; CronJob manifests may not come back (TD-124, TD-176).
+"""Dagster owns every research slot; CronJob manifests may not come back (TD-124, TD-176, TD-190).
 
 Until 2026-10-06, 25 suspended engine CronJobs shipped from k8s/ and were re-pinned
 on every release. Twelve still set RESEARCH_WATCHLIST to a 26-name list that had
@@ -6,10 +6,15 @@ drifted from the universe rule (SATS had been renamed ECHO), so unsuspending one
 would have run a second writer on the wrong universe next to Dagster.
 
 What is left, and why:
-  - research-harness runs outside Dagster and must stay active.
-  - TRIGGER_TEMPLATES are suspended and only used as Job templates by
-    bifrost-platform api/internal/research/cronjob_trigger.go
-    (POST /research/cronjobs/{name}/trigger). They go when that whitelist goes.
+  - research-harness runs outside Dagster and must stay active. It is the only
+    CronJob left.
+
+Until 2026-10-07 seven suspended CronJobs (bifrost-analytics-daily,
+research-engines-event-radar/-forecast/-momentum, research-gex-intraday,
+research-iv-percentile, research-terrain-intraday) shipped as Job templates for
+bifrost-platform's POST /research/cronjobs/{name}/trigger. The route had no
+caller and ran engines outside Dagster's ordering; both went (TD-190). No
+template may come back, and the verify script may not grow a template list again.
 
 The set may only shrink: a new CronJob fails here until it is argued into this
 file, and a name deleted from k8s/ must be deleted here too.
@@ -27,15 +32,6 @@ K8S = ROOT / "k8s"
 VERIFY = ROOT / "scripts" / "verify_husbandry_schedulers.sh"
 
 ACTIVE = {"research-harness"}
-TRIGGER_TEMPLATES = {
-    "bifrost-analytics-daily",
-    "research-engines-event-radar",
-    "research-engines-forecast",
-    "research-engines-momentum",
-    "research-gex-intraday",
-    "research-iv-percentile",
-    "research-terrain-intraday",
-}
 
 
 def _manifests() -> list[Path]:
@@ -53,16 +49,21 @@ def _cronjobs() -> dict[str, dict]:
     return found
 
 
-def test_only_the_argued_cronjobs_exist() -> None:
-    assert set(_cronjobs()) == ACTIVE | TRIGGER_TEMPLATES
+def test_only_the_harness_exists() -> None:
+    assert set(_cronjobs()) == ACTIVE
 
 
-def test_the_harness_runs_and_the_templates_never_do() -> None:
+def test_the_harness_runs() -> None:
     cronjobs = _cronjobs()
     for name in ACTIVE:
         assert cronjobs[name]["spec"].get("suspend") is not True, name
-    for name in TRIGGER_TEMPLATES:
-        assert cronjobs[name]["spec"].get("suspend") is True, name
+
+
+def test_no_suspended_cronjob_ships() -> None:
+    """A suspended CronJob is either dead weight or a Job template for something
+    outside Dagster (TD-190); neither may ship."""
+    suspended = sorted(n for n, d in _cronjobs().items() if d["spec"].get("suspend") is True)
+    assert suspended == []
 
 
 def test_no_manifest_sets_research_watchlist() -> None:
@@ -86,4 +87,5 @@ def test_the_verify_script_allows_exactly_these() -> None:
         return set(m.group(1).split())
 
     assert default("ALLOW_ACTIVE") == ACTIVE
-    assert default("ALLOW_TEMPLATE") == TRIGGER_TEMPLATES
+    # The template allow-list went with platform's trigger route (TD-190).
+    assert "ALLOW_TEMPLATE" not in text

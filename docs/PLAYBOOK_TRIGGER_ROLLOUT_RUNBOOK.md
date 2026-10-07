@@ -21,15 +21,13 @@ kubectl -n research delete job research-ddl-apply-analyze-def --ignore-not-found
 kubectl apply -f k8s/jobs/ddl-apply.yaml
 kubectl -n research wait --for=condition=complete job/research-ddl-apply-analyze-def --timeout=180s
 
-# 2) Roll Cron images (terrain-intraday + forecast emit triggers; scan materializes daily)
-kubectl -n research set image cronjob/research-terrain-intraday \
-  compute=192.168.10.73:30500/bifrost-research:0.38.0
-kubectl -n research set image cronjob/research-engines-forecast \
-  compute=192.168.10.73:30500/bifrost-research:0.38.0
-# (2026-10: scan runs in Dagster research_trading_day; cronjob-scan.yaml was deleted, TD-124)
+# 2) Terrain-intraday, forecast and scan all run in Dagster (research_trading_day and the
+#    intraday schedule); roll them by pinning the Dagster image. Their CronJobs were
+#    deleted (scan TD-124; terrain-intraday + forecast TD-190).
 
 # 3) Verify
-kubectl -n research get cronjob | grep -E 'terrain-intraday|forecast|scan'
+kubectl -n research exec deploy/dagster-daemon -- \
+  dagster schedule list -w /opt/dagster/workspace.yaml | grep -E 'trading_day|intraday'
 # After next intraday tick:
 # SELECT COUNT(*) FROM features.stock_signal_playbook_trigger_intraday WHERE trade_date = CURRENT_DATE;
 # curl -s "$RESEARCH_API/research/playbook/triggers?symbol=SPY"

@@ -162,7 +162,7 @@ make build-image              # Docker 全包镜像（engines + API）
 | Drop zone | `Research-workspace/事件雷达工作流/input/` |
 | Env | `EVENT_RADAR_INPUT_DIR` / `EVENT_RADAR_ARCHIVE_DIR` / `EVENT_RADAR_ARCHIVE` |
 | Entrypoint | `python -m bifrost_research.scheduler.event_radar` |
-| K8s | `k8s/engines/cronjob-event-radar.yaml`（PVC `/data/event-radar`） |
+| K8s | 无 CronJob（TD-190 已删）；集群侧是 Dagster `research_event_radar_job`（SEC 8-K），drop zone 文件在 Mac 上由 `event-radar-watch` 处理 |
 | Docs | `docs/EVENT_RADAR_INGEST.md` |
 | Table | `features_signals.event_radar`（D10 advisory / D13 OLAP） |
 
