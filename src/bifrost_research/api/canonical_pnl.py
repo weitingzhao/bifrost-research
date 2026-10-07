@@ -2,7 +2,6 @@
 
 Routes:
   GET /research/canonical-pnl/trajectory?symbol=&entry_date=&structure=
-  GET /research/canonical-pnl/coverage
   GET /research/canonical-pnl/structures
 """
 
@@ -17,7 +16,7 @@ from fastapi import APIRouter, HTTPException, Query
 from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.canonical_pnl import STRUCTURES
-from bifrost_research.engines.canonical_pnl import coverage_report, simulate_entry
+from bifrost_research.engines.canonical_pnl import simulate_entry
 from bifrost_research.engines.canonical_pnl.compute import mark_row_json
 from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_CANONICAL_PNL_DAILY
 from bifrost_research.db.calendar import ny_today
@@ -41,21 +40,6 @@ def _connect_or_503() -> Any:
 @router.get("/structures")
 def list_structures() -> dict[str, Any]:
     return _ok({"structures": list(STRUCTURES)})
-
-
-@router.get("/coverage")
-def coverage() -> dict[str, Any]:
-    conn = _connect_or_503()
-    try:
-        return _ok(coverage_report(conn))
-    except Exception as exc:
-        logger.exception("canonical-pnl/coverage failed")
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
 
 
 @router.get("/trajectory")

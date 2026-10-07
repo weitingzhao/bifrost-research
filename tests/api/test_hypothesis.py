@@ -351,7 +351,7 @@ def test_hypothesis_routes_registered() -> None:
     paths = set(client.app.openapi()["paths"])
     assert "/research/hypothesis" in paths
     assert "/research/hypothesis/{hypothesis_id}" in paths
-    assert "/research/hypothesis/{hypothesis_id}/retire" in paths
+    assert "/research/hypothesis/{hypothesis_id}/retire" not in paths
     assert "/research/hypothesis/summary/active" in paths
 
 
@@ -439,18 +439,21 @@ def test_patch_invalid_status_400(client: TestClient) -> None:
     assert resp.status_code == 400
 
 
-def test_retire_hypothesis(client: TestClient) -> None:
+def test_retire_hypothesis(client: TestClient, store: _FakeStore) -> None:
+    """HTTP retire is gone (TD-123). MCP still retires through the repository."""
+    from bifrost_research.repositories import hypothesis as repo
+
     created = client.post(
         "/research/hypothesis",
         json={"title": "Retire me", "thesis": "..."},
     ).json()["data"]
     hid = created["id"]
     resp = client.post(f"/research/hypothesis/{hid}/retire")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["ok"] is True
-    assert body["data"]["status"] == "archived"
-    assert body["data"]["retired_at"]
+    assert resp.status_code == 404
+    row = repo.retire_hypothesis(_FakeConnection(store), hid)
+    assert row is not None
+    assert row["status"] == "archived"
+    assert row["retired_at"]
 
     # Default list excludes retired
     resp = client.get("/research/hypothesis")

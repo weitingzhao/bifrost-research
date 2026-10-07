@@ -313,7 +313,7 @@ _SPECS: tuple[LensSpec, ...] = (
         cold_means="Path call missed.",
         horizons=(1,),
         page_route="/research/scenario?view=sessions",
-        notes="Read through /research/forecast/hit-rate and regime-stats, not classified here.",
+        notes="Read through /research/forecast/hit-rate, not classified here.",
     ),
 )
 

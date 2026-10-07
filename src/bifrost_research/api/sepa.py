@@ -75,32 +75,6 @@ def fundamental_filter(
     return {"ok": True, "conditions": valid, "count": len(symbols), "symbols": symbols, "limit": limit}
 
 
-@router.get("/technical-filter")
-def technical_filter(
-    conditions: str = Query("", description="Comma-separated technical condition column ids"),
-    limit: int = Query(500, ge=1, le=5000),
-) -> dict[str, Any]:
-    cond_ids = [s.strip() for s in (conditions or "").split(",") if s.strip()]
-    if not cond_ids:
-        return {"ok": True, "conditions": [], "count": 0, "symbols": [], "limit": limit}
-    valid = [c for c in cond_ids if c in sepa_reader.TECH_CONDITION_COLUMNS]
-    if not valid:
-        raise HTTPException(status_code=400, detail="no valid technical condition IDs")
-    try:
-        rows = sepa_reader.fetch_technical_filter(valid, limit=limit)
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    symbols = [
-        {
-            "symbol": r["symbol"],
-            "pass_count": int(r.get("pass_count") or 0),
-            "passed_conditions": valid,
-        }
-        for r in rows
-    ]
-    return {"ok": True, "conditions": valid, "count": len(symbols), "symbols": symbols, "limit": limit}
-
-
 @router.get("/fundamental-distribution")
 def fundamental_distribution(
     conditions_passed: int = Query(..., ge=0, le=8),
@@ -145,17 +119,6 @@ def screener_wide(
     sym_list = [s.strip().upper() for s in (symbols or "").split(",") if s.strip()] or None
     try:
         rows = sepa_reader.fetch_screener_wide(symbols=sym_list, limit=limit)
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"ok": True, "count": len(rows), "rows": rows, "limit": limit}
-
-
-@router.get("/screening-ranked")
-def screening_ranked(
-    limit: int = Query(500, ge=1, le=5000),
-) -> dict[str, Any]:
-    try:
-        rows = sepa_reader.fetch_screening_ranked(limit=limit)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"ok": True, "count": len(rows), "rows": rows, "limit": limit}

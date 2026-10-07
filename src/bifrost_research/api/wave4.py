@@ -17,18 +17,12 @@ from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.settlement import (
-    aggregate_accuracy,
     forecast_result_sql,
     input_fault_count_sql,
     settle_forecast,
 )
 from bifrost_research.engines.event_radar.event_calendar import read_event_calendar
 from bifrost_research.engines.event_radar.placeholders import PLACEHOLDER_SQL
-from bifrost_research.engines.event_radar.pipeline import run_pipeline
-from bifrost_research.engines.forecast.llm import get_default_provider
-from bifrost_research.engines.forecast.terrain import compute_market_terrain
-from bifrost_research.engines.forecast.playbook import build_forecast_session
-from bifrost_research.engines.backtest.regime_stats import compute_regime_stats
 from bifrost_research.engines.brief.synth import synthesize_daily_brief
 
 router = APIRouter(prefix="/research", tags=["research-wave4"])
@@ -226,28 +220,6 @@ def gex_intraday(
 # ---------------------------------------------------------------------------
 
 
-class TerrainComputeBody(BaseModel):
-    symbol: str
-    trade_date: date
-    spot: float
-    gex: dict[str, Any] | None = None
-    momentum: dict[str, Any] | None = None
-    iv: dict[str, Any] | None = None
-
-
-@router.post("/forecast/terrain/compute", dependencies=[Depends(require_owner)])
-def compute_terrain(body: TerrainComputeBody) -> dict[str, Any]:
-    terrain = compute_market_terrain(
-        body.symbol,
-        body.trade_date,
-        spot=body.spot,
-        gex=body.gex,
-        momentum=body.momentum,
-        iv=body.iv,
-    )
-    return {"terrain": terrain.to_dict(), "advisory": "D10 BLOCKED — advisory only"}
-
-
 @router.get("/forecast/terrain")
 def get_terrain(
     symbol: str = Query(...),
@@ -353,34 +325,6 @@ def get_terrain_history(
 # ---------------------------------------------------------------------------
 # 4.2 AI Forecast
 # ---------------------------------------------------------------------------
-
-
-class ForecastComputeBody(BaseModel):
-    symbol: str
-    trade_date: date
-    spot: float
-    gex: dict[str, Any] | None = None
-    momentum: dict[str, Any] | None = None
-    iv: dict[str, Any] | None = None
-    enrich: bool = True
-
-
-@router.post("/forecast/sessions/compute", dependencies=[Depends(require_owner)])
-def compute_forecast_session(body: ForecastComputeBody) -> dict[str, Any]:
-    terrain = compute_market_terrain(
-        body.symbol,
-        body.trade_date,
-        spot=body.spot,
-        gex=body.gex,
-        momentum=body.momentum,
-        iv=body.iv,
-    )
-    session = build_forecast_session(
-        terrain,
-        llm=get_default_provider(),
-        enrich=body.enrich,
-    )
-    return session.to_dict()
 
 
 @router.get("/forecast/sessions")
@@ -592,65 +536,6 @@ def get_forecast_session(session_id: str) -> dict[str, Any]:
     return {"session": session, "hourly": hourly, "count_hourly": len(hourly)}
 
 
-@router.get("/forecast/hourly")
-def list_forecast_hourly(
-    session_id: str = Query(...),
-) -> dict[str, Any]:
-    conn = _connect_or_503()
-    cols = (
-        "session_id",
-        "symbol",
-        "trade_date",
-        "hour_et",
-        "path_call",
-        "level_low",
-        "level_high",
-        "level_target",
-        "confidence",
-        "notes",
-        "computed_at",
-    )
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT {', '.join(cols)}
-                FROM features.stock_forecast_hourly
-                WHERE session_id = %s
-                ORDER BY hour_et ASC
-                """,
-                (session_id,),
-            )
-            raw = cur.fetchall() or []
-        rows = [_row_dict(r, cols) for r in raw]
-    finally:
-        conn.close()
-    if not rows:
-        raise HTTPException(status_code=404, detail="No hourly forecasts for session")
-    return {"rows": rows, "count": len(rows), "session_id": session_id}
-
-
-# ---------------------------------------------------------------------------
-# 4.3 Event Radar
-# ---------------------------------------------------------------------------
-
-
-class EventRadarBody(BaseModel):
-    payload: str = Field(..., min_length=1, description="Plain-text sample or bullet list")
-    source: str = "sample"
-    collected_at: date | None = None
-
-
-@router.post("/event-radar/run", dependencies=[Depends(require_owner)])
-def event_radar_run(body: EventRadarBody) -> dict[str, Any]:
-    result = run_pipeline(
-        body.payload,
-        source=body.source,
-        collected_at=body.collected_at,
-    )
-    return result.to_dict()
-
-
 @router.get("/event-radar/events")
 def list_event_radar(
     batch_id: str | None = Query(None),
@@ -722,17 +607,6 @@ def list_event_radar(
 # ---------------------------------------------------------------------------
 # 6.5 Event Radar — enhanced endpoints
 # ---------------------------------------------------------------------------
-
-
-@router.post("/events/ingest", dependencies=[Depends(require_owner)])
-def event_ingest(body: EventRadarBody) -> dict[str, Any]:
-    """Alias for event-radar/run — accepts raw text, returns PipelineResult."""
-    result = run_pipeline(
-        body.payload,
-        source=body.source,
-        collected_at=body.collected_at,
-    )
-    return result.to_dict()
 
 
 @router.get("/events/batches")
@@ -942,11 +816,6 @@ class SettlementBody(BaseModel):
     hourly_actuals: dict[int, float] | None = None
 
 
-class AggregateBody(BaseModel):
-    settlements: list[dict[str, Any]]
-    symbol: str | None = None
-
-
 @router.post("/backtest/settle", dependencies=[Depends(require_owner)])
 def run_settlement(body: SettlementBody) -> dict[str, Any]:
     result = settle_forecast(
@@ -959,98 +828,6 @@ def run_settlement(body: SettlementBody) -> dict[str, Any]:
         hourly_actuals=body.hourly_actuals,
     )
     return result.to_dict()
-
-
-@router.post("/backtest/aggregate", dependencies=[Depends(require_owner)])
-def run_aggregate(body: AggregateBody) -> dict[str, Any]:
-    from bifrost_research.engines.backtest.settlement import ForecastSettlement, HourlyActual
-
-    parsed = []
-    for s in body.settlements:
-        hourly = [
-            HourlyActual(
-                hour_et=int(h.get("hour_et") or 0),
-                path_call=str(h.get("path_call") or ""),
-                level_low=float(h.get("level_low") or 0),
-                level_high=float(h.get("level_high") or 0),
-                level_target=float(h.get("level_target") or 0),
-                actual_price=h.get("actual_price"),
-                hit=bool(h.get("hit")),
-            )
-            for h in (s.get("hourly") or [])
-        ]
-        parsed.append(
-            ForecastSettlement(
-                settlement_id=str(s.get("settlement_id") or "tmp"),
-                session_id=str(s.get("session_id") or ""),
-                symbol=str(s.get("symbol") or body.symbol or ""),
-                trade_date=_as_date(s.get("trade_date")) or ny_today(),
-                expected_close=float(s.get("expected_close") or 0),
-                actual_close=float(s.get("actual_close") or 0),
-                close_miss=float(s.get("close_miss") or 0),
-                close_miss_pct=float(s.get("close_miss_pct") or 0),
-                path_hit=bool(s.get("path_hit")),
-                path_hit_count=int(s.get("path_hit_count") or 0),
-                path_total=int(s.get("path_total") or 0),
-                hourly=hourly,
-                notes=str(s.get("notes") or ""),
-            )
-        )
-    summary = aggregate_accuracy(parsed, symbol=body.symbol)
-    return summary.to_dict()
-
-
-@router.get("/forecast/settlement")
-def get_forecast_settlement(
-    symbol: str | None = Query(None),
-    trade_date: date | None = Query(None),
-    limit: int = Query(50, ge=1, le=200),
-) -> dict[str, Any]:
-    """Settlement results for forecast sessions — by date and/or symbol."""
-    conn = _connect_or_503()
-    cols = (
-        "settlement_id",
-        "session_id",
-        "symbol",
-        "trade_date",
-        "expected_close",
-        "actual_close",
-        "close_miss",
-        "close_miss_pct",
-        "path_hit",
-        "path_hit_count",
-        "path_total",
-        "hourly_json",
-        "notes",
-        "stats_json",
-        "computed_at",
-    )
-    try:
-        clauses: list[str] = []
-        params: list[Any] = []
-        if symbol:
-            clauses.append("symbol = %s")
-            params.append(symbol.strip().upper())
-        if trade_date is not None:
-            clauses.append("trade_date = %s")
-            params.append(trade_date)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        sql = f"""
-            SELECT {', '.join(cols)}
-            FROM features.stock_backtest_settlement
-            {where}
-            ORDER BY trade_date DESC, computed_at DESC
-            LIMIT %s
-        """
-        params.append(limit)
-        with conn.cursor() as cur:
-            cur.execute(sql, tuple(params))
-            raw = cur.fetchall() or []
-        rows = [_enrich_settlement_row(_row_dict(r, cols)) for r in raw]
-    finally:
-        conn.close()
-    # A signal evaluation, not a backtest, whatever the table is called (W2).
-    return {"rows": rows, "count": len(rows), "evaluation": evaluation("forecast_settlement")}
 
 
 @router.get("/forecast/hit-rate")
@@ -1161,74 +938,6 @@ def forecast_hit_rate(
         conn.close()
 
 
-@router.post("/forecast/settle", dependencies=[Depends(require_owner)])
-def trigger_settlement(body: SettlementBody) -> dict[str, Any]:
-    """Manual settlement trigger for a single session."""
-    result = settle_forecast(
-        session_id=body.session_id,
-        symbol=body.symbol,
-        trade_date=body.trade_date,
-        expected_close=body.expected_close,
-        hourly=body.hourly,
-        actual_close=body.actual_close,
-        hourly_actuals=body.hourly_actuals,
-    )
-    return result.to_dict()
-
-
-@router.get("/forecast/backtest")
-def forecast_backtest(
-    symbol: str = Query(...),
-    start: date | None = Query(None),
-    end: date | None = Query(None),
-) -> dict[str, Any]:
-    """Aggregated backtest statistics over a date range."""
-    conn = _connect_or_503()
-    try:
-        clauses = ["symbol = %s"]
-        params: list[Any] = [symbol.strip().upper()]
-        if start:
-            clauses.append("trade_date >= %s")
-            params.append(start)
-        if end:
-            clauses.append("trade_date <= %s")
-            params.append(end)
-        where = f"WHERE {' AND '.join(clauses)}"
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT
-                    COUNT(*) AS sessions_settled,
-                    ROUND(AVG(CASE WHEN path_hit THEN 1.0 ELSE 0.0 END)::numeric, 4) AS path_hit_rate,
-                    ROUND(AVG(ABS(close_miss_pct))::numeric, 6) AS avg_close_miss_pct,
-                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ABS(close_miss_pct)) AS median_close_miss_pct
-                FROM features.stock_backtest_settlement
-                {where} AND {forecast_result_sql()}
-                """,
-                tuple(params),
-            )
-            row = cur.fetchone()
-        if row is None:
-            return {"sessions_settled": 0, "path_hit_rate": 0, "avg_close_miss_pct": 0}
-        if isinstance(row, Mapping):
-            result = dict(row)
-        else:
-            result = {
-                "sessions_settled": row[0] or 0,
-                "path_hit_rate": float(row[1] or 0),
-                "avg_close_miss_pct": float(row[2] or 0),
-                "median_close_miss_pct": float(row[3] or 0),
-            }
-    finally:
-        conn.close()
-    return {
-        "symbol": symbol.strip().upper(),
-        "start": start.isoformat() if start else None,
-        "end": end.isoformat() if end else None,
-        **result,
-    }
-
-
 @router.get("/backtest/settlement")
 def get_settlement_summary(
     symbol: str | None = Query(None),
@@ -1297,19 +1006,3 @@ def daily_brief_synth(
         conn.close()
 
 
-@router.get("/backtest/regime-stats")
-def backtest_regime_stats(
-    symbol: str = Query(...),
-    lookback_days: int = Query(60, ge=7, le=365),
-    current_regime: str | None = Query(None),
-) -> dict[str, Any]:
-    conn = _connect_or_503()
-    try:
-        return compute_regime_stats(
-            conn,
-            symbol,
-            lookback_days=lookback_days,
-            current_regime=current_regime,
-        )
-    finally:
-        conn.close()

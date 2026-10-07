@@ -552,7 +552,7 @@ def exhibit_forecast_path(conn: Any, symbol: str) -> ExhibitResponse:
             "window_days": 30,
         }
         exh.history_summary = {"sessions_30d": count}
-        exh.caveats.append("Read as a track record; the per-regime split is /research/backtest/regime-stats")
+        exh.caveats.append("Read as a track record")
     except Exception as exc:
         return _failed(exh, "Forecast settlement", exc, conn)
     return exh

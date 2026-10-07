@@ -17,8 +17,10 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from bifrost_research.api.dagster_launch import launch_job
 from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.repositories import journal_notes as repo
@@ -325,12 +327,12 @@ def day_index(date: str | None = None, owner_id: str = Depends(require_owner)) -
 
 
 @router.post("/memory/distill")
-def memory_distill_run(owner_id: str = Depends(require_owner)) -> dict[str, Any]:
-    """Manual distill (the nightly schedule is the normal writer)."""
-    from bifrost_research.engines.journal_distill import run_distill
-
-    conn = connect()
+def memory_distill_run(owner_id: str = Depends(require_owner)) -> JSONResponse:
+    """Start research_memory_distill_job. The nightly schedule is the normal writer."""
+    del owner_id
     try:
-        return _ok(run_distill(conn))
-    finally:
-        conn.close()
+        launched = launch_job("research_memory_distill_job")
+    except Exception as exc:
+        logger.exception("memory distill launch failed")
+        raise HTTPException(status_code=502, detail=f"distill launch failed: {exc}") from exc
+    return JSONResponse(status_code=202, content=_ok(launched))

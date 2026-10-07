@@ -19,8 +19,6 @@ from fastapi.testclient import TestClient
 from bifrost_research.api.app import create_app
 from bifrost_research.auth.bearer import token_to_owner_map
 
-_TERRAIN = {"symbol": "SPY", "trade_date": "2026-10-02", "spot": 500.0}
-_EVENTS = {"payload": "- sample headline"}
 _SETTLE = {
     "session_id": "fs_1",
     "symbol": "SPY",
@@ -28,16 +26,9 @@ _SETTLE = {
     "expected_close": 500.0,
     "actual_close": 501.0,
 }
-_AGG = {"settlements": [{"session_id": "fs_1", "symbol": "SPY"}]}
 
 _CALLS = (
-    ("/research/forecast/terrain/compute", _TERRAIN),
-    ("/research/forecast/sessions/compute", {**_TERRAIN, "enrich": True}),
-    ("/research/event-radar/run", _EVENTS),
-    ("/research/events/ingest", _EVENTS),
     ("/research/backtest/settle", _SETTLE),
-    ("/research/backtest/aggregate", _AGG),
-    ("/research/forecast/settle", _SETTLE),
 )
 
 
@@ -86,12 +77,7 @@ def engines(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
     mod = "bifrost_research.api.wave4"
     monkeypatch.setattr(f"{mod}.connect", _no_db)
-    monkeypatch.setattr(f"{mod}.compute_market_terrain", _rec("terrain"))
-    monkeypatch.setattr(f"{mod}.build_forecast_session", _rec("session"))
-    monkeypatch.setattr(f"{mod}.get_default_provider", _rec("llm"))
-    monkeypatch.setattr(f"{mod}.run_pipeline", _rec("event_radar"))
     monkeypatch.setattr(f"{mod}.settle_forecast", _rec("settle"))
-    monkeypatch.setattr(f"{mod}.aggregate_accuracy", _rec("aggregate"))
     return called
 
 

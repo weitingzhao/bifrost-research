@@ -8,7 +8,6 @@ Routes:
     POST   /research/hypothesis
     GET    /research/hypothesis/{id}
     PATCH  /research/hypothesis/{id}
-    POST   /research/hypothesis/{id}/retire
     POST   /research/hypothesis/{id}/refresh-trajectory  (Wave 13)
     GET    /research/hypothesis/summary/active
 
@@ -279,24 +278,6 @@ def patch_hypothesis(hypothesis_id: str, body: HypothesisPatch) -> dict[str, Any
         conn.close()
     if row is None:
         raise HTTPException(status_code=404, detail=f"hypothesis {hypothesis_id} not found")
-    return _ok(row)
-
-
-@router.post("/{hypothesis_id}/retire", dependencies=[Depends(require_owner)])
-def retire_hypothesis(hypothesis_id: str) -> dict[str, Any]:
-    conn = _connect_or_503()
-    try:
-        row = repo.retire_hypothesis(conn, hypothesis_id)
-    except Exception as exc:
-        logger.exception("retire_hypothesis failed")
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    finally:
-        conn.close()
-    if row is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"hypothesis {hypothesis_id} not found or already retired",
-        )
     return _ok(row)
 
 

@@ -23,18 +23,16 @@ _RUNNERS = {
         "bifrost_research.copilot.agents.morning_prep",
         "run_morning_prep",
     ),
-    "/research/agents/digest/run": (
-        "bifrost_research.copilot.agents.daily_digest",
-        "run_daily_digest",
-    ),
-    "/research/agents/weekly-policy/run": (
-        "bifrost_research.copilot.agents.weekly_policy_review",
-        "run_weekly_policy_review",
-    ),
     "/research/agents/eod/run": (
         "bifrost_research.copilot.agents.eod_review",
         "run_eod_review",
     ),
+}
+# These start the Dagster job. They do not call the agent in this process.
+_LAUNCHES = {
+    "/research/agents/digest/run": "research_daily_digest_job",
+    "/research/agents/weekly-policy/run": "research_weekly_policy_review_job",
+    "/research/journal/memory/distill": "research_memory_distill_job",
 }
 
 
@@ -76,6 +74,19 @@ def runs(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 @pytest.fixture
+def launches(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    launched: list[str] = []
+
+    def _fake(job_name: str, **_k: Any) -> dict[str, Any]:
+        launched.append(job_name)
+        return {"ok": True, "job_name": job_name, "run_id": "run-test", "status": "launched"}
+
+    monkeypatch.setattr("bifrost_research.api.agents.launch_job", _fake)
+    monkeypatch.setattr("bifrost_research.api.journal.launch_job", _fake)
+    return launched
+
+
+@pytest.fixture
 def client() -> TestClient:
     return TestClient(create_app())
 
@@ -108,3 +119,22 @@ def test_research_user_can_run(
     assert resp.status_code == 200, resp.text
     assert resp.json()["data"]["agent"] == path
     assert runs == [path]
+
+
+@pytest.mark.parametrize("path", list(_LAUNCHES))
+def test_anonymous_launch_is_refused(
+    client: TestClient, launches: list[str], auth_on: None, path: str
+) -> None:
+    resp = client.post(path)
+    assert resp.status_code == 401, resp.text
+    assert launches == []
+
+
+@pytest.mark.parametrize("path", list(_LAUNCHES))
+def test_research_user_launches_the_dagster_job(
+    client: TestClient, launches: list[str], auth_on: None, path: str
+) -> None:
+    resp = client.post(path, headers={"Authorization": "Bearer tok_alice"})
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["data"]["job_name"] == _LAUNCHES[path]
+    assert launches == [_LAUNCHES[path]]

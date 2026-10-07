@@ -116,7 +116,7 @@ EVALUATIONS: dict[str, dict[str, Any]] = {
         "entry": "each forecast session",
         "code": "engines/backtest/settlement.py",
         "store": "features.stock_backtest_settlement (name kept)",
-        "route": "GET /research/backtest/settlement, GET /research/forecast/settlement",
+        "route": "GET /research/backtest/settlement",
     },
 }
 

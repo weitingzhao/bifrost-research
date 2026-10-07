@@ -14,12 +14,9 @@ def test_research_routes_registered() -> None:
     assert "/research/gex/levels" in paths
     assert "/research/gex/distribution" in paths
     assert "/research/volatility/smile" in paths
-    assert "/research/volatility/surface" in paths
     assert "/research/flow/sentiment" in paths
     assert "/research/flow/multi-leg" in paths
-    # Wave 4
-    assert "/research/forecast/terrain/compute" in paths
-    assert "/research/event-radar/run" in paths
     assert "/research/backtest/settle" in paths
+    assert "/research/volatility/surface" not in paths
     assert "/analytics/elementary" in paths
     assert "/analytics/elementary/files/{asset_path}" in paths

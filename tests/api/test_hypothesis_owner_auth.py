@@ -44,7 +44,6 @@ def auth_on(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 _GATED = (
     ("POST", "/research/hypothesis", {"title": "T", "thesis": "because"}),
     ("PATCH", "/research/hypothesis/hyp_1", {"title": "T2"}),
-    ("POST", "/research/hypothesis/hyp_1/retire", None),
     ("POST", "/research/hypothesis/hyp_1/refresh-trajectory", None),
 )
 
@@ -168,11 +167,9 @@ def test_research_user_can_refresh_trajectory(
     assert "trajectory_summary" in env.patched[0][1]["origin_ref"]
 
 
-def test_research_user_can_retire(client: TestClient, env: _Env, auth_on: None) -> None:
+def test_retire_route_is_gone(client: TestClient, auth_on: None) -> None:
     resp = client.post(
         "/research/hypothesis/hyp_1/retire",
         headers={"Authorization": "Bearer tok_alice"},
     )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["data"]["status"] == "retired"
-    assert env.retired == ["hyp_1"]
+    assert resp.status_code == 404, resp.text

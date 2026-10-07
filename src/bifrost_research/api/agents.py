@@ -18,8 +18,10 @@ import os
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from bifrost_research.api.dagster_launch import launch_job
 from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect, rollback_quietly
 from bifrost_research.repositories import ai_action_log as action_repo
@@ -78,19 +80,15 @@ class DigestRunBody(BaseModel):
 
 
 @agents_router.post("/digest/run", dependencies=[Depends(require_owner)])
-def run_digest_now(body: DigestRunBody | None = None) -> dict[str, Any]:
-    """Post today's digest (D2) — a no-op when the day already has one unless ``force``."""
-    from bifrost_research.copilot.agents.daily_digest import run_daily_digest
-
-    payload = body or DigestRunBody()
-    if payload.dry_run:
-        return _ok(run_daily_digest(dry_run=True))
+def run_digest_now(body: DigestRunBody | None = None) -> JSONResponse:
+    """Start research_daily_digest_job. The schedule's defaults apply; this pod does not run the agent."""
+    del body
     try:
-        result = run_daily_digest(dry_run=False, force=payload.force, use_llm=payload.use_llm)
+        launched = launch_job("research_daily_digest_job")
     except Exception as exc:
-        logger.exception("digest agent failed")
-        _err(f"digest agent failed: {exc}", 500)
-    return _ok(result)
+        logger.exception("digest launch failed")
+        _err(f"digest launch failed: {exc}", 502)
+    return JSONResponse(status_code=202, content=_ok(launched))
 
 
 class WeeklyReviewBody(BaseModel):
@@ -101,17 +99,15 @@ class WeeklyReviewBody(BaseModel):
 
 
 @agents_router.post("/weekly-policy/run", dependencies=[Depends(require_owner)])
-def run_weekly_policy_now(body: WeeklyReviewBody | None = None) -> dict[str, Any]:
-    """Review every active objective against its settled outcomes (D3) — a no-op per objective when this week already has a proposal, unless ``force``."""
-    from bifrost_research.copilot.agents.weekly_policy_review import run_weekly_policy_review
-
-    payload = body or WeeklyReviewBody()
+def run_weekly_policy_now(body: WeeklyReviewBody | None = None) -> JSONResponse:
+    """Start research_weekly_policy_review_job. The schedule's defaults apply."""
+    del body
     try:
-        result = run_weekly_policy_review(days=payload.days, force=payload.force)
+        launched = launch_job("research_weekly_policy_review_job")
     except Exception as exc:
-        logger.exception("weekly policy review failed")
-        _err(f"weekly policy review failed: {exc}", 500)
-    return _ok(result)
+        logger.exception("weekly policy launch failed")
+        _err(f"weekly policy launch failed: {exc}", 502)
+    return JSONResponse(status_code=202, content=_ok(launched))
 
 
 @agents_router.post("/eod/run", dependencies=[Depends(require_owner)])
