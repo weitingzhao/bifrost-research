@@ -1,0 +1,19 @@
+# Event Radar input volume. Its CronJob (research-engines-event-radar) was deleted with TD-190;
+# the claim is kept until the Owner decides whether anything on it is still needed
+# (the radar now runs as Dagster's research_event_radar_job).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: event-radar-input-pvc
+  namespace: research
+  labels:
+    app.kubernetes.io/name: event-radar-input
+    app.kubernetes.io/part-of: bifrost-research
+    bifrost.research/slot: event-radar
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi
