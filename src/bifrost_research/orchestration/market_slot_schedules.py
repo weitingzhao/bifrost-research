@@ -21,7 +21,7 @@ from dagster import (
     define_asset_job,
 )
 
-from bifrost_research.orchestration.plugin_http import enqueue_market_slots
+from bifrost_research.orchestration.plugin_http import enqueue_market_slots, enqueue_market_trim
 
 GROUP = "plugin_market_schedule"
 
@@ -38,8 +38,16 @@ ENQUEUE_RETRY = RetryPolicy(max_retries=3, delay=60, backoff=Backoff.EXPONENTIAL
 _SLOTS_BY_ASSET: dict[AssetKey, tuple[str, ...]] = {}
 
 
-def _make_slot_asset(asset_name: str, slots: tuple[str, ...], description: str):
+def _make_slot_asset(
+    asset_name: str,
+    slots: tuple[str, ...],
+    description: str,
+    *,
+    single_flight: bool = False,
+):
     def _impl(context: AssetExecutionContext) -> MaterializeResult:
+        if single_flight:
+            return enqueue_market_trim(context)
         return enqueue_market_slots(context, slots)
 
     _impl.__name__ = asset_name
@@ -161,7 +169,8 @@ market_option_refresh = _make_slot_asset(
 market_trim = _make_slot_asset(
     "market_trim",
     ("trim",),
-    "UTC 02:15 — trim / maintenance",
+    "UTC 02:15 — trim / maintenance. Starts one trim and polls its ops_jobs row; a retry joins that run.",
+    single_flight=True,
 )
 # P4 — several observations a session. The plugin keys each row to the instant
 # it was taken, so these sit beside the 16:00 EOD row. New York time, not UTC:

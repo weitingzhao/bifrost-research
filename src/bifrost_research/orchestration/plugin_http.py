@@ -5,9 +5,10 @@ Note: do not use ``from __future__ import annotations``.
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from dagster import AssetExecutionContext, MaterializeResult
 
@@ -116,6 +117,80 @@ def summary_line(result: Any) -> str:
     if len(text) > LOG_LINE_MAX_CHARS:
         text = text[:LOG_LINE_MAX_CHARS] + f"…(+{len(text) - LOG_LINE_MAX_CHARS} chars)"
     return text
+
+
+#: The plugin publishes the same number
+#: (bifrost_market_data.scheduler.trim_flight.TRIM_CLIENT_TIMEOUT_SEC).
+#: It is longer than budget_sec + 2*snapshot_budget_sec + 2*dated default.
+TRIM_CLIENT_TIMEOUT_SEC = 1200.0
+
+
+def enqueue_market_trim(
+    context: AssetExecutionContext,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    now: Callable[[], float] = time.monotonic,
+) -> MaterializeResult:
+    """Start the nightly trim and poll its ops_jobs row.
+
+    The plugin answers 202 as soon as the lock is taken (or reports that a
+    trim is already running). A Dagster retry posts again, gets
+    ``already_running``, and polls the same job.
+    """
+    base = env(
+        "MARKET_DATA_API_URL",
+        "http://market-data-api.plugin-market-data.svc.cluster.local:8790",
+    ).rstrip("/")
+    token = env("MARKET_DATA_WRITE_TOKEN")
+    if not token:
+        raise RuntimeError("MARKET_DATA_WRITE_TOKEN required to enqueue market slots")
+
+    url = f"{base}/market/ingest/enqueue-slot"
+    context.log.info("enqueue market slot=trim → %s", url)
+    started = post_json(
+        url,
+        {"slot": "trim"},
+        token_header="X-Market-Data-Write-Token",
+        token=token,
+        timeout=60.0,
+    )
+    status = started.get("status") if isinstance(started, dict) else None
+    job_id = started.get("job_id") if isinstance(started, dict) else None
+    if status not in ("accepted", "already_running") or not job_id:
+        raise RuntimeError(f"market trim did not start: {summary_line(started)}")
+    context.log.info("market trim %s job_id=%s", status, job_id)
+
+    deadline = now() + TRIM_CLIENT_TIMEOUT_SEC
+    last: dict[str, Any] = {}
+    job_status = "running"
+    while True:
+        last = get_json(f"{base}/market/ingest/jobs/{job_id}", timeout=30.0)
+        job = last.get("job") if isinstance(last, dict) else None
+        job_status = str((job or {}).get("status") or "")
+        if job_status in ("done", "failed"):
+            break
+        if now() >= deadline:
+            raise RuntimeError(
+                f"trim job {job_id} still {job_status or 'running'} after {TRIM_CLIENT_TIMEOUT_SEC}s"
+            )
+        sleep(5.0)
+
+    result = (last.get("job") or {}).get("result") if isinstance(last, dict) else None
+    context.log.info("market trim job_id=%s status=%s result=%s", job_id, job_status, summary_line(result))
+    if job_status == "failed":
+        raise RuntimeError(f"market trim failed job_id={job_id}: {summary_line(result)}")
+    archive = result.get("retention_archive") if isinstance(result, dict) else None
+    return MaterializeResult(
+        metadata=meta(
+            {
+                "slots": "trim",
+                "job_id": job_id,
+                "status": job_status,
+                "retention_archive": "yes" if isinstance(archive, dict) else "no",
+                "ok": True,
+            }
+        )
+    )
 
 
 def enqueue_market_slots(
