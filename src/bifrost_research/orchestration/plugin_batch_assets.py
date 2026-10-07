@@ -26,6 +26,7 @@ from bifrost_research.orchestration.plugin_http import (
     market_doctor_url,
     meta,
     post_json,
+    summary_line,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,9 +100,9 @@ def _enqueue_flex(context: AssetExecutionContext, *, slot: str) -> MaterializeRe
         token_header="X-Flex-Query-Write-Token",
         token=token,
     )
-    context.log.info("flex slot=%s result=%s", slot, result)
+    context.log.info("flex slot=%s result=%s", slot, summary_line(result))
     if isinstance(result, dict) and result.get("ok") is False:
-        raise RuntimeError(f"flex enqueue failed: {result}")
+        raise RuntimeError(f"flex enqueue failed: {summary_line(result)}")
     out = meta(result if isinstance(result, dict) else {"raw": str(result)})
     out["slot"] = slot
     return MaterializeResult(metadata=out)

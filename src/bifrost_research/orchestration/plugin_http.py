@@ -80,6 +80,44 @@ def meta(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+#: A log line past this is a bug: promtail truncates lines over 250 KB and Loki
+#: rejects them over 256 KB. The option-bars enqueue logged every queued job
+#: (91,431 of them, ~17 MB) on one line every night until 2026-10-07 (TD-170).
+LOG_LINE_MAX_CHARS = 16 * 1024
+
+#: How many entries of a list-valued field a summary keeps.
+SUMMARY_FIRST_N = 3
+
+
+def summarize_result(result: Any, *, first_n: int = SUMMARY_FIRST_N) -> Any:
+    """A Plugin response cut down for a log line or an error message.
+
+    Scalars are kept as they are (``ok``, ``enqueued``, ``deduped``, ``error``…).
+    A list becomes its length plus its first ``first_n`` entries — the ``id`` of
+    each entry when the entries are objects with one (the queued job ids), else
+    the entries themselves. A nested object is summarized the same way.
+    """
+    if isinstance(result, dict):
+        return {key: summarize_result(value, first_n=first_n) for key, value in result.items()}
+    if isinstance(result, (list, tuple)):
+        head = [
+            item["id"] if isinstance(item, dict) and "id" in item else summarize_result(item, first_n=first_n)
+            for item in list(result)[:first_n]
+        ]
+        return {"count": len(result), "first": head}
+    if isinstance(result, str) and len(result) > 400:
+        return result[:400] + f"…(+{len(result) - 400} chars)"
+    return result
+
+
+def summary_line(result: Any) -> str:
+    """``summarize_result`` rendered and hard-capped at ``LOG_LINE_MAX_CHARS``."""
+    text = str(summarize_result(result))
+    if len(text) > LOG_LINE_MAX_CHARS:
+        text = text[:LOG_LINE_MAX_CHARS] + f"…(+{len(text) - LOG_LINE_MAX_CHARS} chars)"
+    return text
+
+
 def enqueue_market_slots(
     context: AssetExecutionContext,
     slots: Sequence[str],
@@ -103,9 +141,9 @@ def enqueue_market_slots(
             token=token,
         )
         results.append({"slot": slot, **(result if isinstance(result, dict) else {})})
-        context.log.info("market slot=%s result=%s", slot, result)
+        context.log.info("market slot=%s result=%s", slot, summary_line(result))
         if isinstance(result, dict) and result.get("ok") is False:
-            raise RuntimeError(f"market enqueue failed slot={slot}: {result}")
+            raise RuntimeError(f"market enqueue failed slot={slot}: {summary_line(result)}")
 
     return MaterializeResult(
         metadata=meta(
