@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bifrost_research.api.app import create_app
-from bifrost_research.engines.pine import client, trial
+from bifrost_research.engines.pine import client, run_now, trial
 from bifrost_research.engines.pine.library import PineScript
 
 _MOD = "bifrost_research.api.pine"
@@ -81,6 +81,8 @@ def test_client_lint_and_error_lines(monkeypatch: pytest.MonkeyPatch) -> None:
 def owner(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(f"{_MOD}.get_script", lambda conn, sid: None)
     monkeypatch.setattr(f"{_MOD}.upsert_script", lambda conn, s: s)
+    # a save starts a run (S14); here it must not reach a real build
+    monkeypatch.setattr(f"{_MOD}.run_now.start", lambda sid: run_now.RunJob(id="pr-test", script_id=sid))
 
 
 def test_a_save_with_problems_is_refused_with_the_lines(api: TestClient, owner: None, monkeypatch: pytest.MonkeyPatch) -> None:

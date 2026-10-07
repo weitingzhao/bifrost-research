@@ -30,6 +30,11 @@ What a signal row means (0.175.0):
   ``context.warm_from``: 100 sessions after the latest first value among the
   series it reads (IV rank starts 2025-03, so such a script's signals start
   about 2025-08). A script without ``request.security`` runs exactly as before.
+- **One build of a script at a time** (0.201.0). A script's rows are written
+  under a session advisory lock on ``pine-build:<id>``: the nightly batch waits
+  for it, a "Run now" from the API (``engines/pine/run_now.py``) skips the
+  script when a build already holds it. Two writers on one script would delete
+  and insert the same rows and collide on the primary key.
 - **Adjustment basis.** Bars are the feed's adjusted closes as of the day the
   row was written. An incremental run rewrites only the last few sessions, so
   after a split or a large dividend the older rows of that name were computed
@@ -48,7 +53,7 @@ import json
 import logging
 import sys
 from datetime import date, datetime, timedelta
-from typing import Any, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 from bifrost_research.db.calendar import load_symbols_from_env_or_query, ny_today
 from bifrost_research.db.conn import connect
@@ -59,6 +64,7 @@ from bifrost_research.schema.schemas import TABLE_STOCK_SIGNAL_PINE_DAILY
 
 logger = logging.getLogger(__name__)
 
+LOCK_PREFIX = "pine-build:"
 CHUNK = 100
 #: Symbols a request for a script that reads context: each series rides along with the bars.
 CONTEXT_CHUNK = 50
@@ -128,6 +134,22 @@ def retired_names(conn: Any, universe: Sequence[str], start: date) -> list[str]:
             {"universe": list(universe), "start": start},
         )
         return [str(r[0]).upper() for r in cur.fetchall() or []]
+
+
+def take_lock(conn: Any, script_id: str, *, wait: bool) -> bool:
+    """The script's build lock for this session; False only when ``wait`` is off and another session holds it."""
+    with conn.cursor() as cur:
+        if wait:
+            cur.execute("SELECT pg_advisory_lock(hashtext(%s))", (LOCK_PREFIX + script_id,))
+            return True
+        cur.execute("SELECT pg_try_advisory_lock(hashtext(%s))", (LOCK_PREFIX + script_id,))
+        row = cur.fetchone()
+    return bool(row and row[0])
+
+
+def release_lock(conn: Any, script_id: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_unlock(hashtext(%s))", (LOCK_PREFIX + script_id,))
 
 
 def built_versions(conn: Any) -> dict[str, int]:
@@ -200,6 +222,7 @@ def run(
     recent_sessions: int = 10,
     full: bool = False,
     dry_run: bool = False,
+    lock: Literal["wait", "skip"] = "wait",
 ) -> dict[str, Any]:
     end = as_of or ny_today()
     conn = connect()
@@ -209,10 +232,9 @@ def run(
         universe = load_symbols_from_env_or_query(conn, symbols=symbols)
         versions = {} if dry_run else built_versions(conn)
         report: dict[str, Any] = {"as_of": end.isoformat(), "seeded": seeded, "symbols": len(universe), "scripts": {}}
-        retired: list[str] | None = None
         for script in scripts:
             try:
-                names = context.referenced(script.source)
+                context.referenced(script.source)
             except ValueError as exc:
                 report["scripts"][script.id] = {
                     "version": script.version,
@@ -221,46 +243,21 @@ def run(
                     "error_sample": {"*": str(exc)[:300]},
                 }
                 continue
-            rebuild = full or versions.get(script.id) != script.version
-            start = end - timedelta(days=FULL_HISTORY_DAYS if rebuild else HISTORY_DAYS)
-            symbols_to_run = list(universe)
-            if rebuild and not symbols:
-                if retired is None:
-                    retired = retired_names(conn, universe, start)
-                    report["retired_names"] = retired
-                symbols_to_run += retired
-            # Calendar days back to cover ``recent_sessions`` sessions with weekends and holidays.
-            since = None if rebuild else end - timedelta(days=int(recent_sessions * 1.5) + 4)
-            written = 0
-            errors: dict[str, str] = {}
-            step = CONTEXT_CHUNK if names else CHUNK
-            for i in range(0, len(symbols_to_run), step):
-                chunk = symbols_to_run[i : i + step]
-                bars = load_bars_many(conn, chunk, start, end)
-                if not bars:
-                    continue
-                warm: dict[str, date | None] | None = None
-                extra: dict[str, Any] = {}
-                if names:
-                    extra["context"], extra["market"], warm = context.load(conn, names, bars)
-                try:
-                    fired = client.run(script.source, bars, **extra)
-                except Exception as exc:  # noqa: BLE001 — the runner down is a run failure, said once
-                    errors["*"] = f"pine-runner: {type(exc).__name__}: {str(exc)[:200]}"
-                    break
-                rows, errs = signal_rows(script, bars, fired, since, warmup_bars=WARMUP_BARS, context_warm=warm)
-                errors.update(errs)
+            if not dry_run and not take_lock(conn, script.id, wait=lock == "wait"):
+                report["scripts"][script.id] = {
+                    "version": script.version,
+                    "rows": 0,
+                    "errors": 0,
+                    "skipped": "another build of this script is running",
+                }
+                continue
+            try:
+                report["scripts"][script.id] = _build_script(
+                    conn, script, universe, symbols, versions, end, full, recent_sessions, dry_run, report
+                )
+            finally:
                 if not dry_run:
-                    _write(conn, script.id, rows, replace_from=since, symbols=list(bars))
-                written += len(rows)
-            report["scripts"][script.id] = {
-                "version": script.version,
-                "context": names,
-                "mode": "rebuild" if rebuild else "recent",
-                "rows": written,
-                "errors": len(errors),
-                "error_sample": dict(list(errors.items())[:3]),
-            }
+                    release_lock(conn, script.id)
         report["advisory"] = "D10 BLOCKED — signals only, no order path"
         return report
     finally:
@@ -268,6 +265,61 @@ def run(
             conn.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+def _build_script(
+    conn: Any,
+    script: PineScript,
+    universe: Sequence[str],
+    symbols: Sequence[str] | None,
+    versions: Mapping[str, int],
+    end: date,
+    full: bool,
+    recent_sessions: int,
+    dry_run: bool,
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    """One script's signals over the universe (and, on a rebuild, the retired names, listed once in ``report``)."""
+    names = context.referenced(script.source)
+    rebuild = full or versions.get(script.id) != script.version
+    start = end - timedelta(days=FULL_HISTORY_DAYS if rebuild else HISTORY_DAYS)
+    symbols_to_run = list(universe)
+    if rebuild and not symbols:
+        if "retired_names" not in report:
+            report["retired_names"] = retired_names(conn, universe, start)
+        symbols_to_run += report["retired_names"]
+    # Calendar days back to cover ``recent_sessions`` sessions with weekends and holidays.
+    since = None if rebuild else end - timedelta(days=int(recent_sessions * 1.5) + 4)
+    written = 0
+    errors: dict[str, str] = {}
+    step = CONTEXT_CHUNK if names else CHUNK
+    for i in range(0, len(symbols_to_run), step):
+        chunk = symbols_to_run[i : i + step]
+        bars = load_bars_many(conn, chunk, start, end)
+        if not bars:
+            continue
+        warm: dict[str, date | None] | None = None
+        extra: dict[str, Any] = {}
+        if names:
+            extra["context"], extra["market"], warm = context.load(conn, names, bars)
+        try:
+            fired = client.run(script.source, bars, **extra)
+        except Exception as exc:  # noqa: BLE001 — the runner down is a run failure, said once
+            errors["*"] = f"pine-runner: {type(exc).__name__}: {str(exc)[:200]}"
+            break
+        rows, errs = signal_rows(script, bars, fired, since, warmup_bars=WARMUP_BARS, context_warm=warm)
+        errors.update(errs)
+        if not dry_run:
+            _write(conn, script.id, rows, replace_from=since, symbols=list(bars))
+        written += len(rows)
+    return {
+        "version": script.version,
+        "context": names,
+        "mode": "rebuild" if rebuild else "recent",
+        "rows": written,
+        "errors": len(errors),
+        "error_sample": dict(list(errors.items())[:3]),
+    }
 
 
 def main(argv: Sequence[str] | None = None) -> int:

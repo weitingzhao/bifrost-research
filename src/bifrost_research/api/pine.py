@@ -5,6 +5,9 @@ GET  /research/pine/scripts/{id}            one script with its source
 PUT  /research/pine/scripts/{id}            add or edit a script (owner)
 POST /research/pine/check                   run a source over one symbol without saving (owner)
 POST /research/pine/try                     run a source over a basket and measure its signals, nothing saved (owner)
+POST /research/pine/scripts/{id}/run        build one script's signals now, in the background (owner)
+GET  /research/pine/scripts/{id}/run        that script's latest run · GET /research/pine/runs/{job} one run
+GET  /research/pine/scripts/{id}/summary    signals by month and by name, for the script report
 GET  /research/pine/context                 the option context series a script can read (S6)
 GET  /research/pine/signals                 who fired on a session (Screener), or one symbol's marks (chart)
 GET  /research/pine/signal-stats            net forward returns after a script's signal vs the same names' other sessions
@@ -28,7 +31,7 @@ from bifrost_research.auth.deps import require_owner
 from bifrost_research.db.conn import connect
 from bifrost_research.engines.backtest.catalog import evaluation
 from bifrost_research.engines.indicators.bars import load_bars
-from bifrost_research.engines.pine import client, context, stats, trial
+from bifrost_research.engines.pine import client, context, run_now, stats, trial
 from bifrost_research.engines.pine.library import (
     MAX_PLOTS,
     PineScript,
@@ -175,7 +178,14 @@ def put_script(body: ScriptBody, script_id: str = Path(..., min_length=2, max_le
         saved = upsert_script(conn, PineScript(id=script_id, **body.model_dump()))
     finally:
         _close(conn)
-    return {"ok": True, "data": saved.to_dict()}
+    data = saved.to_dict()
+    # Saved and switched on: build its signals now rather than at 22:30 ET (S14, Owner 2026-10-06).
+    if saved.is_active and (current is None or current.version != saved.version or not current.is_active):
+        try:
+            data["run"] = run_now.start(saved.id).to_dict()
+        except run_now.Busy as exc:
+            data["run"] = {"status": "not_started", "message": f"{exc}; run this script again when it ends"}
+    return {"ok": True, "data": data}
 
 
 @router.get("/context")
@@ -250,6 +260,98 @@ def check(body: CheckBody) -> dict[str, Any]:
             for title in body.plots
         }
     return {"ok": True, "data": data}
+
+
+@router.post("/scripts/{script_id}/run", dependencies=[Depends(require_owner)], status_code=202)
+def run_script(script_id: str = Path(..., min_length=2, max_length=48)) -> Any:
+    """Build this script's signals now (background); poll ``GET /research/pine/runs/{job}``."""
+    conn = _connect_or_503()
+    try:
+        s = get_script(conn, script_id)
+    finally:
+        _close(conn)
+    if s is None:
+        raise HTTPException(status_code=404, detail=f"pine script {script_id} not found")
+    if not s.is_active:
+        raise HTTPException(status_code=400, detail=f"{script_id} is switched off; switch it on to build its signals")
+    try:
+        job = run_now.start(script_id)
+    except run_now.Busy as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc), "run": exc.job.to_dict()})
+    return {"ok": True, "data": job.to_dict()}
+
+
+@router.get("/scripts/{script_id}/run")
+def latest_run(script_id: str = Path(..., min_length=2, max_length=48)) -> dict[str, Any]:
+    job = run_now.latest(script_id)
+    return {"ok": True, "data": job.to_dict() if job else None}
+
+
+@router.get("/runs/{job_id}")
+def run_status(job_id: str = Path(..., min_length=4, max_length=40)) -> dict[str, Any]:
+    job = run_now.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"no run {job_id} here (runs are kept in memory; the API may have restarted)")
+    return {"ok": True, "data": job.to_dict()}
+
+
+@router.get("/scripts/{script_id}/summary")
+def script_summary(script_id: str = Path(..., min_length=2, max_length=48)) -> dict[str, Any]:
+    """What the build has stored for a script: totals, signals by month and side, and by name (B7)."""
+    conn = _connect_or_503()
+    try:
+        s = get_script(conn, script_id)
+        if s is None:
+            raise HTTPException(status_code=404, detail=f"pine script {script_id} not found")
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT MIN(trade_date), MAX(trade_date), COUNT(*), COUNT(DISTINCT symbol), MAX(script_version)
+                    FROM {TABLE_STOCK_SIGNAL_PINE_DAILY} WHERE script_id = %s""",
+                (script_id,),
+            )
+            first, last, total, names, built = cur.fetchone() or (None, None, 0, 0, None)
+            cur.execute(
+                f"""SELECT to_char(date_trunc('month', trade_date), 'YYYY-MM'), side, COUNT(*)
+                    FROM {TABLE_STOCK_SIGNAL_PINE_DAILY} WHERE script_id = %s GROUP BY 1, 2 ORDER BY 1""",
+                (script_id,),
+            )
+            months: dict[str, dict[str, Any]] = {}
+            for m, side, n in cur.fetchall() or []:
+                months.setdefault(m, {"month": m, "buy": 0, "sell": 0})[side] = int(n)
+            cur.execute(
+                f"""SELECT symbol, side, COUNT(*), MAX(trade_date)
+                    FROM {TABLE_STOCK_SIGNAL_PINE_DAILY} WHERE script_id = %s GROUP BY 1, 2""",
+                (script_id,),
+            )
+            per: dict[str, dict[str, Any]] = {}
+            for sym, side, n, d in cur.fetchall() or []:
+                r = per.setdefault(str(sym), {"symbol": str(sym), "buy": 0, "sell": 0, "last": None})
+                r[side] = int(n)
+                if d and (r["last"] is None or d.isoformat() > r["last"]):
+                    r["last"] = d.isoformat()
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("pine summary failed")
+        raise HTTPException(status_code=503, detail=f"{TABLE_STOCK_SIGNAL_PINE_DAILY}: {str(exc)[:200]}") from exc
+    finally:
+        _close(conn)
+    by_name = sorted(per.values(), key=lambda r: (-(r["buy"] + r["sell"]), r["symbol"]))
+    job = run_now.latest(script_id)
+    return {
+        "ok": True,
+        "data": {
+            "script": s.to_dict(with_source=False),
+            "built_version": built,
+            "first": first.isoformat() if first else None,
+            "last": last.isoformat() if last else None,
+            "signals": int(total or 0),
+            "names": int(names or 0),
+            "by_month": list(months.values()),
+            "by_name": by_name[:300],
+            "run": job.to_dict() if job else None,
+        },
+    }
 
 
 class TryBody(BaseModel):
@@ -389,6 +491,7 @@ def signal_stats(
     horizons: str = Query("5,10,20"),
     move_threshold: float = Query(0.02, ge=0.0, le=0.5),
     cost_bps: float = Query(stats.DEFAULT_COST_BPS, ge=0.0, le=200.0, description="one-way cost, charged on entry and exit"),
+    detail: bool = Query(False, description="also per_symbol and the 50 most recent signals (the script report)"),
 ) -> dict[str, Any]:
     """Return after a script's signal, entered the next session, net of cost, next to the
     same names' other sessions — method in ``engines/signal_stats.py`` (``data.method``)."""
@@ -413,6 +516,7 @@ def signal_stats(
             horizons=hs,
             move_threshold=move_threshold,
             cost_bps=cost_bps,
+            detail=detail,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("pine signal stats failed")

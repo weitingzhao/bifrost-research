@@ -50,8 +50,10 @@ def signal_stats(
     move_threshold: float,
     cost_bps: float = DEFAULT_COST_BPS,
     today: date | None = None,
+    detail: bool = False,
 ) -> dict[str, Any]:
-    """The ``by_horizon`` block and its counts for ``GET /research/pine/signal-stats``."""
+    """The ``by_horizon`` block and its counts for ``GET /research/pine/signal-stats``; with
+    ``detail`` also ``per_symbol`` and the 50 most ``recent`` signals (the script report, B7)."""
     return evaluate(
         conn,
         read_signals(conn, script, side, start, end, symbols),
@@ -62,6 +64,7 @@ def signal_stats(
         move_threshold=move_threshold,
         cost_bps=cost_bps,
         today=today,
+        detail=detail,
     )
 
 
