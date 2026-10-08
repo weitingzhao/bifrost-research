@@ -12,7 +12,11 @@
 #   meeting with a Summary of Economic Projections.
 # CPI: 08:30 ET. The three Q4 2026 dates are the Event Radar macro file of
 #   2026-09-24 (BLS release schedule); bls.gov refused this host on 2026-10-06, so
-#   2027 CPI and the Employment Situation are not here yet.
+#   2027 CPI is not here yet.
+# NFP (Employment Situation): 08:30 ET; notes = reference month. Read from
+#   https://www.bls.gov/schedule/news_release/empsit.htm and
+#   https://www.bls.gov/schedule/2026/home.htm on 2026-10-07 (the two agree).
+#   BLS had not published its 2027 schedule then; add 2027 when it does.
 event_date,release_time_et,country,indicator,notes
 2026-01-28,14:00,US,FOMC rate decision,Meeting Jan 27-28
 2026-03-18,14:00,US,FOMC rate decision,Meeting Mar 17-18 (SEP)
@@ -33,3 +37,5 @@ event_date,release_time_et,country,indicator,notes
 2026-10-14,08:30,US,CPI,September 2026
 2026-11-10,08:30,US,CPI,October 2026
 2026-12-10,08:30,US,CPI,November 2026
+2026-11-06,08:30,US,NFP,October 2026
+2026-12-04,08:30,US,NFP,November 2026

@@ -70,7 +70,7 @@ MACRO_COLS = (
 )
 
 #: Radar importance scale (1 low .. 3 high). An indicator not listed is 1.
-MACRO_IMPORTANCE = {"FOMC rate decision": 3, "CPI": 2}
+MACRO_IMPORTANCE = {"FOMC rate decision": 3, "CPI": 2, "NFP": 2}
 
 
 def is_superseded_macro_source(source: str | None) -> bool:

@@ -161,6 +161,9 @@ def test_macro_rows_read_as_the_frontend_expects() -> None:
         assert row["subject"].startswith(row["event_date"])
         assert row["theme"] == "利率路径重定价"
     assert fomc["importance"] > cpi["importance"] >= 1
+    nfp = macro["macro-us-nfp-2026-11-06"]
+    assert nfp["event_summary"].split()[1] == "NFP"
+    assert nfp["importance"] == cpi["importance"]
 
 
 def test_limit_applies_to_the_merged_calendar() -> None:

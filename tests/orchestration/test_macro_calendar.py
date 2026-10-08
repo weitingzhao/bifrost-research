@@ -50,6 +50,38 @@ def test_fomc_decisions_are_wednesdays_at_two_pm_new_york() -> None:
         assert (ts.hour, ts.minute) == (14, 0)
 
 
+#: Every series the seed carries; each must keep a date ahead of the injected day.
+SERIES = ("FOMC rate decision", "CPI", "NFP")
+
+
+def _series_without_a_future_date(rows: list[tuple[Any, ...]], today: date) -> list[str]:
+    ahead = {r[_col("indicator")] for r in rows if r[_col("event_date")] > today}
+    return [s for s in SERIES if s not in ahead]
+
+
+def test_every_series_has_a_future_date() -> None:
+    """Ratchet (TD-180): each series still has a release ahead of the injected day.
+
+    Not "last date >= today + 180": BLS schedules about 14 months out, so that
+    line goes red in an ordinary year. The day is injected, never the clock.
+    """
+    assert _series_without_a_future_date(_seed(), date(2026, 10, 7)) == []
+
+
+def test_series_check_names_a_series_that_ran_out() -> None:
+    rows = _seed()
+    assert _series_without_a_future_date(rows, date(2026, 12, 4)) == ["NFP"]
+    assert _series_without_a_future_date(rows, date(2026, 12, 10)) == ["CPI", "NFP"]
+
+
+def test_bls_releases_are_at_eight_thirty_new_york() -> None:
+    bls = [r for r in _seed() if r[_col("indicator")] in ("CPI", "NFP")]
+    assert {r[_col("indicator")] for r in bls} == {"CPI", "NFP"}
+    for row in bls:
+        ts = row[_col("release_ts")].astimezone(mi._NY)
+        assert (ts.hour, ts.minute) == (8, 30), row[0]
+
+
 def test_seed_ships_in_the_wheel() -> None:
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     patterns = data["tool"]["setuptools"]["package-data"]["bifrost_research"]
