@@ -354,7 +354,8 @@ THEME_LINES: list[tuple[str, re.Pattern[str]]] = [
     (
         "利率路径重定价",
         re.compile(
-            r"\bFOMC\b|CPI (release|report|print)|\bPCE\b|rate (decision|cut|hike)"
+            r"\bFOMC\b|CPI (release|report|print)|\bPCE\b|\bNFP\b"
+            r"|Employment Situation|rate (decision|cut|hike)"
             r"|议息|点阵图|加息|降息"
         ),
     ),

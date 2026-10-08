@@ -164,6 +164,32 @@ def test_macro_rows_read_as_the_frontend_expects() -> None:
     nfp = macro["macro-us-nfp-2026-11-06"]
     assert nfp["event_summary"].split()[1] == "NFP"
     assert nfp["importance"] == cpi["importance"]
+    assert nfp["theme"] == "利率路径重定价"
+
+
+def test_every_macro_calendar_indicator_resolves_theme() -> None:
+    """TD-265 ratchet: each indicator in macro_calendar.csv gets a non-empty theme."""
+    from bifrost_research.engines.event_radar.pipeline import _match_theme
+
+    seed_rows = mi.parse_macro_csv(mi.seed_text(), source=mi.SEED_SOURCE, now=NOW, default_forward=True)
+    idx = mi._MACRO_COLS.index("indicator")
+    indicators = sorted({str(r[idx]).strip() for r in seed_rows})
+    assert indicators
+    for indicator in indicators:
+        macro = {
+            "macro_id": f"ratchet-{indicator}",
+            "event_date": date(2026, 11, 6),
+            "indicator": indicator,
+            "notes": "October 2026",
+            "computed_at": NOW,
+            "source": mi.SEED_SOURCE,
+            "country": "US",
+            "release_ts": None,
+        }
+        calendar_row = ec.macro_calendar_row(macro)
+        summary = calendar_row["event_summary"]
+        assert calendar_row["theme"], f"calendar theme empty for {indicator!r} ({summary!r})"
+        assert _match_theme(summary), f"radar matcher empty for calendar summary {summary!r}"
 
 
 def test_limit_applies_to_the_merged_calendar() -> None:

@@ -40,6 +40,11 @@ def test_theme_matcher_lines() -> None:
 
     assert _match_theme("2026-10-28 FOMC decision day per the Federal Reserve calendar.") == "利率路径重定价"
     assert _match_theme("2026-10-14 CPI release for September 2026, 8:30 a.m. Eastern.") == "利率路径重定价"
+    assert _match_theme("2026-11-06 NFP release (October 2026) at 8:30 ET.") == "利率路径重定价"
+    assert (
+        _match_theme("BLS Employment Situation report for October 2026, 8:30 a.m. Eastern.")
+        == "利率路径重定价"
+    )
     assert _match_theme("RIOT filed an 8-K: Bitcoin Holdings Update as of November 30.") == "比特币国库"
     # A bond's coupon is not the rate path; a dividend is no theme at all.
     assert _match_theme("notes bearing interest at a rate of 5.25% due 2031") == ""
