@@ -259,7 +259,8 @@ def test_atm_replaces_a_symbol_asked_for_that_has_no_source_rows() -> None:
     conn = _Conn(lambda sql: recon if "option_iv_reconstructed_daily" in sql else [])
     atm_iv.compute_atm_iv_for_date(conn, trade_date=TD, underlyings=["PLTR", "LEN"])
     delete = next(p for sql, p in conn.statements if "DELETE FROM" in sql)
-    assert delete == (TD, ["LEN", "PLTR"])
+    assert delete[:3] == (TD, ["LEN", "PLTR"], 90)
+    assert set(zip(delete[3],delete[4])) == {('PLTR',date(2026,10,16))}
 
 
 # ─── the one-off rebuild (adjusted_contract_purge) ───

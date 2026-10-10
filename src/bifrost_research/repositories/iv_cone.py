@@ -41,7 +41,7 @@ from bifrost_research.engines.volatility.atm_iv import (
 )
 from bifrost_research.db.calendar import ny_today
 
-TENORS: tuple[int, ...] = (7, 30, 60, 90)
+TENORS: tuple[int, ...] = (7, 30, 60, 90, 180)
 # The 7-day reading's DTE window: the store's shortest expiry to three times the horizon.
 TENOR7_MIN_DTE = 1
 TENOR7_MAX_DTE = 21
@@ -162,6 +162,9 @@ def build_cone(
             entry["withheld"] = (
                 f"read on {len(series)} of {len(days)} sessions — under {min_sessions}, "
                 "so no percentile is drawn"
+                if series else
+                f"read on 0 of {len(days)} sessions — no valid tenor readings, "
+                "so no percentile is drawn"
             )
         else:
             entry.update(
@@ -183,6 +186,11 @@ def build_cone(
                 }
             )
         tenors.append(entry)
+        entry['history_status'] = (
+            'missing_data' if not series else
+            'history_insufficient' if len(series) < min_sessions else 'sufficient'
+        )
+        entry['current_status'] = 'valid' if today is not None else 'missing_data'
     return {
         "as_of": as_of.isoformat() if as_of else None,
         "window_sessions": window_sessions,

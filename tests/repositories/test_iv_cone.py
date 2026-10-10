@@ -66,8 +66,10 @@ def _rows(n_days: int, *, with_far: int = 0) -> list[tuple[Any, Any, Any]]:
 def test_cone_reads_percentiles_and_withholds_a_thin_horizon() -> None:
     cone = repo.build_cone(_rows(100, with_far=10), window_sessions=252, min_sessions=60)
     assert cone["as_of"] == D.isoformat() and cone["sessions_in_window"] == 100
-    t7, t30, t60, t90 = cone["tenors"]
-    assert [t["tenor_days"] for t in cone["tenors"]] == [7, 30, 60, 90]
+    t7, t30, t60, t90, t180 = cone["tenors"]
+    assert [t["tenor_days"] for t in cone["tenors"]] == [7, 30, 60, 90, 180]
+    assert t180['n'] == 0 and t180['p50'] is None
+    assert t180['history_status'] == 'missing_data' and 'no valid tenor readings' in t180['withheld']
     # Nearest expiry is 25 DTE, past the 7-day reach of 21: not read, so withheld.
     assert t7["n"] == 0 and t7["p50"] is None and "read on 0 of 100 sessions" in t7["withheld"]
     assert t30["n"] == 100 and t30["one_sided"] == 0 and t60["one_sided"] == 0 and t30["today_pctile"] == 1.0

@@ -106,6 +106,8 @@ def run_slot(
                 "atm_days": atm_days,
                 "pcr_days": pcr_days,
             }
+            from bifrost_research.engines.volatility.long_health import read_health
+            result['long_tenor_health'] = read_health(conn, syms, max(trading_days))
             logger.info(
                 "atm-iv-pcr days=%s..%s atm_rows=%s pcr_rows=%s",
                 trading_days[0],

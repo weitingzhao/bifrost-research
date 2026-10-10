@@ -17,6 +17,7 @@ from dagster import AssetExecutionContext, AssetKey, AssetSpec, MaterializeResul
 from bifrost_research.orchestration import runners
 from bifrost_research.orchestration.asset_checks import (
     ERROR,
+    WARN,
     OutputSpec,
     field,
     judged_materialization,
@@ -72,11 +73,16 @@ def volatility_rows(result: dict[str, Any]) -> int | None:
 
 
 def volatility_skips(result: dict[str, Any]) -> list[tuple[Any, str]]:
-    return [
+    findings = [
         (ERROR, f"slot {s.get('slot')} skipped: {s.get('reason') or 'no reason given'}")
         for s in result.get("slots") or []
         if isinstance(s, dict) and s.get("skipped") is True
     ]
+    for slot in result.get('slots') or []:
+        for health in slot.get('long_tenor_health') or []:
+            if health.get('status') != 'ok':
+                findings.append((WARN, f"long tenor: {health}"))
+    return findings
 
 
 VOLATILITY_SPEC = OutputSpec(rows=volatility_rows, expect_rows=True, extra=volatility_skips)

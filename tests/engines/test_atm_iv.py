@@ -303,8 +303,32 @@ def test_compute_replaces_the_days_rows_for_sourced_symbols() -> None:
     assert result["rows_written"] == 0
     delete = next((q, p) for q, p in conn.statements if "DELETE FROM" in q)
     assert "features.option_metric_atm_iv_daily" in delete[0]
-    assert delete[1] == (td, ["PLTR"])
+    assert delete[1] == (td, ["PLTR"], 90, ["PLTR"], [date(2026,8,21)])
     assert conn.committed == 1  # the delete stands even when nothing qualifies
+
+
+def test_normal_recompute_cannot_delete_a_long_repair_outside_its_input(monkeypatch):
+    """A weekly replay with short-only input used to erase the long repair."""
+    from datetime import timedelta
+    td = date(2026,8,10)
+    short, long = td+timedelta(days=20), td+timedelta(days=180)
+    held = {('SPY',short): .3, ('SPY',long): .4, ('NVDA',long): .5}
+    conn = _FakeConn([_row(td,'O:SPYC','SPY',100,'C',.3,100,short),
+                      _row(td,'O:SPYP','SPY',100,'P',.3,100,short)])
+    orig = _FakeCursor.execute
+    def execute(cursor, query, params=None):
+        orig(cursor,query,params)
+        if 'DELETE FROM' in query:
+            assert 'expiry - trade_date <= %s' in query
+            assert 'OR (symbol, expiry) IN' in query
+            day, symbols, cap, source_symbols, source_expiries = params
+            checked = set(zip(source_symbols,source_expiries))
+            for s,e in list(held):
+                if s in symbols and ((e-day).days <= cap or (s,e) in checked):
+                    del held[s,e]
+    monkeypatch.setattr(_FakeCursor,'execute',execute)
+    compute_atm_iv_for_date(conn,trade_date=td,underlyings=['SPY','NVDA'])
+    assert held == {('SPY',long):.4,('NVDA',long):.5}
 
 
 

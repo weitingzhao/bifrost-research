@@ -14,8 +14,9 @@ Algorithm independently reimplemented from bifrost_api.research.iv_atm
 Per (symbol, expiry): nearest strikes to spot; avg call+put IV when both exist; iv in (0, 10).
 A strike more than ``ATM_MAX_MONEYNESS`` from spot is not at the money: an expiry whose
 nearest priced strike is further out gets no row rather than a deep ITM/OTM contract's IV.
-Recomputing a day replaces that day's rows for every symbol asked for and every
-symbol the source has rows for; a day with no source rows at all is left as it is.
+Recomputing replaces short expiries and sourced long-expiry keys. Long repairs
+outside the normal Brent reader's range survive when their source was not read.
+A day with no source rows at all is left as it is.
 """
 
 from __future__ import annotations
@@ -499,13 +500,21 @@ def compute_atm_iv_for_date(
     # source rows at all returned above, untouched: an outage must not wipe it.
     asked = {str(s).strip().upper() for s in (underlyings or []) if str(s).strip()}
     sourced = sorted(asked | {symbol for symbol, _expiry in groups})
+    source_keys = sorted(groups)
     with conn.cursor() as cur:
         cur.execute(
             """
             DELETE FROM features.option_metric_atm_iv_daily
             WHERE trade_date = %s AND symbol = ANY(%s)
+              AND (
+                expiry - trade_date <= %s
+                OR (symbol, expiry) IN (
+                  SELECT * FROM unnest(%s::text[], %s::date[])
+                )
+              )
             """,
-            (trade_date, sourced),
+            (trade_date, sourced, DTE_MAX,
+             [s for s, _ in source_keys], [e for _, e in source_keys]),
         )
     if not upsert_rows:
         conn.commit()

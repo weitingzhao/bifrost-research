@@ -67,13 +67,18 @@ class RateCurve:
         return len(self._days)
 
     def on_or_before(self, d: date) -> float:
+        observed = self.observed_on_or_before(d)
+        return observed if observed is not None else 0.0
+
+    def observed_on_or_before(self, d: date) -> float | None:
+        """Missing/stale is None, while an observed zero remains zero."""
         i = bisect.bisect_right(self._days, d) - 1
         if i < 0 or (d - self._days[i]).days > MAX_STALENESS_DAYS:
-            return 0.0
+            return None
         return self._rates[self._days[i]]
 
 
-def load_rate_curve(conn: Any, start: date, end: date) -> RateCurve:
+def load_rate_curve(conn: Any, start: date, end: date, *, strict: bool = False) -> RateCurve:
     """Every usable yield in ``[start - MAX_STALENESS_DAYS, end]``.
 
     A failed read rolls back, logs a warning and returns an empty curve (every
@@ -85,6 +90,8 @@ def load_rate_curve(conn: Any, start: date, end: date) -> RateCurve:
             cur.execute(_SQL, (start - timedelta(days=MAX_STALENESS_DAYS), end))
             rows = cur.fetchall() or []
     except Exception as exc:
+        if strict:
+            raise
         logger.warning("treasury yields unreadable, pricing at r=0: %s", str(exc)[:160])
         try:
             conn.rollback()
