@@ -282,3 +282,35 @@ def test_composite_carries_the_option_listing(monkeypatch: pytest.MonkeyPatch) -
     assert failed["option_listing"]["error"] == "relation does not exist"
     assert failed["option_listing"]["standard_contracts"] is None
     assert [e["lens"] for e in failed["exhibits"]] == ["skew"]
+
+
+@pytest.mark.parametrize("lens", ["iv_rank", "iv_percentile"])
+@pytest.mark.parametrize("days,reason", [(2, "insufficient history"),
+                                         (252, "unavailable despite"),
+                                         (None, "history depth is unknown")])
+def test_null_iv_scores_explain_history_without_inventing_verdict(lens, days, reason) -> None:
+    conn = _Conn([(lambda sql: "option_metric_iv_percentile_daily" in sql,
+                   [(TODAY, None, None, 0.58, NOW, days)])])
+    exh = build_exhibit(conn, lens, "APT")
+    assert exh.readings[f"{lens}_1y"] is None
+    assert any(reason in c for c in exh.caveats)
+    assert exh.verdict is None or exh.verdict.get("band") is None
+    assert exh.readings["iv_current"] == 0.58
+
+
+@pytest.mark.parametrize("lens", ["iv_rank", "iv_percentile"])
+def test_absent_iv_rows_are_missing_not_warm_up(lens) -> None:
+    exh = build_exhibit(_Conn([]), lens, "ZZQ")
+    assert exh.readings == {}
+    assert any("No IV percentile rows" in c for c in exh.caveats)
+    assert not any("insufficient history" in c for c in exh.caveats)
+
+
+@pytest.mark.parametrize("lens", ["iv_rank", "iv_percentile"])
+def test_real_zero_iv_score_keeps_verdict_and_has_no_warm_up_caveat(lens) -> None:
+    conn = _Conn([(lambda sql: "option_metric_iv_percentile_daily" in sql,
+                   [(TODAY, 0, 0, 0.58, NOW, 252)])])
+    exh = build_exhibit(conn, lens, "ZERO")
+    assert exh.readings[f"{lens}_1y"] == 0
+    assert exh.verdict["band"] == "cold"
+    assert not any("withheld" in c or "unavailable" in c for c in exh.caveats)

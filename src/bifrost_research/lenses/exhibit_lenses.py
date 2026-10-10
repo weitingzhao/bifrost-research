@@ -14,6 +14,7 @@ import logging
 from datetime import timedelta
 from typing import Any
 
+from bifrost_research.engines.volatility.iv_percentile import MIN_LOOKBACK_DAYS
 from bifrost_research.db.calendar import ny_today
 from bifrost_research.engines.backtest.settlement import forecast_result_sql
 from bifrost_research.lenses.pin_expiry import NO_MONTHLY_CAVEAT, monthly_expiry_sql
@@ -558,6 +559,20 @@ def exhibit_forecast_path(conn: Any, symbol: str) -> ExhibitResponse:
     return exh
 
 
+def iv_score_caveat(label: str, score: Any, history_days: Any) -> str | None:
+    """A withheld score is not an absent row or a numerical zero."""
+    if score is not None:
+        return None
+    if history_days is None:
+        return f"{label} unavailable: IV30 history depth is unknown"
+    if history_days < MIN_LOOKBACK_DAYS:
+        return (
+            f"{label} withheld: insufficient history — {history_days} sessions of IV30 history, "
+            f"needs {MIN_LOOKBACK_DAYS}"
+        )
+    return f"{label} unavailable despite {history_days} sessions of IV30 history"
+
+
 def exhibit_iv_percentile(conn: Any, symbol: str) -> ExhibitResponse:
     exh = ExhibitResponse(lens="iv_percentile", symbol=symbol)
     try:
@@ -578,8 +593,9 @@ def exhibit_iv_percentile(conn: Any, symbol: str) -> ExhibitResponse:
         exh.as_of = iso_date(row[0])
         exh.freshness = freshness_from(row[4], True)
         exh.readings = {"iv_percentile_1y": row[1], "iv_rank_1y": row[2], "iv_current": row[3]}
-        if row[1] is None and len(row) > 5:
-            exh.caveats.append(f"IV percentile withheld: {row[5]} sessions of IV30 history, needs 126")
+        caveat = iv_score_caveat("IV percentile", row[1], row[5] if len(row) > 5 else None)
+        if caveat:
+            exh.caveats.append(caveat)
     except Exception as exc:
         return _failed(exh, "IV percentile", exc, conn)
     return exh

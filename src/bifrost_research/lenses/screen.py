@@ -23,6 +23,7 @@ judgement on faces it does not have, instead of silently judging on fewer.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -254,8 +255,18 @@ def _read_lens(
         rows = cur.fetchall() or []
     out: dict[str, LensReading] = {}
     for symbol, value, as_of in rows:
+        # Test the newest row, not an older non-NULL row hidden by a SQL filter.
+        if value is None:
+            continue
+        if LENSES[lens_id].kind != "categorical":
+            try:
+                if not math.isfinite(float(value)):
+                    continue
+            except (TypeError, ValueError, OverflowError):
+                continue
+        band = band_for(lens_id, value)
         out[symbol] = LensReading(
-            lens=lens_id, value=value, band=band_for(lens_id, value), as_of=as_of
+            lens=lens_id, value=value, band=band, as_of=as_of
         )
     return out
 

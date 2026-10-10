@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from bifrost_research.lenses.exhibit_lenses import NEW_LENS_BUILDERS, VERDICT_INPUT, enrich_exhibit
+from bifrost_research.lenses.exhibit_lenses import NEW_LENS_BUILDERS, VERDICT_INPUT, enrich_exhibit, iv_score_caveat
 from bifrost_research.lenses.exhibit_model import ExhibitResponse, freshness_from, iso_date
 from bifrost_research.lenses.exhibit_prior import attach_prior
 from bifrost_research.lenses.registry import LENSES
@@ -154,7 +154,7 @@ def _exhibit_iv_rank(conn: Any, symbol: str) -> ExhibitResponse:
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                SELECT trade_date, iv_rank_1y, iv_percentile_1y, iv_current, computed_at
+                SELECT trade_date, iv_rank_1y, iv_percentile_1y, iv_current, computed_at, lookback_days
                 FROM {TABLE_OPTION_METRIC_IV_PERCENTILE_DAILY}
                 WHERE symbol = %s
                 ORDER BY trade_date DESC
@@ -171,6 +171,9 @@ def _exhibit_iv_rank(conn: Any, symbol: str) -> ExhibitResponse:
                 "iv_current": row[3],
             }
             computed_at = row[4]
+            caveat = iv_score_caveat("IV rank", row[1], row[5] if len(row) > 5 else None)
+            if caveat:
+                caveats.append(caveat)
         else:
             caveats.append("No IV percentile rows; consider VRP lens as proxy")
     except Exception as exc:

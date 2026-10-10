@@ -184,3 +184,36 @@ def test_an_unknown_lens_is_refused_before_any_query_runs() -> None:
     with pytest.raises(ValueError, match="unknown lens: nope"):
         mod.screen(conn, lenses=["sepa", "nope"], as_of=AS_OF)
     assert conn.queries == []
+
+
+@pytest.mark.parametrize("lens", ["iv_rank", "iv_percentile", "vrp"])
+def test_coverage_counts_usable_readings_and_preserves_zero(lens: str) -> None:
+    table = LENSES[lens].source_table.split(".")[-1]
+    conn = _FakeConn(
+        ["ABSENT", "WARM", "ZERO", "MEASURED", "NAN", "INF"],
+        {table: [("WARM", None, AS_OF), ("ZERO", 0, AS_OF),
+                 ("MEASURED", 80, AS_OF), ("NAN", float("nan"), AS_OF),
+                 ("INF", float("inf"), AS_OF)]},
+    )
+    result = mod.screen(conn, lenses=[lens], as_of=AS_OF,
+                        require={lens: [classify(lens, 0)]})
+    rows = {r.symbol: r for r in result.rows}
+    assert result.coverage == {lens: 2}
+    for symbol in ["ABSENT", "WARM", "NAN", "INF"]:
+        assert rows[symbol].missing == (lens,)
+        assert not rows[symbol].survived
+        assert rows[symbol].readings == {}
+    assert rows["ZERO"].readings[lens].value == 0
+    assert rows["ZERO"].missing == () and rows["ZERO"].survived
+    assert rows["MEASURED"].readings[lens].value == 80
+    # Filtering before DISTINCT ON could resurrect an older score.
+    assert "IS NOT NULL" not in conn.queries[-1][0]
+
+
+def test_unbanded_forecast_category_remains_readable() -> None:
+    conn = _FakeConn(["HIT", "MISS"], {"stock_backtest_settlement": [
+        ("HIT", "hit", AS_OF), ("MISS", "miss", AS_OF)]})
+    result = mod.screen(conn, lenses=["forecast_path"], as_of=AS_OF)
+    assert result.coverage == {"forecast_path": 2}
+    assert all(not r.missing for r in result.rows)
+    assert all(r.readings["forecast_path"].band is None for r in result.rows)
