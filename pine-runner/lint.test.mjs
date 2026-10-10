@@ -1,9 +1,21 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { lintSource, locateError } from './lint.mjs'
 
 const head = '//@version=5\nindicator("t")\n'
+
+// The pre-registration docs sit at the workspace root, outside this repo.
+function workspaceRoot() {
+  if (process.env.BIFROST_WORKSPACE) return process.env.BIFROST_WORKSPACE
+  for (let d = dirname(fileURLToPath(import.meta.url)); dirname(d) !== d; d = dirname(d)) {
+    if (existsSync(join(d, 'bifrost-platform', 'config', 'ops-context.yaml'))) return d
+  }
+  return null
+}
+
 const issues = (body) => lintSource(head + body).map((i) => [i.line, i.message])
 
 test('the slips PineTS runs without complaint are reported with their line', () => {
@@ -42,12 +54,13 @@ test('the eight built-ins and every pre-registered script pass', () => {
   assert.equal(files.length, 8)
   for (const f of files) assert.deepEqual(lintSource(readFileSync(new URL(f, lib), 'utf8')), [], f)
   let n = 0
-  for (const p of ['PREREG-pine-options-context-2026-10-06.md', 'PREREG-pine-name-selection-2026-10-06.md', 'PREREG-pine-etf-timing-2026-10-06.md']) {
+  const root = workspaceRoot()
+  for (const p of root ? ['PREREG-pine-options-context-2026-10-06.md', 'PREREG-pine-name-selection-2026-10-06.md', 'PREREG-pine-etf-timing-2026-10-06.md'] : []) {
     let md
     try {
-      md = readFileSync(`/Users/vision-mac-trader/Desktop/stocks/${p}`, 'utf8')
+      md = readFileSync(join(root, p), 'utf8')
     } catch {
-      continue // not on this machine (CI)
+      continue // not in this workspace
     }
     for (const m of md.matchAll(/```pine\n([\s\S]*?)```/g)) {
       assert.deepEqual(lintSource(m[1]), [], `${p}: ${m[1].slice(0, 60)}`)
