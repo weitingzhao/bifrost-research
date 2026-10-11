@@ -24,6 +24,7 @@ from dagster import Definitions
 from bifrost_research.orchestration.dbt_assets import build_dbt_resource, load_dbt_assets
 from bifrost_research.orchestration.engine_assets import ENGINE_ASSETS, plugin_market_ingest
 from bifrost_research.orchestration.failure_alerts import FAILURE_SENSORS
+from bifrost_research.orchestration.alert_delivery import bifrost_alert_delivery
 from bifrost_research.orchestration.market_self_heal import market_self_heal
 from bifrost_research.orchestration.market_slot_schedules import MARKET_SCHEDULE_ASSETS
 from bifrost_research.orchestration.plugin_batch_assets import PLUGIN_BATCH_ASSETS
@@ -55,7 +56,7 @@ def build_definitions() -> Definitions:
         asset_checks=[*SEPA_PROJECTION_CHECKS],
         jobs=RESEARCH_JOBS,
         schedules=RESEARCH_SCHEDULES,
-        sensors=FAILURE_SENSORS,
+        sensors=[*FAILURE_SENSORS, bifrost_alert_delivery],
         resources=resources,
     )
 

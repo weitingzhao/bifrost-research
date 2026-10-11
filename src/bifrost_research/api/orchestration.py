@@ -7,6 +7,7 @@ D10 BLOCKED — read-only.
 from __future__ import annotations
 
 import logging
+import json
 from datetime import datetime, time, timedelta, timezone
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -371,6 +372,60 @@ def _attach_output_checks(conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+def _attach_alert_delivery(conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    """Observe persisted state independently of the daemon; no new API fields.
+
+    Missing/stopped/stale/unreadable monitors never prove notification health.
+    Keep failed/overdue batch precedence and valid candidate visibility.
+    """
+    detail = 'alert retry/deadline monitor unmeasured (not enabled)'
+    measured = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL statement_timeout = '20s'")
+            cur.execute("""
+                SELECT status, instigator_body::jsonb->'job_specific_data'->>'cursor'
+                FROM ops_dagster.instigators
+                WHERE instigator_type = 'SENSOR'
+                  AND instigator_body::jsonb->'origin'->>'job_name' = 'bifrost_alert_delivery'
+                LIMIT 3
+            """)
+            rows = cur.fetchall()
+        if len(rows) == 1:
+            status, cursor = rows[0]
+            state = json.loads(cursor) if cursor else None
+            if state:
+                if (state['version'] != 1 or not isinstance(state['pending'], dict)
+                        or not isinstance(state['incidents'], dict)):
+                    raise ValueError('alert state unreadable')
+                now = datetime.now(timezone.utc).timestamp()
+                age = now - float(state['checked_at'])
+                pending = len(state['pending'])
+                oldest = max((now - item['queued_at'] for item in state['pending'].values()), default=0)
+                # This sensor defaults STOPPED: DECLARED_IN_CODE is not enabled.
+                measured = (status == 'RUNNING' and 0 <= age <= 300 and not pending
+                            and not state['source_error'] and not state['deadline_error']
+                            and not state['scan_blocked'] and not state['incidents'])
+                detail = (f'alert retry/deadline monitor {status}: pending={pending}, '
+                          f'oldest={max(0, int(oldest))}s, heartbeat age={int(age)}s, '
+                          f'missed={len(state["incidents"])}')
+                if state['source_error'] or state['deadline_error'] or state['scan_blocked']:
+                    detail += '; source/deadline unverified or queue full'
+                if age > 300 or age < 0:
+                    detail += '; heartbeat stale or invalid'
+            else:
+                detail = f'alert retry/deadline monitor {status}; cursor unmeasured'
+        elif len(rows) > 1:
+            detail = 'alert retry/deadline monitor ambiguous; cutover unverified'
+    except Exception:
+        conn.rollback()
+        detail = 'alert retry/deadline monitor unavailable; notification unverified'
+    if not measured and data['verdict'] == 'healthy':
+        data['verdict'] = 'caution'
+    data['detail'] += '; ' + detail + '; Owner receipt unverified'
+    return data
+
+
 @router.get("/status")
 def orchestration_status() -> dict[str, Any]:
     try:
@@ -395,6 +450,7 @@ def orchestration_status() -> dict[str, Any]:
             else:
                 data = compute_orchestration_status(last_run=last)
             data = _attach_output_checks(conn, data)
+            data = _attach_alert_delivery(conn, data)
             data = attach_schedules_from_conn(conn, data)
         except Exception as exc:
             logger.warning("orchestration status probe failed: %s", exc)

@@ -259,6 +259,9 @@ def test_definitions_include_the_failure_sensor() -> None:
     ):
         defs = build_definitions()
     assert "bifrost_run_failure_alert" in {s.name for s in defs.sensors}
+    from dagster import DefaultSensorStatus
+    durable = next(s for s in defs.sensors if s.name == "bifrost_alert_delivery")
+    assert durable.default_status == DefaultSensorStatus.STOPPED
 
 
 def test_every_whitelisted_job_resolves_its_assets() -> None:

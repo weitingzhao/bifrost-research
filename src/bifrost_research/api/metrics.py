@@ -30,6 +30,7 @@ from fastapi.responses import PlainTextResponse
 
 from bifrost_research.api.http_metrics import HTTP_METRICS
 from bifrost_research.api.schedule_roster import SCHEDULE_ROSTER
+from bifrost_research.api.orchestration import _attach_alert_delivery
 
 logger = logging.getLogger(__name__)
 
@@ -237,9 +238,15 @@ def collect(conn: Any, now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
     probe_ok = _Family(
         "bifrost_research_metrics_probe_ok",
-        "1 when the probe's read succeeded on this scrape; its series are absent when 0.",
+        "1 when the probe is measured; alert_delivery also requires a fresh enabled "
+        "monitor with no pending, missed or unverified work.",
     )
     families: list[_Family] = [probe_ok]
+
+    # Independently scraped even when the SENSOR daemon is stopped. Reuse the
+    # existing probe-failing Prometheus rule; never require the sender to page itself.
+    observation = _attach_alert_delivery(conn, {"verdict": "healthy", "detail": ""})
+    probe_ok.add(float(observation['verdict'] == 'healthy'), probe="alert_delivery")
 
     heart = _Family(
         "bifrost_dagster_daemon_heartbeat_timestamp_seconds",

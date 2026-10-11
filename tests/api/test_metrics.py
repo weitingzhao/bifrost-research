@@ -151,3 +151,17 @@ def test_a_failing_probe_reports_zero_and_keeps_the_others() -> None:
     assert 'bifrost_research_metrics_probe_ok{probe="daemon_heartbeats"} 0' in text
     assert "bifrost_dagster_daemon_heartbeat_timestamp_seconds{" not in text
     assert 'bifrost_research_metrics_probe_ok{probe="event_radar"} 1' in text
+
+
+def test_delivery_monitor_failure_is_visible_without_sensor_daemon(monkeypatch):
+    monkeypatch.setattr(metrics, '_attach_alert_delivery',
+                        lambda conn, data: {**data, 'verdict':'caution'})
+    text = metrics.collect(_Conn(), now=NOW)
+    assert 'bifrost_research_metrics_probe_ok{probe="alert_delivery"} 0' in text
+    assert 'bifrost_research_metrics_probe_ok{probe="schedules"} 1' in text
+
+
+def test_measured_delivery_transport_still_is_not_owner_receipt(monkeypatch):
+    monkeypatch.setattr(metrics, '_attach_alert_delivery', lambda conn, data: data)
+    text = metrics.collect(_Conn(), now=NOW)
+    assert 'bifrost_research_metrics_probe_ok{probe="alert_delivery"} 1' in text

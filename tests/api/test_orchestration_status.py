@@ -196,3 +196,55 @@ def test_unreadable_output_checks_never_report_healthy():
     conn = Conn()
     result = _attach_output_checks(conn, {'verdict':'healthy', 'last_run_id':'run1', 'detail':'completed'})
     assert result['verdict'] == 'caution' and conn.rolled_back
+
+
+@pytest.mark.parametrize('condition,expected', [
+    ('missing','caution'), ('stopped','caution'), ('stale','caution'),
+    ('pending','caution'), ('calendar','caution'), ('source','caution'),
+    ('full','caution'), ('missed','caution'), ('unknown','caution'),
+    ('corrupt','caution'), ('declared','caution'), ('measured','healthy'),
+])
+def test_alert_retry_health_never_falsely_green(condition, expected):
+    import json
+    from bifrost_research.api.orchestration import _attach_alert_delivery
+    now = datetime.now(timezone.utc).timestamp()
+    state = {'version':1,'pending':{},'incidents':{},'checked_at':now,
+             'source_error':None,'deadline_error':None,'scan_blocked':False}
+    if condition == 'stale':
+        state['checked_at'] -= 301
+    if condition == 'pending':
+        state['pending']['k'] = {'queued_at':now-120}
+    if condition == 'calendar':
+        state['deadline_error'] = 'calendar incomplete'
+    if condition == 'source':
+        state['source_error'] = 'OSError'
+    if condition == 'full':
+        state['scan_blocked'] = True
+    if condition == 'missed':
+        state['incidents']['x'] = True
+    status = 'STOPPED' if condition == 'stopped' else ('UNKNOWN' if condition == 'unknown' else 'RUNNING')
+    if condition == 'declared':
+        status = 'DECLARED_IN_CODE'
+    rows = [] if condition == 'missing' else [(status,'broken' if condition == 'corrupt' else json.dumps(state))]
+    class Cursor:
+        def __enter__(self): return self
+        def __exit__(self,*a): pass
+        def execute(self,q):
+            assert q.startswith('SET LOCAL') or 'bifrost_alert_delivery' in q
+        def fetchall(self): return rows
+    class Conn:
+        def cursor(self): return Cursor()
+        def rollback(self): pass
+    result = _attach_alert_delivery(Conn(), {'verdict':'healthy','detail':'batch passed'})
+    assert result['verdict'] == expected
+    assert 'Owner receipt unverified' in result['detail']
+
+
+def test_alert_probe_failure_retains_overdue_precedence():
+    from bifrost_research.api.orchestration import _attach_alert_delivery
+    class Conn:
+        def cursor(self): raise OSError('denied')
+        def rollback(self): pass
+    result = _attach_alert_delivery(Conn(), {'verdict':'missed','detail':'overdue','overdue':True})
+    assert result['verdict'] == 'missed' and result['overdue']
+    assert 'notification unverified' in result['detail']
