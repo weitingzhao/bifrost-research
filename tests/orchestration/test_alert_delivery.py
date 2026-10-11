@@ -280,6 +280,17 @@ def test_calendar_fault_does_not_drop_retry_queue_or_fabricate_incident():
     assert len(state["pending"]) == 1
 
 
+def test_unexpected_runtime_deadline_error_is_redacted():
+    state = queued()
+
+    def unavailable(now):
+        raise RuntimeError("vendor URL with token=secret")
+
+    delivery._deadlines(instance_with(), state, NOW, unavailable)
+    assert state["deadline_error"] == "RuntimeError"
+    assert "secret" not in json.dumps(state)
+
+
 def test_tick_recovery_cancels_obsolete_firing_before_send(monkeypatch):
     state = delivery._load(None, NOW)
     delivery._deadlines(instance_with(), state, NOW, lambda now: [FIRE])

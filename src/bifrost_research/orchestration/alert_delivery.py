@@ -36,6 +36,14 @@ _CAPACITY = 200
 _PAGE = 20
 _SEND_LIMIT = 10
 _ET = ZoneInfo("America/New_York")
+_SAFE_DEADLINE_ERRORS = {
+    "calendar incomplete",
+    "calendar has duplicate dates",
+    "no measured deadline in calendar window",
+    "deadline history exceeds 14-day window; operator reconciliation required",
+    "run deadline scan truncated",
+    "deadline incident capacity reached",
+}
 
 
 def _iso(now):
@@ -304,7 +312,10 @@ def _deadlines(instance, state, now, calendar_fires):
                 state["last_fire"] = fire.timestamp()
     except Exception as exc:
         # Continue delivering the persisted outbox even if calendar/run reads fail.
-        state["deadline_error"] = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
+        message = str(exc)
+        state["deadline_error"] = (
+            message if message in _SAFE_DEADLINE_ERRORS else type(exc).__name__
+        )
 
 
 def _read_calendar(now):
