@@ -167,3 +167,32 @@ def test_schedule_rows_carry_timezone_and_market_slots() -> None:
     assert rows["market_intraday_chain_1030_schedule"]["execution_timezone"] == "America/New_York"
     slots = [slot for row in rows.values() for slot in row["market_slots"]]
     assert "option-trades" not in slots
+
+
+@pytest.mark.parametrize('rows,verdict,detail', [
+    ([('true','AssetCheckSeverity.WARN')], 'healthy', '1 pass, 0 WARN, 0 ERROR'),
+    ([('false','AssetCheckSeverity.WARN')], 'caution', '0 pass, 1 WARN, 0 ERROR'),
+    ([('false','AssetCheckSeverity.ERROR')], 'caution', '0 pass, 0 WARN, 1 ERROR'),
+    ([], 'caution', 'unmeasured'),
+])
+def test_success_run_is_graded_by_its_output_checks(rows, verdict, detail):
+    from bifrost_research.api.orchestration import _attach_output_checks
+    class Cursor:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def execute(self, query, params): assert params == ('run1',)
+        def fetchall(self): return rows
+    class Conn:
+        def cursor(self): return Cursor()
+    result = _attach_output_checks(Conn(), {'verdict':'healthy', 'last_run_id':'run1', 'detail':'completed'})
+    assert result['verdict'] == verdict and detail in result['detail']
+
+
+def test_unreadable_output_checks_never_report_healthy():
+    from bifrost_research.api.orchestration import _attach_output_checks
+    class Conn:
+        def cursor(self): raise RuntimeError('permission denied')
+        def rollback(self): self.rolled_back = True
+    conn = Conn()
+    result = _attach_output_checks(conn, {'verdict':'healthy', 'last_run_id':'run1', 'detail':'completed'})
+    assert result['verdict'] == 'caution' and conn.rolled_back

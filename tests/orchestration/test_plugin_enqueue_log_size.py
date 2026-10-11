@@ -109,3 +109,24 @@ def test_summary_keeps_scalars_and_counts_lists() -> None:
 def test_summary_line_hard_caps_a_wide_object() -> None:
     wide = {f"k{i}": i for i in range(20_000)}
     assert len(summary_line(wide)) <= LOG_LINE_MAX_CHARS + 40
+
+
+@pytest.mark.parametrize('response', [{}, {'ok':True},
+    {'ok':True,'slot':'wrong','enqueued':1,'deduped':0},
+    {'ok':True,'slot':'option-bars','enqueued':False,'deduped':0},
+    {'ok':True,'slot':'option-bars','enqueued':0,'deduped':-1},
+    {'ok':True,'slot':'option-bars','enqueued':0,'deduped':0,'skipped':True}])
+def test_invalid_enqueue_receipt_cannot_materialize_success(monkeypatch, response):
+    monkeypatch.setenv('MARKET_DATA_WRITE_TOKEN', 'test-token')
+    monkeypatch.setattr(plugin_http, 'post_json', lambda *a, **k: response)
+    with pytest.raises(RuntimeError, match='market enqueue failed'):
+        enqueue_market_slots(_Context(), ('option-bars',))
+
+
+@pytest.mark.parametrize('extra', [{}, {'deduped':4}, {'skipped':True,'reason':'non_trading_day'}])
+def test_zero_enqueue_is_legal_when_receipt_is_measured(monkeypatch, extra):
+    monkeypatch.setenv('MARKET_DATA_WRITE_TOKEN', 'test-token')
+    response = {'ok':True,'slot':'option-bars','enqueued':0,'deduped':0, **extra}
+    monkeypatch.setattr(plugin_http, 'post_json', lambda *a, **k: response)
+    result = enqueue_market_slots(_Context(), ('option-bars',))
+    assert result.metadata['enqueued_total'] == 0

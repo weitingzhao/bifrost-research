@@ -500,7 +500,9 @@ def compute_atm_iv_for_date(
     # source rows at all returned above, untouched: an outage must not wipe it.
     asked = {str(s).strip().upper() for s in (underlyings or []) if str(s).strip()}
     sourced = sorted(asked | {symbol for symbol, _expiry in groups})
-    source_keys = sorted(groups)
+    # A seen long expiry is not necessarily a valid replacement: one-sided,
+    # stale or unsolvable source rows must not erase its accepted repair.
+    source_keys = sorted({(row[0], row[2]) for row in upsert_rows})
     with conn.cursor() as cur:
         cur.execute(
             """

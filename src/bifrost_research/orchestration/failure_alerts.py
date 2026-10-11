@@ -3,7 +3,9 @@
 Alertmanager only forwards ``alertname=~"Bifrost.*"`` to the ops-agent webhook
 (bifrost-trade-infra k8s/monitoring); anything else lands in a receiver with no
 config. A failed schedule used to be visible only to whoever opened Dagster.
-Fail-soft: a sensor that cannot reach Alertmanager logs and returns.
+Failed delivery raises so the sensor tick records failure, never success.
+Dagster run-status cursors still advance on callback errors: this is visibility,
+not a durable retry queue or proof of Owner receipt.
 
 Note: do not use ``from __future__ import annotations`` — Dagster needs live
 context types.
@@ -82,7 +84,7 @@ def bifrost_run_failure_alert(context: RunFailureSensorContext) -> None:
     if ok:
         context.log.info("alerted Alertmanager: %s run %s", job_name, run_id)
     else:
-        context.log.warning("Alertmanager unreachable; failure of %s (%s) not alerted", job_name, run_id)
+        raise RuntimeError(f"Alertmanager delivery failed: {job_name} run {run_id}; receipt unverified")
 
 
 def failed_error_checks(instance: Any, run_id: str) -> list[tuple[str, str, str]]:
@@ -159,9 +161,7 @@ def bifrost_asset_check_alert(context: RunStatusSensorContext) -> None:
     if post_alert(asset_check_payload(run.job_name, run.run_id, failures)):
         context.log.info("alerted Alertmanager: %d failed checks in %s", len(failures), run.run_id)
     else:
-        context.log.warning(
-            "Alertmanager unreachable; %d failed checks in %s not alerted", len(failures), run.run_id
-        )
+        raise RuntimeError(f"Alertmanager delivery failed: {len(failures)} checks in {run.run_id}; receipt unverified")
 
 
 FAILURE_SENSORS = [bifrost_run_failure_alert, bifrost_asset_check_alert]

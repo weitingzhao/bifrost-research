@@ -217,7 +217,10 @@ def enqueue_market_slots(
         )
         results.append({"slot": slot, **(result if isinstance(result, dict) else {})})
         context.log.info("market slot=%s result=%s", slot, summary_line(result))
-        if isinstance(result, dict) and result.get("ok") is False:
+        if (not isinstance(result, dict) or result.get("ok") is not True
+                or result.get("slot") != slot
+                or any(type(result.get(k)) is not int or result[k] < 0 for k in ("enqueued", "deduped"))
+                or (result.get("skipped") is True and not result.get("reason"))):
             raise RuntimeError(f"market enqueue failed slot={slot}: {summary_line(result)}")
 
     return MaterializeResult(
@@ -225,6 +228,8 @@ def enqueue_market_slots(
             {
                 "slots": ",".join(slots),
                 "enqueued_total": sum(int(r.get("enqueued") or 0) for r in results),
+                "receipts": summary_line({r['slot']: {k: r.get(k) for k in
+                    ('enqueued', 'deduped', 'skipped', 'reason')} for r in results}),
                 "ok": True,
             }
         )

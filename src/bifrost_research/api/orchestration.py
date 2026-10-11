@@ -339,6 +339,38 @@ def compute_orchestration_status(
     )
 
 
+def _attach_output_checks(conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    """Completion alone cannot prove output health; keep existing verdict contract."""
+    if data["verdict"] != "healthy" or not data.get("last_run_id"):
+        return data
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (d->'asset_key', d->>'check_name')
+                    d->>'success', d->'severity'->>'__enum__'
+                FROM (
+                    SELECT id, event::jsonb->'dagster_event'->'event_specific_data' AS d
+                    FROM ops_dagster.event_logs
+                    WHERE run_id = %s AND dagster_event_type = 'ASSET_CHECK_EVALUATION'
+                ) checks
+                ORDER BY d->'asset_key', d->>'check_name', id DESC
+            """, (data['last_run_id'],))
+            rows = cur.fetchall()
+        failures = sum(passed != 'true' for passed, _ in rows)
+        errors = sum(passed != 'true' and severity == 'AssetCheckSeverity.ERROR'
+                     for passed, severity in rows)
+        if not rows or failures:
+            data['verdict'] = 'caution'
+        data['detail'] += (f"; output checks: {len(rows)-failures} pass, "
+                           f"{failures-errors} WARN, {errors} ERROR" if rows else
+                           "; output checks unmeasured")
+    except Exception:
+        conn.rollback()
+        data['verdict'] = 'caution'
+        data['detail'] += '; output checks unavailable; coverage unverified'
+    return data
+
+
 @router.get("/status")
 def orchestration_status() -> dict[str, Any]:
     try:
@@ -362,6 +394,7 @@ def orchestration_status() -> dict[str, Any]:
                 data = compute_orchestration_status(last_run=None)
             else:
                 data = compute_orchestration_status(last_run=last)
+            data = _attach_output_checks(conn, data)
             data = attach_schedules_from_conn(conn, data)
         except Exception as exc:
             logger.warning("orchestration status probe failed: %s", exc)

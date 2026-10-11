@@ -60,6 +60,8 @@ def read_doctor(context: AssetExecutionContext, base: str, *, probes: bool) -> d
         # An empty report is a cache miss, not a verdict: judging it would
         # materialize "unknown" and heal nothing.
         raise RuntimeError(f"market self-heal: doctor returned no generated_at (probes={probes})")
+    if not report.get('session') or report.get('verdict') not in ('healthy', 'degraded', 'critical'):
+        raise RuntimeError('market self-heal: doctor session/verdict unmeasured')
     return report
 
 
@@ -70,7 +72,9 @@ def should_heal(report: dict[str, Any]) -> bool:
 
 def queue_drained(summary: dict[str, Any]) -> bool:
     """queue-summary → True when nothing is pending or running."""
-    return int(summary.get("pending") or 0) == 0 and int(summary.get("running") or 0) == 0
+    if any(type(summary.get(k)) is not int or summary[k] < 0 for k in ('pending', 'running')):
+        raise ValueError('queue-summary missing valid pending/running counts')
+    return summary['pending'] == summary['running'] == 0
 
 
 def outcome(before: dict[str, Any], after: dict[str, Any] | None) -> str:
@@ -112,6 +116,8 @@ def market_self_heal(context: AssetExecutionContext) -> MaterializeResult:
             context.log.warning("[%s] %s — %s", f.get("severity"), f.get("title"), f.get("detail"))
 
     if not should_heal(before):
+        if before['verdict'] == 'critical':
+            raise RuntimeError('market self-heal: critical with no automatic prescription; operator action required')
         return MaterializeResult(
             metadata=meta(
                 {
@@ -136,6 +142,8 @@ def market_self_heal(context: AssetExecutionContext) -> MaterializeResult:
         token=token,
         timeout=180.0,
     )
+    if not isinstance(healed, dict) or healed.get('ok') is not True:
+        raise RuntimeError('market self-heal: heal request was not acknowledged')
     for action in healed.get("actions") or []:
         context.log.info(
             "heal %s → %s", {k: v for k, v in action.items() if k != "result"}, action.get("result")
@@ -158,6 +166,8 @@ def market_self_heal(context: AssetExecutionContext) -> MaterializeResult:
         )
 
     after = read_doctor(context, base, probes=False)
+    if after['session'] != before['session']:
+        raise RuntimeError('market self-heal: recheck session changed; cannot claim recovery')
     result = outcome(before, after)
     context.log.info("recheck verdict=%s (%s) drained=%s", after.get("verdict"), result, drained)
     md = meta(

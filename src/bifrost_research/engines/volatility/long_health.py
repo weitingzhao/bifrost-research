@@ -8,6 +8,8 @@ from bifrost_research.repositories.iv_cone import tenor_iv
 
 
 def judge(rows, sessions, symbols):
+    sessions = sorted(set(sessions))
+    symbols = sorted(set(symbols))
     by_day = defaultdict(list)
     for symbol, day, expiry, iv in rows:
         by_day[symbol, day].append((expiry, iv))
@@ -19,7 +21,12 @@ def judge(rows, sessions, symbols):
         status = ('missing_data' if n == 0 else 'history_insufficient'
                   if len(counts) < 4 or baseline == 0 else 'narrow'
                   if n < .8 * baseline else 'ok')
-        out.append({'tenor': tenor, 'valid_symbols': n, 'baseline': baseline, 'status': status})
+        out.append({'tenor': tenor, 'valid_symbols': n, 'expected_symbols': len(symbols),
+                    'coverage': n / len(symbols) if symbols else None,
+                    'session': sessions[-1].isoformat() if sessions else None,
+                    'data_status': 'present' if n else 'missing_data',
+                    'baseline_status': 'history_insufficient' if len(counts) < 4 or baseline == 0
+                    else 'sufficient', 'baseline': baseline, 'status': status})
     return out
 
 
@@ -31,6 +38,8 @@ def read_health(conn: Any, symbols: Sequence[str], session: date):
             cur.execute('''SELECT trade_date FROM dw_stock.dim_trading_calendar
                 WHERE trade_date BETWEEN %s AND %s AND is_trading_day ORDER BY trade_date''', (start, session))
             days = [r[0] for r in cur.fetchall()]
+            if not days or days[-1] != session:
+                return [{'status': 'unprobed', 'reason': 'requested session absent from trading calendar'}]
             rows = []
             syms = sorted(set(symbols))
             for offset in range(0, len(syms), 64):

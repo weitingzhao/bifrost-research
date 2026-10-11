@@ -245,3 +245,22 @@ def test_a_second_pass_follows_fundamentals_market() -> None:
     fundamentals = next(s for s in MARKET_SCHEDULES if s.name == "market_fundamentals_market_schedule")
     fund_h, late_h = int(fundamentals.cron_schedule.split()[1]), int(late.cron_schedule.split()[1])
     assert late_h > fund_h
+
+
+def test_critical_without_prescriptions_fails_visibly(monkeypatch):
+    with pytest.raises(RuntimeError, match='operator action required'):
+        _run(monkeypatch, reports=[{'session': '2026-09-04', 'generated_at': GEN,
+             'verdict': 'critical', 'prescriptions': []}], summaries=[])
+
+
+@pytest.mark.parametrize('summary', [{}, {'pending': 0}, {'pending': False, 'running': 0},
+                                     {'pending': -1, 'running': 0}])
+def test_unknown_queue_is_never_drained(summary):
+    with pytest.raises(ValueError):
+        msh.queue_drained(summary)
+
+
+def test_unknown_doctor_verdict_is_never_success(monkeypatch):
+    with pytest.raises(RuntimeError, match='unmeasured'):
+        _run(monkeypatch, reports=[{'session': '2026-09-04', 'generated_at': GEN,
+             'verdict': 'unknown', 'prescriptions': []}], summaries=[])

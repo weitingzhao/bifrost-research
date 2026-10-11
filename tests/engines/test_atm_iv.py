@@ -303,7 +303,7 @@ def test_compute_replaces_the_days_rows_for_sourced_symbols() -> None:
     assert result["rows_written"] == 0
     delete = next((q, p) for q, p in conn.statements if "DELETE FROM" in q)
     assert "features.option_metric_atm_iv_daily" in delete[0]
-    assert delete[1] == (td, ["PLTR"], 90, ["PLTR"], [date(2026,8,21)])
+    assert delete[1] == (td, ["PLTR"], 90, [], [])
     assert conn.committed == 1  # the delete stands even when nothing qualifies
 
 
@@ -450,3 +450,26 @@ def test_a_vendor_priced_expiry_with_two_calls_keeps_its_row() -> None:
     compute_atm_iv_for_date(conn, trade_date=td, underlyings=["PLTR"])
     (row,) = conn.upserts
     assert row[4] == 0.40
+
+
+def test_invalid_long_input_cannot_authorize_deleting_a_valid_repair():
+    from datetime import timedelta
+    td = date(2026, 8, 10)
+    exp = td + timedelta(days=180)
+    conn = _FakeConn([_row(td, 'O:SPYC', 'SPY', 100, 'C', .3, 100, exp)])
+    result = compute_atm_iv_for_date(conn, trade_date=td, underlyings=['SPY'])
+    assert result['rows_written'] == 0
+    _, params = next((q, p) for q, p in conn.statements if 'DELETE FROM' in q)
+    assert params[3:] == ([], [])
+
+
+def test_valid_long_replacement_authorizes_only_its_exact_key():
+    from datetime import timedelta
+    td = date(2026, 8, 10)
+    exp = td + timedelta(days=180)
+    conn = _FakeConn([_row(td, 'O:SPYC', 'SPY', 100, 'C', .3, 100, exp),
+                      _row(td, 'O:SPYP', 'SPY', 100, 'P', .4, 100, exp)])
+    result = compute_atm_iv_for_date(conn, trade_date=td, underlyings=['SPY'])
+    assert result['rows_written'] == 1
+    _, params = next((q, p) for q, p in conn.statements if 'DELETE FROM' in q)
+    assert params[3:] == (['SPY'], [exp])
