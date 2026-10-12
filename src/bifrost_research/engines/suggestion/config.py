@@ -17,7 +17,11 @@ THRESHOLDS: dict[str, Any] = {
     # .3 (Owner 2026-10-06): 10 settled per IV regime, not 20. At one baseline
     # suggestion a week the two-year replay had 15 low-IV and 14 high-IV weeks,
     # so 20 each would take 2.5-3 years against a six-month floor.
-    "version": "2026-10-06.3",
+    # .4 (Owner 2026-10-12): the per-symbol share cap does not apply to baseline
+    # and simulator. Their universes are fixed by rule (SPY; SPY/QQQ/IWM), so a
+    # symbol's share is 100% / ~33% by construction and the cap could never be
+    # met; it stays for sources that choose their own names (pine).
+    "version": "2026-10-12.4",
     "counts_from": "first counted suggestion issued after the ledger went live; forward samples only",
     "min_months": 6,
     "regimes": {
@@ -31,6 +35,7 @@ THRESHOLDS: dict[str, Any] = {
         "min_settled": 100,
         "one_per_symbol_per_iso_week": True,
         "max_share_per_symbol": 0.10,
+        "max_share_exempt_sources": ("baseline", "simulator"),
         # Set once, after the baseline's first month: max(100, (z * sd / mean)^2)
         # with the measured return-on-risk sd. The rule is frozen here; the number
         # it yields is written into the next version.

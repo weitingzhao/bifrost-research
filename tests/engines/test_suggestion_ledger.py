@@ -11,7 +11,7 @@ from bifrost_research.engines.backtest.canonical_pnl import bs_price
 from bifrost_research.engines.backtest.sim import SimConfig, run_sim
 from bifrost_research.engines.backtest.sim.chain import ChainStore, OptBar
 from bifrost_research.engines.backtest.sim.walk import LegSpec, WalkRules, legs_from_json, walk_legs
-from bifrost_research.engines.suggestion.config import BASELINE, THRESHOLDS
+from bifrost_research.engines.suggestion.config import BASELINE, PINE_LIVE, THRESHOLDS
 from bifrost_research.engines.suggestion.contract import IncompleteSuggestion, Suggestion
 from bifrost_research.engines.suggestion.issue import build_suggestion, cadence_sessions
 from bifrost_research.engines.suggestion.settle import entry_session, rules_for, settlement_row
@@ -120,6 +120,9 @@ def test_stand_aside_needs_no_legs() -> None:
 def test_thresholds_are_versioned() -> None:
     assert THRESHOLDS["version"] and THRESHOLDS["sample"]["min_settled"] == 100
     assert THRESHOLDS["expectancy"]["slippage_scale"] == 1.5
+    # Fixed-universe sources cannot meet a per-symbol share cap; pine still must.
+    assert THRESHOLDS["sample"]["max_share_exempt_sources"] == ("baseline", "simulator")
+    assert PINE_LIVE["max_share_per_symbol"] == THRESHOLDS["sample"]["max_share_per_symbol"]
 
 
 # -- DDL --------------------------------------------------------------------------------
