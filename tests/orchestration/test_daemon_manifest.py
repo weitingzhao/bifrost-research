@@ -27,6 +27,30 @@ def test_the_daemon_is_replaced_not_rolled() -> None:
     assert "rollingUpdate" not in daemon
 
 
+def test_dagster_pods_have_a_reaping_pid_1() -> None:
+    """2026-10-30: dagster-daemon as PID 1 never reaped the orphan each code-server
+    reload leaves (one a minute). 27,641 zombies filled the pod's pid limit and every
+    schedule stopped for 2.5 days. The pause container reaps them when the pod
+    shares one process namespace."""
+    for name in ("dagster-daemon", "dagster-webserver"):
+        assert "\n      shareProcessNamespace: true\n" in _deployment(name), name
+
+
+def test_runs_queue_behind_a_concurrency_cap() -> None:
+    """Every run executes in the daemon container. After an outage each schedule fires
+    its latest missed tick at once (about 38 on 2026-11-01, peak before that 3), so
+    without a queue a recovery is an OOM kill."""
+    instance = MANIFEST.read_text().split("name: dagster-instance", 1)[1].split("\n---", 1)[0]
+    match = re.search(
+        # dagster.core (no underscore) is gone in 1.13; the daemon would not start.
+        r"\n    run_coordinator:\n      module: dagster\._core\.run_coordinator\n"
+        r"      class: QueuedRunCoordinator\n      config:\n        max_concurrent_runs: (\d+)$",
+        instance,
+    )
+    assert match is not None
+    assert 1 <= int(match.group(1)) <= 3
+
+
 def test_k8s_holds_one_dagster_instance_config() -> None:
     """TD-120: an unmounted second file can drop run_monitoring and hide zombie runs."""
     assert list(K8S.rglob("dagster_instance.yaml")) == []

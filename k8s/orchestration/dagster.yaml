@@ -56,6 +56,16 @@ data:
       max_runtime_seconds: 32400
       poll_interval_seconds: 120
       max_resume_run_attempts: 0
+    # Runs execute inside the daemon container (DefaultRunLauncher), so how many
+    # run at once is a memory question. A daemon back from an outage fires the
+    # latest missed tick of every schedule together: about 38 runs after the
+    # 2026-10-30 stall, against a 21-day peak of 3 and a 4Gi limit that
+    # research_trading_day alone takes 2.2Gi of. Queued, they drain two at a time.
+    run_coordinator:
+      module: dagster._core.run_coordinator
+      class: QueuedRunCoordinator
+      config:
+        max_concurrent_runs: 2
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -77,6 +87,8 @@ spec:
         app.kubernetes.io/name: dagster-webserver
         bifrost.research/role: orchestration
     spec:
+      # The pause container becomes PID 1 and reaps orphans; see dagster-daemon.
+      shareProcessNamespace: true
       containers:
         - name: webserver
           image: 192.168.10.73:30500/bifrost-research:0.205.0-dagster
@@ -200,6 +212,14 @@ spec:
         app.kubernetes.io/name: dagster-daemon
         bifrost.research/role: orchestration
     spec:
+      # Without this, PID 1 is dagster-daemon itself, which never waits on the
+      # orphans it inherits. The daemon restarts its code server about once a
+      # minute and each restart left one python zombie: 1,370 a day from the
+      # 2026-10-10 start, 27,641 by 2026-10-30 09:45 UTC, when the pod's pid
+      # limit (27,724) ran out, pthread_create failed and every schedule and
+      # sensor stopped for 2.5 days. With a shared namespace the pause
+      # container is PID 1 and reaps them.
+      shareProcessNamespace: true
       containers:
         - name: daemon
           image: 192.168.10.73:30500/bifrost-research:0.205.0-dagster
