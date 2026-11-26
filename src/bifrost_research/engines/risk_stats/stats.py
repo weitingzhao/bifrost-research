@@ -2,8 +2,8 @@
 
 The Loop could say a name's IV was rich and its regime negative-gamma but never
 "how much of this move is the market" or "is 30-day realised vol high for this
-name". These three read ``raw_market.stock_daily`` on request (RS2, Owner chose
-compute-on-read over a nightly table).
+name". These three read ``raw_market.stock_daily`` on request (RS2, 决定
+2026-09-15: compute on read, no nightly table).
 
 Every estimate carries its own sample size, and a window that is not filled
 returns None rather than a number computed from a shorter window — a beta on 30

@@ -5,9 +5,9 @@ GET /analytics/risk/correlation?symbols=NVDA,MU,SPY&window=60[&as_of=2026-06-30]
 GET /analytics/vol/rv-cone?symbol=NVDA&tenors=10,20,30,60,90&years=3
 GET /analytics/vol/earnings-moves?symbol=PLTR&limit=8   (research 0.122.0)
 
-Owner chose compute-on-read over a nightly table: the inputs are five years of
-``raw_market.stock_daily`` closes, which is small enough to read per request and
-saves a table that would need its own freshness story.
+决定 2026-09-15: compute on read rather than keep a nightly table. The inputs
+are five years of ``raw_market.stock_daily`` closes, which is small enough to
+read per request and saves a table that would need its own freshness story.
 
 Every answer carries the sample it rests on. A window filled under 80% returns
 ``null`` and its ``n`` — a 252-day beta from 40 sessions is not a 252-day beta.
