@@ -18,7 +18,7 @@ use only the 8-Ks filed by that day (``EARN_NEXT`` is an estimate, never the
 print that later happened). ``stock_signal_vrp_daily.fwd_ret_20d`` looks forward
 and is never served.
 
-Alignment (Owner 2026-10-06, option A): each series is put on the script's own
+Alignment (决定 2026-10-06, option A): each series is put on the script's own
 sessions; a session the source lacks takes the last value for at most
 :data:`FFILL_SESSIONS` sessions, then reads ``na``; before a series starts it is
 ``na``. A script that reads context writes no signal until :data:`WARMUP_SESSIONS`

@@ -1,6 +1,6 @@
 """What a Pine script tells the simulator beyond its entry signal (P1, S2/S3/B4/B5).
 
-"Pine decides the timing, Bifrost decides the structure" (Owner 2026-10-06):
+Pine decides the timing, Bifrost decides the structure (决定 2026-10-06):
 entries still come from the stored signal (``features.stock_signal_pine_daily``,
 opened the session after it), and this module asks the pine-runner, on demand,
 for the two other things a script knows:

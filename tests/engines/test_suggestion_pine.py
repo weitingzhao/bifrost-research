@@ -105,7 +105,7 @@ def _run(signals: list[dict[str, Any]], issued: list[dict[str, Any]] | None = No
 
 
 def test_live_config_is_paused_and_maps_buy_only() -> None:
-    """rule_version 2 (Owner 2026-10-06, after the replay): no sell, paused."""
+    """rule_version 2 (决定 2026-10-06, after the replay): no sell, paused."""
     assert PINE_LIVE["rule_version"] == "2" and PINE_LIVE["paused"] is True
     assert set(PINE_LIVE["sides"]) == {"buy"}
     assert pine.run_issue_pine(None) == {"paused": True, "rule_version": "2", "written": 0}

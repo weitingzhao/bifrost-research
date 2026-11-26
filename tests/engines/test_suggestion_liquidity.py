@@ -1,4 +1,4 @@
-"""Liquidity (S4, Owner 2026-10-06 option c): a volume gate at issue, a bounded entry delay at settlement."""
+"""Liquidity (S4, 决定 2026-10-06 option c): a volume gate at issue, a bounded entry delay at settlement."""
 
 from __future__ import annotations
 

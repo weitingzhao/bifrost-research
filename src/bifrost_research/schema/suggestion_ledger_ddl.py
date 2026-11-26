@@ -28,7 +28,7 @@ LEDGER_TABLES = ("suggestion", "suggestion_settlement", "suggestion_adoption")
 
 SUGGESTION_SOURCES = ("baseline", "simulator", "copilot", "lens", "pine", "manual")
 SUGGESTION_KINDS = ("option_structure", "stock_position", "stand_aside")
-# symbol_paired (S4 control, Owner 2026-10-06): the same structure on the same
+# symbol_paired (S4 control, 决定 2026-10-06): the same structure on the same
 # name, entered on a session near the signal when the source did not fire. A
 # table created before it is widened once by schema/migrate_symbol_paired.py;
 # this module stays DROP-free.

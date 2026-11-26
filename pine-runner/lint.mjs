@@ -1,4 +1,4 @@
-// Basic checks PineTS does not make (0.5.0, Owner 2026-10-06). PineTS runs a
+// Basic checks PineTS does not make (0.5.0, ISSUE-102). PineTS runs a
 // script with `a = close +`, a missing block indent or `ta.sma(close)` without
 // complaint and returns quietly wrong signals (measured on 0.11.0), so the
 // runner refuses those before running and says where. Not a parser: it catches

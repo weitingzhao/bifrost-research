@@ -10,14 +10,14 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-# Owner 2026-10-05 23:32 UTC: §7 as recommended.
+# 决定 2026-10-05: §7 as recommended.
 THRESHOLDS: dict[str, Any] = {
     # .2 (2026-10-06): the delta rule below, added after the first night's
     # suggestions picked 35/39/27-delta puts under 30/20-delta rules.
-    # .3 (Owner 2026-10-06): 10 settled per IV regime, not 20. At one baseline
+    # .3 (决定 2026-10-06): 10 settled per IV regime, not 20. At one baseline
     # suggestion a week the two-year replay had 15 low-IV and 14 high-IV weeks,
     # so 20 each would take 2.5-3 years against a six-month floor.
-    # .4 (Owner 2026-10-12): the per-symbol share cap does not apply to baseline
+    # .4 (决定 2026-10-12): the per-symbol share cap does not apply to baseline
     # and simulator. Their universes are fixed by rule (SPY; SPY/QQQ/IWM), so a
     # symbol's share is 100% / ~33% by construction and the cap could never be
     # met; it stays for sources that choose their own names (pine).
@@ -98,7 +98,7 @@ SIMULATOR_LIVE: tuple[dict[str, Any], ...] = (
     },
 )
 
-# Pine scripts as a suggestion source (S4, Owner 2026-10-06): Pine says when,
+# Pine scripts as a suggestion source (S4, 决定 2026-10-06): Pine says when,
 # Bifrost says what. A buy signal sells the 20-delta put, a sell signal sells the
 # 20-delta call credit spread; everything else is the live simulator config's
 # (~45 DTE, take 50%, stop at 2x credit, close at 21 DTE). ``source_ref`` is the
@@ -124,7 +124,7 @@ SIMULATOR_LIVE: tuple[dict[str, Any], ...] = (
 #   no chain, or whose nearest strike misses the delta by more than
 #   DELTA_TOLERANCE, is skipped (and does not use up the cap).
 #
-# rule_version 2 (Owner 2026-10-06, after the 2024-11..2026-10 replay,
+# rule_version 2 (决定 2026-10-06, after the 2024-11..2026-10 replay,
 # REPORT-pine-s4-replay-2026-10-06.md): sell -> call credit spread is no longer
 # issued (-6% on risk in every IV regime and year), and the source is paused
 # while the buy side is iterated offline against held-out sessions -- its prior
@@ -154,7 +154,7 @@ PINE_LIVE: dict[str, Any] = {
     "daily_cap_per_side": 5,
 }
 
-# The ``symbol_paired`` basis (S4 control, Owner 2026-10-06, option A): for a
+# The ``symbol_paired`` basis (S4 control, 决定 2026-10-06, option A): for a
 # suggestion timed by a signal, the same structure under the same rule on the
 # same name, entered on a session in the ``window_days`` calendar days after the
 # signal on which that source did not fire (picked by hash of the suggestion id,
@@ -167,7 +167,7 @@ PINE_LIVE: dict[str, Any] = {
 # whole settlement transaction. Turn on with ("pine",) once applied.
 SYMBOL_PAIRED: dict[str, Any] = {"sources": (), "window_days": 7}
 
-# Every mechanical source (S4 liquidity, Owner 2026-10-06 option c):
+# Every mechanical source (S4 liquidity, 决定 2026-10-06 option c):
 # - issue: each leg must have traded at least ``min_leg_volume`` contracts on
 #   the as-of session. Measured on single-name option_daily, 30-60 DTE,
 #   2026-03..04: a contract that traded 1 printed again the next session 49% of

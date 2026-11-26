@@ -1,4 +1,4 @@
-"""Pine workbench (S12/S13, Owner 2026-10-06): saves and checks refused with the lines; try a basket."""
+"""Pine workbench (S12/S13, ISSUE-102): saves and checks refused with the lines; try a basket."""
 
 from __future__ import annotations
 

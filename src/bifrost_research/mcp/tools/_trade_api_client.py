@@ -6,7 +6,7 @@ here. D10 (live trading) remains blocked at the Trade side; this module cannot
 bypass that.
 
 Endpoints resolve via K8s cluster DNS by default, one Service per process
-(TD-55, Owner 2026-10-04 option B):
+(TD-55, 决定 2026-10-04 option B):
 
 - `api-monitor.bifrost-prod.svc.cluster.local:8765` → `/status`, `/risk_summary`
 - `api-account.bifrost-prod.svc.cluster.local:8769` → `/executions`, `/performance`

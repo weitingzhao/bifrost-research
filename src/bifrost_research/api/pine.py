@@ -179,7 +179,7 @@ def put_script(body: ScriptBody, script_id: str = Path(..., min_length=2, max_le
     finally:
         _close(conn)
     data = saved.to_dict()
-    # Saved and switched on: build its signals now rather than at 22:30 ET (S14, Owner 2026-10-06).
+    # Saved and switched on: build its signals now rather than at 22:30 ET (S14, ISSUE-102).
     if saved.is_active and (current is None or current.version != saved.version or not current.is_active):
         try:
             data["run"] = run_now.start(saved.id).to_dict()

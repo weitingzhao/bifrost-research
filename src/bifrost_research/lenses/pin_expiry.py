@@ -1,4 +1,4 @@
-"""The expiry the OpEx pin lens reads: the next monthly (Owner 2026-09-26).
+"""The expiry the OpEx pin lens reads: the next monthly (决定 2026-09-26).
 
 Until then every pin reader took the expiry nearest 30 days out, which is a
 weekly for most of the month (PLTR 2026-09-25: 10-23, 28 DTE) while the pin

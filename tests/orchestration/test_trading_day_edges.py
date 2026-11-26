@@ -1,4 +1,4 @@
-"""research_trading_day orders its steps by edges, not by timing (Owner 2026-09-29).
+"""research_trading_day orders its steps by edges, not by timing (决定 2026-09-29).
 
 gate -> dbt: in run e1dd41e5 (2026-09-29 02:30 UTC) ``bifrost_research_dbt_assets``
 logged STEP_START at 02:30:21 and ``batch__husbandry_gate`` at 02:30:37. The default

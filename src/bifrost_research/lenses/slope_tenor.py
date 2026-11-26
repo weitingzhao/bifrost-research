@@ -1,4 +1,4 @@
-"""The ~30-day slope every skew reader takes (Owner 2026-09-30, option A′).
+"""The ~30-day slope every skew reader takes (决定 2026-09-30, option A′).
 
 One reading per name per session, from ``features.option_surface_fit_daily``:
 
@@ -7,7 +7,7 @@ One reading per name per session, from ``features.option_surface_fit_daily``:
    or under 30 and the nearest at or over it, both within the fit table's own
    7–90 DTE. A fit at exactly 30 DTE is both sides and is taken as it is.
 2. **Window** (``basis = 'window'``) — only when a side is missing: the fit
-   nearest 30 DTE within 20–45 (the 0.140.0 definition, Owner 2026-09-27
+   nearest 30 DTE within 20–45 (the 0.140.0 definition, 决定 2026-09-27
    option B), the earlier expiry on a tie.
 
 Neither → no reading that session. Nothing is extrapolated.

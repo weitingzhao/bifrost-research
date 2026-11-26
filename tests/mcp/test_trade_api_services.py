@@ -1,4 +1,4 @@
-"""Research names one Trade API Service per process (TD-55, Owner 2026-10-04 option B).
+"""Research names one Trade API Service per process (TD-55, 决定 2026-10-04 option B).
 
 api-trading, api-strategy, api-portfolio, api-ops and api-docs are alias Services of
 api-account / api-monitor that Trade removes in B2, after Research stops naming them.

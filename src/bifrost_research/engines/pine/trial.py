@@ -1,4 +1,4 @@
-"""Try a Pine script on a basket of names before saving it (Owner 2026-10-06, ledger S13).
+"""Try a Pine script on a basket of names before saving it (ISSUE-102, ledger S13).
 
 POST /research/pine/try: the script runs now in the pine-runner over each name's
 adjusted daily bars (with the option context it reads), exactly as the nightly

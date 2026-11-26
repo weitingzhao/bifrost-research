@@ -1,4 +1,4 @@
-"""Run one Pine script's build now, from the API (ledger S14, Owner 2026-10-06, option A).
+"""Run one Pine script's build now, from the API (ledger S14, 决定 2026-10-06, option A).
 
 A saved script used to wait for the 22:30 ET batch before the chart, the
 screener or Signal Decay could show it. ``start`` runs ``build.run`` for that

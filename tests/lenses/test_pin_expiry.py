@@ -1,4 +1,4 @@
-"""The OpEx pin reads the next monthly expiry everywhere (Owner 2026-09-26)."""
+"""The OpEx pin reads the next monthly expiry everywhere (决定 2026-09-26)."""
 
 from __future__ import annotations
 

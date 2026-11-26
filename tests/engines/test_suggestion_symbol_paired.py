@@ -1,4 +1,4 @@
-"""The symbol_paired basis (S4 control, Owner 2026-10-06 option A)."""
+"""The symbol_paired basis (S4 control, 决定 2026-10-06 option A)."""
 
 from __future__ import annotations
 

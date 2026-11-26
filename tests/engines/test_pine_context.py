@@ -64,7 +64,7 @@ def test_the_catalog_has_no_colon_and_no_bare_ticker_lookalikes() -> None:
         assert ":" not in name and name == name.upper()
         assert "_" in name or s.kind == context.MARKET  # SPY is the one real ticker, served as SPY's bars
     assert {s.name for s in context.CATALOG.values() if s.kind == context.MARKET} == {"SPY", "SPY_IV_30", "SPY_IV_RANK"}
-    # Not served (Owner 2026-10-06): under two months of history.
+    # Not served (决定 2026-10-06): under two months of history.
     assert not any(n.startswith(("GEX", "SKEW", "ZERO", "WALL")) for n in context.CATALOG)
 
 
